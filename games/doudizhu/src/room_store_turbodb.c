@@ -25,7 +25,7 @@ static mygames_store_status error_from_orm(
         const char *message = detail && detail->message[0] ?
             detail->message : orm_status_message(status);
         (void)snprintf(store->last_error, sizeof(store->last_error),
-                       "TurboDB status=%d: %s", (int)status,
+                       "TurboDB status=%d: %.420s", (int)status,
                        message ? message : "unknown");
         if (status == ORM_STATUS_COMMIT_UNKNOWN ||
             status == ORM_STATUS_CLEANUP_FAILED) store->quarantined = true;
