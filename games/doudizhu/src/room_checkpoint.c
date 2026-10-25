@@ -160,7 +160,7 @@ mygames_checkpoint_status mygames_room_checkpoint_decode(
         mygames_room_directory_entry *e = &temp.entries[i];
         mygames_room *r = &e->room;
         if (row[42] || row[43] || row[85] || row[86] || row[87] ||
-            (row[84] & (uint8_t)~7u)) return MYGAMES_CHECKPOINT_CORRUPT;
+            (row[84] & 0xf8u)) return MYGAMES_CHECKPOINT_CORRUPT;
         memcpy(r->id, row, MYGAMES_ROOM_ID_CAPACITY);
         r->phase = (mygames_room_phase)row[40];
         r->players = row[41];
