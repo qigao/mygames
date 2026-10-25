@@ -1222,6 +1222,8 @@ int main(void) {
     mygames_sessions_init(&state.sessions);
     state.room_epoch = 1u;
     atomic_init(&state.accepting, true);
+    atomic_init(&state.timer_stop, false);
+    atomic_init(&state.tick_queued, false);
     if (!prepare_room_store(&state)) {
         release_room_store(&state);
         return 1;
@@ -1237,6 +1239,13 @@ int main(void) {
         release_room_store(&state);
         return 1;
     }
+    cmeta_mutex_init(&state.terminal_lock);
+    if (!state.terminal_lock) {
+        fprintf(stderr, "Terminal fallback lock allocation failed\n");
+        cflow_executor_destroy(&state.room_executor);
+        release_room_store(&state);
+        return 1;
+    }
     rc = chttp_server_init(&server, &config);
     if (rc != SALTS_OK) {
         fprintf(stderr, "CHttp init failed: %d\n", rc);
@@ -1244,6 +1253,7 @@ int main(void) {
                                                 CFLOW_EXECUTOR_SHUTDOWN_DRAIN);
         (void)cflow_executor_control_wait_idle(&state.room_control);
         cflow_executor_destroy(&state.room_executor);
+        cmeta_mutex_destroy(&state.terminal_lock);
         release_room_store(&state);
         return 1;
     }
@@ -1261,6 +1271,13 @@ int main(void) {
     if (rc == SALTS_OK) rc = chttp_server_websocket_with(&server, &ws);
     if (rc == SALTS_OK) rc = chttp_server_start(&server);
     if (rc == SALTS_OK) {
+        if (cmeta_thread_create(&state.timer_thread, room_timer_thread,
+                                &state) != SALTS_OK) {
+            fprintf(stderr, "Periodic Room Owner producer failed to start\n");
+            rc = SALTS_EIO;
+        } else state.timer_started = true;
+    }
+    if (rc == SALTS_OK) {
         puts("MyGames local CFlow room service at http://127.0.0.1:1780");
         puts("Press Enter to stop.");
         (void)getchar();
@@ -1268,10 +1285,35 @@ int main(void) {
         fprintf(stderr, "CHttp setup/start failed: %d\n", rc);
     }
     atomic_store_explicit(&state.accepting, false, memory_order_release);
+    atomic_store_explicit(&state.timer_stop, true, memory_order_release);
+    if (state.timer_started) {
+        if (cmeta_thread_join(&state.timer_thread) != SALTS_OK) {
+            fprintf(stderr, "Periodic room producer failed to quiesce\n");
+            return 1; /* no premature free of shared state */
+        }
+        cmeta_thread_destroy(&state.timer_thread);
+    }
     final_rc = chttp_server_stop(&server, 5000u);
     if (final_rc != SALTS_OK) {
         fprintf(stderr, "CHttp stop failed, process must terminate: %d\n", final_rc);
         return 1; /* do not free server while producer callbacks might survive */
+    }
+    /* CHttp is now quiescent: flush any reserved CLOSE records on CFlow
+     * before settling and destroying the actor. A control-plane post may
+     * wait for queue capacity here (never inside the CHttp callback). */
+    {
+        room_task terminal_flush = {0};
+        cflow_executor_task descriptor = {0};
+        terminal_flush.kind = ROOM_TASK_TICK;
+        terminal_flush.state = &state;
+        descriptor.run = room_task_run;
+        descriptor.cancel = room_task_cancel;
+        descriptor.user = &terminal_flush;
+        if (cflow_executor_control_post_task(
+                &state.room_control, &descriptor) != CFLOW_EXECUTOR_POST_ACCEPTED) {
+            fprintf(stderr, "Terminal flush could not be admitted\n");
+            return 1;
+        }
     }
     if (!cflow_executor_control_shutdown(
             &state.room_control, CFLOW_EXECUTOR_SHUTDOWN_DRAIN) ||
@@ -1282,6 +1324,7 @@ int main(void) {
     }
     cflow_executor_destroy(&state.room_executor);
     final_rc = chttp_server_destroy(&server);
+    cmeta_mutex_destroy(&state.terminal_lock);
     release_room_store(&state);
     return (rc == SALTS_OK && final_rc == SALTS_OK) ? 0 : 1;
 }
