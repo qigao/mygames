@@ -152,9 +152,10 @@ changed historical payloads by comparing durable SHA-256 receipts.
 Flowie auto-PUBACK-before-DB-commit crash window, successful recovery of the
 uncommitted third event and two corruption/forgery denial cases.
 
-**The source archive is currently accessed using privileged local DB
-credentials**. This is not a production read-only, principal-authorized
-backfill endpoint; it does not close upstream Flowie #22 or guarantee
-network-to-DB exactly-once/no-loss for subscribers without trusted source
-access. Production still needs authenticated recovery, retention, offsets,
+**The source archive is now opened by the local admin reconciler with a
+real TurboDB SQLite READONLY connection.** Its trusted local source path is
+still NOT a production, principal-authorized backfill endpoint. The new
+pure-C11 recovery admission gate is not yet wired to verified mTLS or CHttp.
+See [M4 Issue #5](https://github.com/qigao/mygames/issues/5). These changes
+do not close upstream Flowie #22 or guarantee end-to-end exactly-once/no-loss. Production still needs authenticated recovery, retention, offsets,
 live-Subscriber coordination and an actual business projection.
