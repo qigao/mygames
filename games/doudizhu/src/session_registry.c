@@ -144,6 +144,40 @@ mygames_session_status mygames_sessions_resume(
     return MYGAMES_SESSION_OK;
 }
 
+mygames_session_status mygames_sessions_import_active(
+    mygames_session_registry *registry, mygames_player_id player,
+    uint64_t generation,
+    const uint8_t entropy[MYGAMES_SESSION_TICKET_BYTES],
+    size_t *out_slot) {
+    char token[MYGAMES_SESSION_TICKET_HEX + 1u];
+    size_t i;
+    size_t free_slot = MYGAMES_SESSION_CAPACITY;
+    if (!registry || !out_slot || player == 0u || generation == 0u ||
+        !valid_entropy(entropy)) return MYGAMES_SESSION_INVALID;
+    *out_slot = MYGAMES_SESSION_CAPACITY;
+    hex_encode(token, entropy);
+    if (ticket_conflict(registry, token)) return MYGAMES_SESSION_ENTROPY_COLLISION;
+    for (i = 0u; i < MYGAMES_SESSION_CAPACITY; ++i) {
+        if (registry->entries[i].used) {
+            if (registry->entries[i].player == player)
+                return MYGAMES_SESSION_ACTIVE;
+        } else if (free_slot == MYGAMES_SESSION_CAPACITY) free_slot = i;
+    }
+    if (free_slot == MYGAMES_SESSION_CAPACITY) return MYGAMES_SESSION_FULL;
+    {
+        mygames_session_record *record = &registry->entries[free_slot];
+        *record = (mygames_session_record){0};
+        record->used = true;
+        record->attached = true;
+        record->player = player;
+        record->generation = generation;
+        memcpy(record->ticket, token, sizeof(token));
+    }
+    if (registry->next_player < player) registry->next_player = player;
+    *out_slot = free_slot;
+    return MYGAMES_SESSION_OK;
+}
+
 mygames_session_status mygames_sessions_discard(
     mygames_session_registry *registry, size_t slot) {
     if (!registry || slot >= MYGAMES_SESSION_CAPACITY)

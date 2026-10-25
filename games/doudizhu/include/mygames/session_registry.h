@@ -68,6 +68,18 @@ mygames_session_status mygames_sessions_resume(
 
 /* Discard the caller's newly issued unused session on successful resume.
  * The caller must verify that this player is not seated in a room. */
+/* Import a DB-verified recovered identity into a fresh, still in-memory
+ * connection registry. The server first verifies and rotates the credential
+ * in the durable authority; the caller supplies only a fresh CSPRNG token.
+ * Refuses duplicate player IDs or ticket collisions, and leaves registry
+ * unchanged on failure. This is not an external user authentication API.
+ */
+mygames_session_status mygames_sessions_import_active(
+    mygames_session_registry *registry, mygames_player_id player,
+    uint64_t generation,
+    const uint8_t entropy[MYGAMES_SESSION_TICKET_BYTES],
+    size_t *out_slot);
+
 mygames_session_status mygames_sessions_discard(
     mygames_session_registry *registry, size_t slot);
 

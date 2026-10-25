@@ -58,6 +58,20 @@ static void main_contract(void) {
     assert(mygames_sessions_issue(&sessions, b, &claimed) == MYGAMES_SESSION_OK);
     assert(mygames_sessions_at(&sessions, claimed)->player == 2u);
     assert(mygames_sessions_discard(&sessions, claimed) == MYGAMES_SESSION_OK);
+    {
+        size_t recovered = MYGAMES_SESSION_CAPACITY;
+        const mygames_session_record *record;
+        assert(mygames_sessions_import_active(&sessions, 101u, 3u, a,
+                                              &recovered) == MYGAMES_SESSION_OK);
+        record = mygames_sessions_at(&sessions, recovered);
+        assert(record && record->player == 101u && record->generation == 3u);
+        assert(record->attached && sessions.next_player == 101u);
+        assert(mygames_sessions_import_active(&sessions, 101u, 4u, b,
+                                              &claimed) == MYGAMES_SESSION_ACTIVE);
+        assert(mygames_sessions_discard(&sessions, recovered) == MYGAMES_SESSION_OK);
+        assert(mygames_sessions_import_active(&sessions, 0u, 1u, b,
+                                              &claimed) == MYGAMES_SESSION_INVALID);
+    }
     assert(mygames_sessions_at(&sessions, claimed) == NULL);
 }
 static void capacity_contract(void) {
