@@ -1,6 +1,7 @@
 // Manual, real CHttp WebSocket integration: node scripts/room_ws_smoke.mjs
 // Requires node >= 22, and a live MYGAMES_ENABLE_GATEWAY=ON server on loopback.
 import assert from 'node:assert/strict';
+import {writeFileSync} from 'node:fs';
 
 const URL = 'ws://127.0.0.1:1780/ws';
 const clients = [];
@@ -173,6 +174,12 @@ try {
     assert.equal((await attacker.receive((m) => m.type === 'session.error')).code,
                  'resume_rejected');
 
+    // Only the CI harness may request this isolated audit manifest. Never
+    // persist bearer recovery secrets or the complete websocket transcript.
+    if (process.env.MYGAMES_AUDIT_OUTPUT)
+        writeFileSync(process.env.MYGAMES_AUDIT_OUTPUT,
+                      JSON.stringify({creator_player_id: a.player, room_id: id}),
+                      {encoding: 'utf8'});
     console.log('MyGames CHttp room WebSocket integration: PASS');
 } finally {
     for (const c of clients) c.close();

@@ -4,6 +4,7 @@ The original database is owned by the TurboDB/SQLite plugin, not this script.
 Tests operate only on an isolated temporary directory.
 """
 import os
+import json
 import pathlib
 import subprocess
 import sys
@@ -23,6 +24,8 @@ def main() -> int:
         env = os.environ.copy()
         env["MYGAMES_SQLITE_PLUGIN"] = plugin
         env["MYGAMES_DB_PATH"] = database
+        audit_path = str(pathlib.Path(root) / "gateway-audit.json")
+        env["MYGAMES_AUDIT_OUTPUT"] = audit_path
 
         subprocess.run(
             [sys.executable, "scripts/ci/ci_gateway_smoke.py", server],
@@ -32,7 +35,8 @@ def main() -> int:
             raise AssertionError("WebSocket operations did not create a TurboDB database")
         subprocess.run(
             [str(pathlib.Path("build/gateway/mygames_room_gateway_probe").resolve()),
-             plugin, database],
+             plugin, database, str(json.loads(pathlib.Path(audit_path).read_text(
+                 encoding="utf-8"))["creator_player_id"])],
             env=env, timeout=25, check=True,
         )
 

@@ -5,7 +5,9 @@
 #undef NDEBUG
 #endif
 #include <assert.h>
+#include <errno.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -20,10 +22,16 @@ int main(int argc, char **argv) {
     char ack[MYGAMES_STORE_RESULT_MAX + 1u];
     size_t ack_len = 0u, event_len = 0u;
     static const char canonical[] = "v1|1||0";
-    if (argc != 3) {
-        fprintf(stderr, "usage: gateway_probe /absolute/sqlite-driver /database\n");
+    char *end = NULL;
+    unsigned long long creator_id = 0u;
+    if (argc != 4) {
+        fprintf(stderr, "usage: gateway_probe /absolute/sqlite-driver /database /creator-id\n");
         return 2;
     }
+    errno = 0;
+    creator_id = strtoull(argv[3], &end, 10);
+    if (errno != 0 || !end || *end || creator_id == 0u ||
+        creator_id > (unsigned long long)INT64_MAX) return 2;
     assert(mygames_room_store_open(argv[1], argv[2], &store) ==
            MYGAMES_STORE_OK);
     assert(store != NULL);
@@ -44,7 +52,7 @@ int main(int argc, char **argv) {
     assert(cmeta_sha256(canonical, sizeof(canonical) - 1u, digest) == SALTS_OK);
     {
         const mygames_store_status status = mygames_room_store_get_outcome(
-            store, 1u, "create-1", digest,
+            store, (mygames_player_id)creator_id, "create-1", digest,
             ack, sizeof(ack) - 1u, &ack_len, &old_seq);
         if (status != MYGAMES_STORE_OK) {
             fprintf(stderr, "persist probe failed: status=%d player_max=%llu "
