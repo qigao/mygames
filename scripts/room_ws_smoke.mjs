@@ -58,6 +58,8 @@ async function connect() {
     assert.equal(hello.v, 1);
     assert.ok(hello.capabilities.includes('rooms'));
     assert.match(hello.player_id, /^[1-9][0-9]*$/);
+    c.player = hello.player_id;
+    c.ticket = hello.resume_token;
     return c;
 }
 
@@ -125,23 +127,52 @@ try {
     assert.equal((await b.receive(ack('snapshot-2'))).revision, 6);
     assert.equal((await b.receive(snap(6))).revision, 6);
 
-    // A genuine WebSocket CLOSE (rather than room.leave) removes a waiting
-    // player and publishes a higher room revision to the remaining member.
+    // Close retains seat and player identity during a bounded recovery grace.
+    const bClosed = new Promise((resolve) => b.socket.addEventListener('close', resolve, {once: true}));
     b.close();
-    const afterClose = await c.receive(snap(7));
-    assert.equal(afterClose.seats[1], null);
-    assert.equal(afterClose.owner_id, afterClose.seats[2].player_id);
+    await bClosed;
+    const bResumed = await connect();
+    bResumed.socket.send(JSON.stringify({
+        v: 1, type: 'session.resume', resume_token: b.ticket
+    }));
+    const resume = await bResumed.receive((m) => m.type === 'session.ready');
+    assert.equal(resume.player_id, b.player);
+    assert.equal(resume.generation, 2);
+    assert.equal(resume.resumed, true);
+    assert.notEqual(resume.resume_token, b.ticket);
+    assert.equal((await bResumed.receive(snap(6))).owner_id, b.player);
 
-    // Reuse a freed seat, but never reuse the previous connection identity.
+    // Retransmission across a connection generation is idempotent: the
+    // original acknowledgement must be replayed, not a new room revision.
+    bResumed.send('room.ready', 'ready-2', {ready: true});
+    const cached = await bResumed.receive(ack('ready-2'));
+    assert.equal(cached.revision, 5);
+
+    // The old credential was consumed and cannot claim the same identity.
+    const attacker = await connect();
+    attacker.socket.send(JSON.stringify({
+        v: 1, type: 'session.resume', resume_token: b.ticket
+    }));
+    assert.equal((await attacker.receive((m) => m.type === 'session.error')).code,
+                 'resume_rejected');
+
+    // Room has a free seat after A left; a new player must not replace B.
     const e = await connect();
-    e.send('room.join', 'join-after-close', {room_id: id});
-    assert.equal((await e.receive(ack('join-after-close'))).seat, 0);
-    const afterJoin = await c.receive(snap(8));
-    assert.equal(afterJoin.seats.filter(Boolean).length, 2);
-    await e.receive(snap(8));
+    e.send('room.join', 'join-after-resume', {room_id: id});
+    assert.equal((await e.receive(ack('join-after-resume'))).seat, 0);
+    const afterJoin = await c.receive(snap(7));
+    assert.equal(afterJoin.seats.filter(Boolean).length, 3);
+    assert.equal(afterJoin.seats[1].player_id, b.player);
+    await bResumed.receive(snap(7));
+    await e.receive(snap(7));
 
-    e.close();
-    assert.equal((await c.receive(snap(9))).seats[0], null);
+    // While B is still online, its current ticket must not be taken over.
+    attacker.socket.send(JSON.stringify({
+        v: 1, type: 'session.resume', resume_token: resume.resume_token
+    }));
+    assert.equal((await attacker.receive((m) => m.type === 'session.error')).code,
+                 'resume_rejected');
+
     console.log('MyGames CHttp room WebSocket integration: PASS');
 } finally {
     for (const c of clients) c.close();
