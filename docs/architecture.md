@@ -184,6 +184,25 @@ The internal service-only topic is
 a strict safe-field allowlist. Duplicate publication following a crash
 between PUBACK and DB ACK is expected, and requires subscriber deduplication.
 This has been demonstrated against a real local Flowie broker in SDK CI.
-Broker ACL/TLS and authorized consumption are **not implemented here**.
+A **test-only, loopback authenticated Flowie Security Realm** now validates
+service Publisher vs Subscriber vs player Topic grants with real MQTT
+clients. A distinct TurboDB Subscriber Projection store atomically records
+SHA-256 receipts, last sequence and a demonstration applied-event count.
+It has been tested against the real Publisher crash/duplicate and successive
+Subscriber process restarts. **Deployed TLS, persistent Broker authorization
+configuration, and durable Subscriber MQTT acknowledgment after DB commit
+remain unqualified.**
 
 [Flowie Publisher contract](flowie-outbox-v1.md).
+
+## Subscriber deduplication (transactional test projection)
+
+See [Flowie Consumer V1](flowie-consumer-v1.md). The authenticated CI
+Subscriber copies the borrowed MQTT payload and leaves the Flowie worker
+callback before opening its own TurboDB connection on the caller thread.
+A separate namespace+consumer cursor and receipt/effect transaction
+returns REPLAY without duplicating the sample applied count. Exact same
+seq with different bytes rejects CONFLICT, and a sequence gap is not
+silently processed. This qualifies database effects conditional on receipt;
+it is NOT complete durable MQTT subscriber delivery because the current
+Client/driver may settle network QoS1 before the application commits.

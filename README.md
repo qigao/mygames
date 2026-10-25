@@ -149,6 +149,13 @@ Flowie Broker endpoints, PUBACK, broker outage, crashed publisher and replay.
 The Publisher rejects extra private fields, recovery tickets and unknown
 event schemas before reaching MQTT.
 
-See [Flowie Outbox v1](docs/flowie-outbox-v1.md). Real broker authentication,
-ACL checks and subscriber deduplication/offsets are still required before
-opening access to any client or external service.
+See [Flowie Outbox v1](docs/flowie-outbox-v1.md) and
+[Subscriber Projection V1](docs/flowie-consumer-v1.md). Installed-SDK CI now
+runs a real authenticated loopback Broker Realm, verifies service-only Topic
+ACL (including wildcard denial), and persists subscriber receipt + cursor
++ sample effect in a separate TurboDB file. A duplicate MQTT event delivered
+after Publisher/Subscriber restarts is deduplicated without another effect.
+
+**This is not public MQTT deployment or guaranteed durable subscription:**
+deployed TLS, long-lived subscriber sessions/ACK-after-DB-commit and full
+business projection integration remain open in Issue #4.

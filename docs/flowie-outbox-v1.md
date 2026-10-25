@@ -108,16 +108,28 @@ The integration test:
 5. Runs strict negative payload tests that reject private cards, ticket
    fields, unknown event types, incorrect sequence/epoch and extra keys.
 
-The broker used by CI intentionally has no service ACL so it can run without
-external secrets. **Subscription authorization, real service accounts,
-QoS1 negative reasons, multi-publisher leadership and Flowie Server ACL are
-not yet separately qualified.** These remain release blockers.
+The SDK now has TWO separate Broker tests: an intentionally unauthenticated
+loopback fixture for QoS1 crash/restart, and a **real Flowie Security Realm**
+using independent CI-generated Publisher, backend Subscriber, and player
+principals. The secured test validates exact Topic grants, rejects player
+and wrong-role PUBLISH/SUBSCRIBE requests and wildcard filters, and receives
+authorized events. No credentials are stored in the Git repository.
+
+A separate Subscriber Projection module in TurboDB records per-source,
+per-consumer event SHA-256 receipts, sequence cursor and demo projection
+counter in one transaction, and proves restart dedup for an actual MQTT
+redelivery after Publisher crashed before Outbox ACK. See
+[Subscriber Projection V1](flowie-consumer-v1.md).
+
+**Deployment TLS, broker ACL provisioning, negative PUBACK, producer
+leadership, consumer durable MQTT settlement and genuine business projections
+are not qualified.** A broker PUBACK proves broker acceptance only.
 
 ## Product roadmap
 
-Deliver a subscriber-consumer API with explicit principal/room-level
-authorization and durable sequence deduplication, then bind it to room-specific
-projections. Do not let MQTT callbacks mutate authoritative Room/Deal state.
-Add broker ACL/TLS and subscriber authorization verification before any
-non-loopback launch. An operational publisher supervisor and idempotent
-consumer offsets are required for long-running production service.
+Promote the tested Subscriber Projection boundary to a supervised consumer
+with a durably settled MQTT subscription (or verified reconciliation).
+Implement real authorized projections within the receipt+cursor transaction,
+deployed Broker ACL/TLS, and publisher leadership. Do not let Flowie
+callbacks mutate authoritative Room/Deal state or declare no-loss
+subscriber delivery without a proven post-COMMIT acknowledgment boundary.
