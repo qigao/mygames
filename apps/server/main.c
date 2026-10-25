@@ -646,9 +646,33 @@ static void room_event_apply(dev_server_state *state,
     client_peer *peer = find_peer(state, session);
     if (!peer) return;
     if (kind == ROOM_TASK_CLOSE) {
-        if (current_identity(state, peer)) {
-            (void)mygames_sessions_detach(&state->sessions, peer->session_slot,
-                peer->bound_generation, cmeta_monotonic_ms(), MYGAMES_SESSION_GRACE_MS);
+        const mygames_session_record *identity = current_identity(state, peer);
+        if (identity) {
+            bool can_detach = true;
+#if defined(MYGAMES_WITH_TURBODB)
+            if (state->store) {
+                const uint64_t now = cmeta_realtime_ms();
+                const uint64_t deadline = now + MYGAMES_SESSION_GRACE_MS;
+                const mygames_store_status status =
+                    (now != 0u && deadline > now && deadline <= (uint64_t)INT64_MAX) ?
+                    mygames_room_store_detach_session(
+                        state->store, state->room_epoch, identity->player,
+                        identity->generation, deadline) :
+                    MYGAMES_STORE_INVALID;
+                if (status != MYGAMES_STORE_OK) {
+                    fprintf(stderr, "Durable session detach failed: %d\n", (int)status);
+                    state->store_halted = true;
+                    can_detach = false;
+                }
+            }
+#endif
+            if (can_detach) {
+                if (mygames_sessions_detach(&state->sessions, peer->session_slot,
+                    peer->bound_generation, cmeta_monotonic_ms(),
+                    MYGAMES_SESSION_GRACE_MS) != MYGAMES_SESSION_OK) {
+                    state->store_halted = true;
+                }
+            }
         }
         memset(peer, 0, sizeof(*peer));
     } else if (kind == ROOM_TASK_BINARY) {
@@ -799,13 +823,21 @@ static bool prepare_room_store(dev_server_state *state) {
         fprintf(stderr, "TurboDB checkpoint rejected: %d\n", (int)status);
         return false;
     }
-    /* Tickets and principal associations are not persisted. Never silently
-     * reassign an orphaned seat to an unauthenticated new socket identity. */
+    /* Every occupied seat must have a persisted hashed bearer lease.
+     * The plaintext ticket never leaves the client. Missing bindings are
+     * a database integrity failure, NOT permission to reset seats. */
     for (i = 0u; i < MYGAMES_ROOM_DIRECTORY_CAPACITY; ++i) {
-        if (recovered.entries[i].used) {
-            fprintf(stderr, "Durable lobby contains orphaned seats; refusing "
-                            "unauthenticated recovery\n");
-            return false;
+        unsigned int seat;
+        const mygames_room_directory_entry *entry = &recovered.entries[i];
+        if (!entry->used) continue;
+        for (seat = 0u; seat < MYGAMES_ROOM_SEATS; ++seat) {
+            const mygames_player_id player = entry->room.seats[seat].player;
+            if (player != 0u &&
+                mygames_room_store_has_session(state->store, player) !=
+                    MYGAMES_STORE_OK) {
+                fprintf(stderr, "Missing durable session binding for occupied seat\n");
+                return false;
+            }
         }
     }
     status = mygames_room_store_player_high_watermark(state->store, &highest);
@@ -813,7 +845,16 @@ static bool prepare_room_store(dev_server_state *state) {
         fprintf(stderr, "Durable player high-watermark invalid: %d\n", (int)status);
         return false;
     }
-    status = mygames_room_store_claim_epoch(state->store, epoch, &claimed);
+    {
+        const uint64_t now = cmeta_realtime_ms();
+        const uint64_t deadline = now + MYGAMES_SESSION_GRACE_MS;
+        if (now == 0u || deadline <= now || deadline > (uint64_t)INT64_MAX) {
+            fprintf(stderr, "Invalid real-time clock for durable lease recovery\n");
+            return false;
+        }
+        status = mygames_room_store_claim_epoch_for_recovery(
+            state->store, epoch, deadline, &claimed);
+    }
     if (status != MYGAMES_STORE_OK) {
         fprintf(stderr, "Durable owner epoch claim rejected: %d\n", (int)status);
         return false;
