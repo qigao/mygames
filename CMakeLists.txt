@@ -6,7 +6,8 @@ option(MYGAMES_ENABLE_GATEWAY "Build optional CHttp/CNet development gateway" OF
 add_library(mygames_room STATIC games/doudizhu/src/room.c
   games/doudizhu/src/room_directory.c
   games/doudizhu/src/wire.c
-  games/doudizhu/src/session_registry.c)
+  games/doudizhu/src/session_registry.c
+  games/doudizhu/src/room_checkpoint.c)
 add_library(MyGames::Room ALIAS mygames_room)
 target_compile_features(mygames_room PUBLIC c_std_11)
 target_include_directories(mygames_room PUBLIC games/doudizhu/include)
@@ -47,6 +48,9 @@ if(BUILD_TESTING)
   add_executable(mygames_session_test tests/session_registry_test.c)
   target_link_libraries(mygames_session_test PRIVATE MyGames::Room)
   add_test(NAME mygames.sessions COMMAND mygames_session_test)
+  add_executable(mygames_checkpoint_test tests/room_checkpoint_test.c)
+  target_link_libraries(mygames_checkpoint_test PRIVATE MyGames::Room)
+  add_test(NAME mygames.checkpoint COMMAND mygames_checkpoint_test)
   if(MYGAMES_ENABLE_GATEWAY)
     add_executable(mygames_cflow_owner_test tests/cflow_owner_test.c)
     target_link_libraries(mygames_cflow_owner_test PRIVATE MyGames::Room Salts::CFlow)
