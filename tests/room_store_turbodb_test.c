@@ -69,7 +69,7 @@ int main(int argc, char **argv) {
     assert(mygames_room_directory_ready(&rooms, 101u, true)
            == MYGAMES_ROOM_OK);
     check(mygames_room_store_commit(
-        store, &rooms, 1u, 0u, "req-1", digest_a,
+        store, 100u, &rooms, 1u, 0u, "req-1", digest_a,
         response_a, sizeof(response_a) - 1u,
         event_a, sizeof(event_a) - 1u, &seq), MYGAMES_STORE_OK);
     assert(seq == 1u);
@@ -79,24 +79,31 @@ int main(int argc, char **argv) {
     /* Replay leaves facts unchanged but recovers its exact prior commit seq. */
     seq = 555u;
     check(mygames_room_store_commit(
-        store, &rooms, 1u, 0u, "req-1", digest_a,
+        store, 100u, &rooms, 1u, 0u, "req-1", digest_a,
         response_a, sizeof(response_a) - 1u,
         event_a, sizeof(event_a) - 1u, &seq), MYGAMES_STORE_REPLAY);
     assert(seq == 1u);
+    /* The exact stored outcome must win even if a replaying caller could
+     * now compute a different response body from a newer room revision. */
     check(mygames_room_store_commit(
-        store, &rooms, 1u, 1u, "req-1", digest_b,
+        store, 100u, &rooms, 1u, 1u, "req-1", digest_a,
+        response_b, sizeof(response_b) - 1u,
+        event_a, sizeof(event_a) - 1u, &seq), MYGAMES_STORE_REPLAY);
+    assert(seq == 1u);
+    check(mygames_room_store_commit(
+        store, 100u, &rooms, 1u, 1u, "req-1", digest_b,
         response_a, sizeof(response_a) - 1u,
         event_a, sizeof(event_a) - 1u, &seq),
         MYGAMES_STORE_REQUEST_CONFLICT);
     check(mygames_room_store_get_outcome(
-        store, "req-1", digest_b, reply, sizeof(reply), &result_bytes, &seq),
+        store, 100u, "req-1", digest_b, reply, sizeof(reply), &result_bytes, &seq),
         MYGAMES_STORE_REQUEST_CONFLICT);
     check(mygames_room_store_get_outcome(
-        store, "req-1", digest_a, reply, 1u, &result_bytes, &seq),
+        store, 100u, "req-1", digest_a, reply, 1u, &result_bytes, &seq),
         MYGAMES_STORE_CAPACITY);
     assert(result_bytes == sizeof(response_a) - 1u);
     check(mygames_room_store_get_outcome(
-        store, "req-1", digest_a, reply, sizeof(reply), &result_bytes, &seq),
+        store, 100u, "req-1", digest_a, reply, sizeof(reply), &result_bytes, &seq),
         MYGAMES_STORE_OK);
     assert(seq == 1u && result_bytes == sizeof(response_a) - 1u);
     assert(!memcmp(reply, response_a, result_bytes));
@@ -124,14 +131,14 @@ int main(int argc, char **argv) {
      * A reopened store must still expose the previous snapshot and seq. */
     mygames_room_store_fail_after_checkpoint_once(store);
     check(mygames_room_store_commit(
-        store, &rooms, 1u, 1u, "req-2", digest_b,
+        store, 100u, &rooms, 1u, 1u, "req-2", digest_b,
         response_b, sizeof(response_b) - 1u,
         event_b, sizeof(event_b) - 1u, &seq),
         MYGAMES_STORE_BACKEND_ERROR);
     load(store, &loaded, 1u, 1u);
     assert(mygames_room_directory_get_player(&loaded, 101u)->seats[1].ready);
     check(mygames_room_store_get_outcome(
-        store, "req-2", digest_b, reply, sizeof(reply), &result_bytes, &seq),
+        store, 100u, "req-2", digest_b, reply, sizeof(reply), &result_bytes, &seq),
         MYGAMES_STORE_NOT_FOUND);
 
     check(mygames_room_store_claim_epoch(store, 2u, &claimed),
@@ -141,7 +148,7 @@ int main(int argc, char **argv) {
     assert(claimed == 2u);
     load(store, &loaded, 2u, 1u);
     check(mygames_room_store_commit(
-        store, &rooms, 1u, 1u, "req-2", digest_b,
+        store, 100u, &rooms, 1u, 1u, "req-2", digest_b,
         response_b, sizeof(response_b) - 1u,
         event_b, sizeof(event_b) - 1u, &seq),
         MYGAMES_STORE_STALE_EPOCH);
@@ -154,7 +161,7 @@ int main(int argc, char **argv) {
           MYGAMES_STORE_OK);
     load(store, &loaded, 2u, 1u);
     check(mygames_room_store_commit(
-        store, &rooms, 2u, 1u, "req-2", digest_b,
+        store, 100u, &rooms, 2u, 1u, "req-2", digest_b,
         response_b, sizeof(response_b) - 1u,
         event_b, sizeof(event_b) - 1u, &seq),
         MYGAMES_STORE_OK);
@@ -171,7 +178,7 @@ int main(int argc, char **argv) {
     load(store, &loaded, 2u, 2u);
     assert(!mygames_room_directory_get_player(&loaded, 101u)->seats[1].ready);
     check(mygames_room_store_get_outcome(
-        store, "req-2", digest_b, reply, sizeof(reply), &result_bytes, &seq),
+        store, 100u, "req-2", digest_b, reply, sizeof(reply), &result_bytes, &seq),
         MYGAMES_STORE_OK);
     assert(seq == 2u && result_bytes == sizeof(response_b) - 1u);
     check(mygames_room_store_claim_epoch(store, 2u, &claimed),
@@ -185,6 +192,25 @@ int main(int argc, char **argv) {
     check(mygames_room_store_next_event(
         store, 0u, event, sizeof(event), &outbox_bytes, &seq),
         MYGAMES_STORE_NOT_FOUND);
+
+    /* Different players are allowed to reuse their locally generated
+     * request_id, but outcomes must remain isolated by authoritative ID. */
+    check(mygames_room_store_get_outcome(
+        store, 101u, "req-1", digest_a, reply, sizeof(reply),
+        &result_bytes, &seq), MYGAMES_STORE_NOT_FOUND);
+    check(mygames_room_store_commit(
+        store, 101u, &rooms, 3u, 2u, "req-1", digest_a,
+        response_a, sizeof(response_a) - 1u,
+        event_a, sizeof(event_a) - 1u, &seq), MYGAMES_STORE_OK);
+    assert(seq == 3u);
+    check(mygames_room_store_get_outcome(
+        store, 101u, "req-1", digest_a, reply, sizeof(reply),
+        &result_bytes, &seq), MYGAMES_STORE_OK);
+    assert(seq == 3u);
+    check(mygames_room_store_get_outcome(
+        store, 100u, "req-1", digest_a, reply, sizeof(reply),
+        &result_bytes, &seq), MYGAMES_STORE_OK);
+    assert(seq == 1u);
     mygames_room_store_close(store);
 
     /* Remove only the test's explicitly named DB, never native runtime data. */

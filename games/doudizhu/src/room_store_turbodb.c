@@ -231,8 +231,10 @@ static mygames_store_status create_schema(mygames_room_store *s) {
         "seq integer not null check(seq>=0),"
         "image blob not null)",
         "create table if not exists mg_commands ("
-        "request_id text primary key, fingerprint blob not null,"
-        "response blob not null, epoch integer not null, seq integer not null)",
+        "player_id integer not null check(player_id>0),"
+        "request_id text not null, fingerprint blob not null,"
+        "response blob not null, epoch integer not null, seq integer not null,"
+        "primary key(player_id,request_id))",
         "create table if not exists mg_outbox ("
         "seq integer primary key, payload blob not null,"
         "delivered integer not null default 0 check(delivered in (0,1)))"
@@ -435,8 +437,11 @@ typedef struct recorded_outcome {
 
 static mygames_store_status find_outcome(
     mygames_room_store *store, orm_transaction_t *tx,
+    mygames_player_id player_id,
     const char *request_id, recorded_outcome *out) {
-    orm_value_t key = orm_text(request_id);
+    orm_value_t keys[2] = {
+        orm_i64((int64_t)player_id), orm_text(request_id)
+    };
     orm_result_t *result = NULL;
     orm_error_t error;
     orm_blob_t fingerprint = {0}, response = {0};
@@ -444,8 +449,9 @@ static mygames_store_status find_outcome(
     int64_t sequence = 0;
     uint64_t rows = 0u;
     mygames_store_status status = backend_query(store, tx,
-        "select fingerprint,response,seq from mg_commands where request_id=?1",
-        &key, 1u, &result);
+        "select fingerprint,response,seq from mg_commands "
+        "where player_id=?1 and request_id=?2",
+        keys, 2u, &result);
     if (status != MYGAMES_STORE_OK) return status;
     orm_error_init(&error);
     rc = orm_result_row_count(result, &rows, &error);
@@ -485,17 +491,19 @@ done:
 }
 
 mygames_store_status mygames_room_store_get_outcome(
-    mygames_room_store *store, const char *request_id,
+    mygames_room_store *store, mygames_player_id player_id,
+    const char *request_id,
     const uint8_t command_digest[MYGAMES_STORE_COMMAND_DIGEST_BYTES],
     void *result, size_t result_capacity, size_t *out_result_size,
     uint64_t *out_sequence) {
     recorded_outcome existing = {0};
     mygames_store_status status;
-    if (!store || !request_valid(request_id) ||
+    if (!store || !player_id || player_id > (uint64_t)INT64_MAX ||
+        !request_valid(request_id) ||
         !bounded_digest(command_digest) || !out_result_size || !out_sequence ||
         (!result && result_capacity)) return MYGAMES_STORE_INVALID;
     if (!owner_valid(store)) return MYGAMES_STORE_QUARANTINED;
-    status = find_outcome(store, NULL, request_id, &existing);
+    status = find_outcome(store, NULL, player_id, request_id, &existing);
     if (status != MYGAMES_STORE_OK) return status;
     if (!existing.found) return MYGAMES_STORE_NOT_FOUND;
     if (memcmp(existing.fingerprint, command_digest,
@@ -514,7 +522,8 @@ mygames_store_status mygames_room_store_get_outcome(
 }
 
 mygames_store_status mygames_room_store_commit(
-    mygames_room_store *store, const mygames_room_directory *post_command_rooms,
+    mygames_room_store *store, mygames_player_id player_id,
+    const mygames_room_directory *post_command_rooms,
     uint64_t expected_epoch, uint64_t expected_sequence,
     const char *request_id,
     const uint8_t command_digest[MYGAMES_STORE_COMMAND_DIGEST_BYTES],
@@ -531,7 +540,8 @@ mygames_store_status mygames_room_store_commit(
     uint64_t affected = 0u;
     uint64_t next_seq;
     bool exists = false;
-    if (!store || !post_command_rooms || !out_committed_sequence ||
+    if (!store || !player_id || player_id > (uint64_t)INT64_MAX ||
+        !post_command_rooms || !out_committed_sequence ||
         !request_valid(request_id) || !bounded_digest(command_digest) ||
         (!response && response_bytes) || response_bytes > MYGAMES_STORE_RESULT_MAX ||
         (!event_payload && event_bytes) || event_bytes == 0u ||
@@ -552,14 +562,14 @@ mygames_store_status mygames_room_store_commit(
     if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
     if (head.epoch != expected_epoch)
         return rollback(store, tx, MYGAMES_STORE_STALE_EPOCH);
-    status = find_outcome(store, tx, request_id, &prior);
+    status = find_outcome(store, tx, player_id, request_id, &prior);
     if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
     if (prior.found) {
         const bool same_digest = memcmp(prior.fingerprint, command_digest,
                                       MYGAMES_STORE_COMMAND_DIGEST_BYTES) == 0;
-        const bool same_response = prior.response_size == response_bytes &&
-            (response_bytes == 0u || memcmp(prior.response, response, response_bytes) == 0);
-        status = same_digest && same_response ?
+        /* Never recompute the old response as part of retry admission.
+         * Its immutable bytes belong to the existing transaction record. */
+        status = same_digest ?
                  MYGAMES_STORE_REPLAY : MYGAMES_STORE_REQUEST_CONFLICT;
         status = rollback(store, tx, status);
         if (status == MYGAMES_STORE_REPLAY)
@@ -588,15 +598,16 @@ mygames_store_status mygames_room_store_commit(
     }
 #endif
 
-    args[0] = orm_text(request_id);
-    args[1] = orm_blob(command_digest, MYGAMES_STORE_COMMAND_DIGEST_BYTES);
-    args[2] = orm_blob(response, response_bytes);
-    args[3] = orm_i64((int64_t)expected_epoch);
-    args[4] = orm_i64((int64_t)next_seq);
+    args[0] = orm_i64((int64_t)player_id);
+    args[1] = orm_text(request_id);
+    args[2] = orm_blob(command_digest, MYGAMES_STORE_COMMAND_DIGEST_BYTES);
+    args[3] = orm_blob(response, response_bytes);
+    args[4] = orm_i64((int64_t)expected_epoch);
+    args[5] = orm_i64((int64_t)next_seq);
     status = execute(store, tx,
-        "insert into mg_commands(request_id,fingerprint,response,epoch,seq) "
-        "values(?1,?2,?3,?4,?5)",
-        args, 5u, &affected);
+        "insert into mg_commands(player_id,request_id,fingerprint,response,epoch,seq) "
+        "values(?1,?2,?3,?4,?5,?6)",
+        args, 6u, &affected);
     if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
     if (affected != 1u) return rollback(store, tx, MYGAMES_STORE_CORRUPT);
 

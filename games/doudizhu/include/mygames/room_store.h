@@ -70,11 +70,13 @@ mygames_store_status mygames_room_store_claim_epoch(
  * The caller must supply a *post-command*, already-validated room state,
  * normalized request digest, exact result and sanitized public event. Nothing
  * mutates the live RoomDirectory here. No MQTT publish occurs here.
- * A duplicate identical request returns REPLAY + prior durable seq without
- * changing facts; a reused ID with another digest/response returns CONFLICT.
+ * A duplicate normalized command (SHA-256 digest match) returns REPLAY + prior
+ * durable seq without changing facts; recover the ORIGINAL reply using
+ * mygames_room_store_get_outcome(). A conflicting digest returns CONFLICT.
+ * Command IDs are unique per player, not across unrelated player sessions.
  */
 mygames_store_status mygames_room_store_commit(
-    mygames_room_store *store,
+    mygames_room_store *store, mygames_player_id player_id,
     const mygames_room_directory *post_command_rooms,
     uint64_t expected_epoch, uint64_t expected_sequence,
     const char *request_id,
@@ -85,7 +87,8 @@ mygames_store_status mygames_room_store_commit(
 
 /* Read one previously committed outcome without executing game logic. */
 mygames_store_status mygames_room_store_get_outcome(
-    mygames_room_store *store, const char *request_id,
+    mygames_room_store *store, mygames_player_id player_id,
+    const char *request_id,
     const uint8_t command_digest[MYGAMES_STORE_COMMAND_DIGEST_BYTES],
     void *result, size_t result_capacity, size_t *out_result_size,
     uint64_t *out_sequence);
