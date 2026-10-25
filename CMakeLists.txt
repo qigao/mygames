@@ -170,7 +170,7 @@ if(MYGAMES_ENABLE_FLOWIE)
     add_test(NAME mygames.outbox_contract COMMAND mygames_outbox_contract_test)
     add_executable(mygames_flowie_acl_client_test tests/flowie_acl_client.c)
     target_link_libraries(mygames_flowie_acl_client_test PRIVATE
-      Flowie::Client Salts::Core)
+      Flowie::Client MyGames::ConsumerProjection MyGames::Outbox Salts::Core Orm::C)
     target_compile_features(mygames_flowie_acl_client_test PRIVATE c_std_11)
     add_executable(mygames_flowie_broker_test tests/flowie_local_broker.c)
     target_link_libraries(mygames_flowie_broker_test PRIVATE
