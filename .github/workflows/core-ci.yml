@@ -65,7 +65,7 @@ jobs:
             -DMYGAMES_ENABLE_TURBODB=ON -DMYGAMES_ENABLE_FLOWIE=ON \
             -DCMAKE_PREFIX_PATH="$SDK_PREFIX_PATH"
       - name: Build CHttp gateway and CFlow Owner conformance
-        run: cmake --build build/gateway --target mygames_server mygames_cflow_owner_test mygames_turbodb_store_test mygames_room_gateway_probe mygames_idle_expiry_probe mygames_outbox_publisher mygames_flowie_broker_test mygames_outbox_seed_test mygames_outbox_audit_test mygames_outbox_contract_test mygames_flowie_acl_client_test --parallel 2
+        run: cmake --build build/gateway --target mygames_server mygames_cflow_owner_test mygames_turbodb_store_test mygames_room_gateway_probe mygames_idle_expiry_probe mygames_outbox_publisher mygames_flowie_broker_test mygames_outbox_seed_test mygames_outbox_audit_test mygames_outbox_contract_test mygames_flowie_acl_client_test mygames_consumer_projection_test --parallel 2
       - name: Verify worker isolation, bounded queue and shutdown drain
         run: ctest --test-dir build/gateway -C Release --output-on-failure -R 'mygames[.]cflow_owner'
       - name: Validate transactional TurboDB room persistence and outbox
@@ -80,6 +80,8 @@ jobs:
             build/gateway/mygames_outbox_seed_test \
             build/gateway/mygames_outbox_audit_test \
             "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so"
+      - name: Durable subscriber receipt, projection and rollback qualification
+        run: ctest --test-dir build/gateway -C Release --output-on-failure -R 'mygames[.]consumer_projection'
       - name: Authenticated Flowie broker service ACL and subscriber fanout
         run: |
           python3 scripts/ci/ci_flowie_acl_smoke.py \

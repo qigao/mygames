@@ -37,6 +37,32 @@ if(MYGAMES_ENABLE_TURBODB)
   add_library(mygames_room_store STATIC
     games/doudizhu/src/room_store_turbodb.c)
   add_library(MyGames::Store ALIAS mygames_room_store)
+  add_library(mygames_consumer_projection STATIC
+    games/doudizhu/src/consumer_projection_turbodb.c)
+  add_library(MyGames::ConsumerProjection ALIAS mygames_consumer_projection)
+  target_compile_features(mygames_consumer_projection PUBLIC c_std_11)
+  target_include_directories(mygames_consumer_projection PUBLIC
+    games/doudizhu/include)
+  target_link_libraries(mygames_consumer_projection PRIVATE Orm::C)
+  if(MSVC)
+    target_compile_options(mygames_consumer_projection PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_consumer_projection PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  if(BUILD_TESTING)
+    target_compile_definitions(mygames_consumer_projection PRIVATE
+      MYGAMES_CONSUMER_FAULT_TESTING=1)
+    add_executable(mygames_consumer_projection_test tests/consumer_projection_test.c)
+    target_compile_definitions(mygames_consumer_projection_test PRIVATE
+      MYGAMES_CONSUMER_FAULT_TESTING=1)
+    target_link_libraries(mygames_consumer_projection_test PRIVATE
+      MyGames::ConsumerProjection Orm::C)
+    add_test(NAME mygames.consumer_projection
+      COMMAND mygames_consumer_projection_test
+        "${TurboDB_DRIVER_DIR}/turbodb_driver_sqlite${CMAKE_SHARED_MODULE_SUFFIX}"
+        "${CMAKE_CURRENT_BINARY_DIR}/mygames-consumer-ci.sqlite")
+  endif()
+
   if(MYGAMES_ENABLE_GATEWAY)
     target_compile_definitions(mygames_server PRIVATE
       MYGAMES_WITH_TURBODB=1)
