@@ -684,6 +684,108 @@ mygames_store_status mygames_room_store_resume_session(
     return status;
 }
 
+mygames_store_status mygames_room_store_discard_unsent_session(
+    mygames_room_store *store, uint64_t epoch,
+    mygames_player_id player, uint64_t generation) {
+    orm_transaction_t *tx = NULL;
+    orm_value_t args[2];
+    uint64_t changed = 0u;
+    mygames_store_status status;
+    if (!store || !epoch || epoch > (uint64_t)INT64_MAX ||
+        !player || player > (uint64_t)INT64_MAX ||
+        !generation || generation > (uint64_t)INT64_MAX)
+        return MYGAMES_STORE_INVALID;
+    if (!owner_valid(store)) return MYGAMES_STORE_QUARANTINED;
+    status = begin_transaction(store, &tx);
+    if (status != MYGAMES_STORE_OK) return status;
+    status = transaction_require_epoch(store, tx, epoch);
+    if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
+    args[0] = orm_i64((int64_t)player);
+    args[1] = orm_i64((int64_t)generation);
+    status = execute(store, tx,
+        "delete from mg_session_leases where player_id=?1 "
+        "and generation=?2 and attached=1",
+        args, 2u, &changed);
+    if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
+    if (changed != 1u) return rollback(store, tx, MYGAMES_STORE_NOT_FOUND);
+    return commit_transaction(store, tx);
+}
+
+mygames_store_status mygames_room_store_next_expired_session(
+    mygames_room_store *store, uint64_t now_realtime_ms,
+    mygames_player_id after_player,
+    mygames_player_id *out_player, uint64_t *out_generation) {
+    orm_value_t args[2];
+    orm_result_t *result = NULL;
+    orm_error_t error;
+    orm_status_t rc;
+    mygames_store_status status;
+    uint64_t count = 0u;
+    int64_t player = 0, generation = 0;
+    if (!store || !out_player || !out_generation ||
+        now_realtime_ms == 0u || now_realtime_ms > (uint64_t)INT64_MAX ||
+        after_player > (uint64_t)INT64_MAX)
+        return MYGAMES_STORE_INVALID;
+    if (!owner_valid(store)) return MYGAMES_STORE_QUARANTINED;
+    args[0] = orm_i64((int64_t)now_realtime_ms);
+    args[1] = orm_i64((int64_t)after_player);
+    status = backend_query(store, NULL,
+        "select player_id,generation from mg_session_leases "
+        "where attached=0 and expires_at_ms<=?1 and player_id>?2 "
+        "order by player_id asc limit 1",
+        args, 2u, &result);
+    if (status != MYGAMES_STORE_OK) return status;
+    orm_error_init(&error);
+    rc = orm_result_row_count(result, &count, &error);
+    if (rc == ORM_STATUS_OK && count == 1u) {
+        rc = orm_result_get_int64(result, 0u, 0u, &player, &error);
+        if (rc == ORM_STATUS_OK)
+            rc = orm_result_get_int64(result, 0u, 1u, &generation, &error);
+    }
+    if (rc != ORM_STATUS_OK) status = error_from_orm(store, rc, &error);
+    else if (count == 0u) status = MYGAMES_STORE_NOT_FOUND;
+    else if (count != 1u || player <= 0 ||
+             generation <= 0 || (uint64_t)player <= after_player)
+        status = MYGAMES_STORE_CORRUPT;
+    else {
+        *out_player = (mygames_player_id)player;
+        *out_generation = (uint64_t)generation;
+    }
+    orm_result_destroy(result);
+    return status;
+}
+
+mygames_store_status mygames_room_store_delete_expired_unseated(
+    mygames_room_store *store, uint64_t epoch,
+    mygames_player_id player, uint64_t generation,
+    uint64_t now_realtime_ms) {
+    orm_transaction_t *tx = NULL;
+    orm_value_t args[3];
+    uint64_t affected = 0u;
+    mygames_store_status status;
+    if (!store || !epoch || epoch > (uint64_t)INT64_MAX ||
+        !player || player > (uint64_t)INT64_MAX ||
+        !generation || generation > (uint64_t)INT64_MAX ||
+        !now_realtime_ms || now_realtime_ms > (uint64_t)INT64_MAX)
+        return MYGAMES_STORE_INVALID;
+    if (!owner_valid(store)) return MYGAMES_STORE_QUARANTINED;
+    status = begin_transaction(store, &tx);
+    if (status != MYGAMES_STORE_OK) return status;
+    status = transaction_require_epoch(store, tx, epoch);
+    if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
+    args[0] = orm_i64((int64_t)player);
+    args[1] = orm_i64((int64_t)generation);
+    args[2] = orm_i64((int64_t)now_realtime_ms);
+    status = execute(store, tx,
+        "delete from mg_session_leases where player_id=?1 "
+        "and generation=?2 and attached=0 and expires_at_ms<=?3",
+        args, 3u, &affected);
+    if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
+    if (affected != 1u)
+        return rollback(store, tx, MYGAMES_STORE_NOT_FOUND);
+    return commit_transaction(store, tx);
+}
+
 mygames_store_status mygames_room_store_player_high_watermark(
     mygames_room_store *store, mygames_player_id *out_player) {
     orm_result_t *result = NULL;
