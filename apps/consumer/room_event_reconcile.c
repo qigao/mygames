@@ -4,6 +4,7 @@
  * events) using TurboDB, then apply missing events to an independent
  * ConsumerProjection with receipt+effect+cursor in one transaction.
  *
+ * Source access uses a verified SQLITE_OPEN_READONLY ORM connection.
  * This tool assumes a TRUSTED source database path. It is not a public
  * backfill HTTP endpoint, broker Subscriber or identity authorization layer;
  * deployed consumers must instead use an authenticated read-only service.
@@ -54,7 +55,10 @@ static int reconcile_main(int argc, char **argv) {
         budget = (unsigned int)n;
     }
     verify_all = strcmp(argv[6], "--verify-all") == 0;
-    st = mygames_room_store_open(argv[1], argv[2], &source);
+    /* The source archive is never opened through a writer-capable handle.
+     * This does not grant remote consumer authorization; CLI remains local
+     * administrator/CI-only. */
+    st = mygames_room_store_open_readonly(argv[1], argv[2], &source);
     if (st != MYGAMES_STORE_OK || !source) {
         fprintf(stderr, "Reconcile: cannot read exact source archive (%d)\n", st);
         goto done;
