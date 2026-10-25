@@ -1,4 +1,6 @@
 #include "mygames/room_store.h"
+#include <orm.h>
+#include <orm_runtime.h>
 
 #ifdef NDEBUG
 #undef NDEBUG
@@ -22,6 +24,52 @@ static void load(mygames_room_store *store, mygames_room_directory *out,
     uint64_t epoch = UINT64_C(999), seq = UINT64_C(999);
     check(mygames_room_store_load(store, out, &epoch, &seq), MYGAMES_STORE_OK);
     assert(epoch == wanted_epoch && seq == wanted_seq);
+}
+
+/* Test-only corruption through the SAME TurboDB Driver API, not raw file IO.
+ * Deleting one journal row simulates a torn/misrecovered application history.
+ * A matching checkpoint checksum must not mask the missing command record. */
+static void corrupt_journal_with_turbodb(const char *plugin, const char *file) {
+    orm_runtime_config_t conf;
+    orm_driver_load_config_t load = {0};
+    orm_runtime_t *runtime = NULL;
+    orm_connection_t *connection = NULL;
+    orm_config_t connection_config;
+    orm_option_t option;
+    orm_query_t *query = NULL;
+    orm_result_t *result = NULL;
+    orm_error_t error;
+    uint64_t deleted = 0u;
+    orm_runtime_config_init(&conf);
+    orm_error_init(&error);
+    assert(orm_runtime_create(&conf, &runtime, &error) == ORM_STATUS_OK);
+    load.struct_size = sizeof(load);
+    load.abi_version = ORM_RUNTIME_ABI_VERSION;
+    load.module_path = orm_view(plugin);
+    load.expected_driver_id = orm_view("sqlite");
+    assert(orm_runtime_load_driver(runtime, &load, &error) == ORM_STATUS_OK);
+    orm_config(&connection_config);
+    option.keyword = orm_view("filename");
+    option.value = orm_view(file);
+    connection_config.driver = orm_view("sqlite");
+    connection_config.options = &option;
+    connection_config.option_count = 1u;
+    assert(orm_runtime_connect(runtime, &connection_config,
+                               &connection, &error) == ORM_STATUS_OK);
+    assert(orm_raw(connection,
+        orm_view("delete from mg_commands where player_id=?1 and request_id=?2"),
+        &query, &error) == ORM_STATUS_OK);
+    assert(orm_query_bind(query, orm_i64(101), &error) == ORM_STATUS_OK);
+    assert(orm_query_bind(query, orm_text("req-1"), &error) == ORM_STATUS_OK);
+    assert(orm_query_execute(query, &result, &error) == ORM_STATUS_OK);
+    assert(orm_result_affected_rows(result, &deleted, &error) == ORM_STATUS_OK);
+    assert(deleted == 1u);
+    orm_result_destroy(result);
+    orm_query_destroy(query);
+    assert(orm_connection_close(connection, &error) == ORM_STATUS_OK);
+    orm_connection_release(connection);
+    assert(orm_runtime_close(runtime, &error) == ORM_STATUS_OK);
+    orm_runtime_release(runtime);
 }
 
 int main(int argc, char **argv) {
@@ -229,6 +277,14 @@ int main(int argc, char **argv) {
         &result_bytes, &seq), MYGAMES_STORE_OK);
     assert(seq == 1u);
     mygames_room_store_close(store);
+    store = NULL;
+
+    corrupt_journal_with_turbodb(argv[1], argv[2]);
+    /* State checkpoint is still byte-valid, but command/outbox sequence is
+     * no longer consistent: fail closed without destroying persisted data. */
+    check(mygames_room_store_open(argv[1], argv[2], &store),
+          MYGAMES_STORE_CORRUPT);
+    assert(store == NULL);
 
     /* Remove only the test's explicitly named DB, never native runtime data. */
     (void)remove(argv[2]);

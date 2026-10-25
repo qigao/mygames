@@ -54,7 +54,7 @@ if(MYGAMES_ENABLE_TURBODB)
     target_compile_definitions(mygames_turbodb_store_test PRIVATE
       MYGAMES_STORE_FAULT_TESTING=1)
     target_link_libraries(mygames_turbodb_store_test PRIVATE
-      MyGames::Store)
+      MyGames::Store Orm::C)
     add_test(NAME mygames.turbodb_store
       COMMAND mygames_turbodb_store_test
         "${TurboDB_DRIVER_DIR}/turbodb_driver_sqlite${CMAKE_SHARED_MODULE_SUFFIX}"
