@@ -53,3 +53,16 @@ License: AGPL-3.0, see LICENSE.
 
 **Recovery is not user authentication.** It is limited to graceful WebSocket Close and
 one process lifetime. See [session protocol](docs/protocol.md) and [remaining ownership gates](docs/architecture.md).
+
+
+## Room Owner threading
+
+The real development gateway delegates all room/session mutations to a single
+bounded **Salts::CFlow SerialExecutor worker**, separate from its CHttp/CNet
+transport owner. Incoming WS messages are copied into owned CFlow tasks;
+generation-fenced async CHttp commands return ACK/snapshots to subscribers.
+Queue rejection is explicit and does not mutate game state. Installed SDK CI
+now verifies CFlow worker isolation, capacity and cancellation/finalize
+contracts. See [architecture](docs/architecture.md).
+
+This is not yet multi-node durable CFlow sharding or authenticated gameplay.

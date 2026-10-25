@@ -1,72 +1,97 @@
-# MyGames architecture and verification
+# MyGames Architecture and Qualification
 
-## Implemented development boundary (PR #1)
+## Implemented M1b2: CFlow Room Owner separation (development-only)
 
-- **Authoritative C11 RoomDirectory**: bounded 32-room directory, 3 seats each,
-  revisions, room owner/ready/leave invariants.
-- **C11 Session Registry**: 64 slots; 256-bit caller-provided CSPRNG bytes;
-  30s detached lease, resume-token rotation, active/expired rejection and
-  per-session generation fencing. A stale transport never regains room authority.
-- **CHttp/CNet gateway**: loopback-only HTTP health, WebSocket room commands,
-  member-scoped snapshot send and stable recovery binding; one configured
-  connection Owner serializes every game-state mutation.
-- **Cocos Creator 3.8.8**: a tracked Lobby scene, runtime UI, TypeScript
-  GameSocket with in-memory recovery capability, RoomStore epoch/revision
-  protections.
-- **Tests**: three OS C11 core CI, Node wire+scene+GameSocket fake-browser
-  tests, pinned CHttp installed SDK build and live four-client WS room/recovery
-  tests.
+The authoritative C11 `RoomDirectory` and in-memory `SessionRegistry` now
+run **exclusively on one independent CFlow SerialExecutor worker**.
+CHttp and CNet have separate network owner threads; they do not mutate rooms.
 
-**Do not expose the development gateway publicly**: it has no external login
-authority or TLS, and the recovery ticket is a bearer secret.
+    Cocos Creator 3.8 + TypeScript
+                  |
+    CHttp / CNet WebSocket connection owner
+      - capture generation-fenced session value
+      - copy bounded incoming frame (max 1024 bytes)
+      - nonblocking CFlow task descriptor admission
+                  |
+    CFlow SerialExecutor (1 worker, capacity 128)
+      - ordered OPEN / MESSAGE / CLOSE
+      - authenticate provisional recovery capability (development only)
+      - RoomDirectory: create / join / ready / leave / snapshot
+      - SessionRegistry: detach / resume / ticket rotation
+      - serialized room mutation + per-session request cache
+                  |
+    CHttp generation-fenced async send commands
+      - queue copies of room.ack and member-only room.snapshot
+      - return on queue pressure; admission does not imply delivery
 
-## Runtime ownership now
+CFlow accepts copied descriptors. Every accepted task executes exactly one
+`run` or `cancel` callback, then `finalize` releases its owned allocation.
+Rejected admissions release owned memory synchronously. No borrowed CHttp
+packet buffer or live socket pointer is kept by the Room Owner.
 
-    CHttp connection Owner (count=1)
-      |
-      +-- borrowed socket callback views
-      +-- SessionRegistry (ephemeral identities, rotating tickets)
-      +-- RoomDirectory (single mutable room authority)
-      +-- member-scoped WebSocket snapshot commands
+The network callbacks reject a full task queue without blocking on model or
+room work. The main shutdown path seals admission, stops the CHttp server,
+drains accepted CFlow tasks, then destroys the executor and server, in that
+order. It does not free state while accepted work is still outstanding.
 
-No thread-affine object is shared with another mutating owner. Callback
-packet buffers are not retained. CHttp's captured WebSocket session command
-handle is generation-checked; direct response admission may fail under
-backpressure and is not a gameplay rollback.
+### Owner conformance
 
-## Target production architecture
+The installed-SDK Linux CI tests an actual independent CFlow serial worker.
+It proves:
+- Worker callbacks begin without the caller driving any `run_one` method.
+- At most one room mutation is executing at a time.
+- Exact FULL admission under a blocked worker (no implicit waiting).
+- Accepted tasks run exactly once; `finalize` happens exactly once.
+- `DRAIN` and `CANCEL_PENDING` shutdown settle all admitted task descriptors.
+- Submissions after shutdown reject with CLOSED.
 
-    Cocos browser/app
-       -> authenticated CHttp/CNet WebSocket Gateway
-       -> bounded CFlow Room Owner mailbox (per-room serialization)
-       -> Room/Game aggregate + durable snapshot/journal
-       -> transactional Outbox -> Flowie MQTT Pub/Sub
-       -> spectator, replay and metrics consumers
+The CFlow unit test explicitly enables assertions even in Release mode.
+The real CHttp SDK four-client network test also runs against this layout,
+including reconnection, secret rotation and cross-socket duplicate requests.
 
-    DouZero/KFCore inference workers
-       -> immutable observed InfoSet -> best action
-       -> Room Owner validates current round/turn/owner generation
+## What is not yet production-ready
 
-Flowie owns MQTT protocol sessions and QoS settlement, not the game's Room
-facts. A MQTT PUBACK never equals a committed Game ACK. KFCore's model
-execution is off the network owner thread.
+- **No real user authentication or authorization authority.** Loopback-only
+  bearer recovery tickets are not an identity provider. Do not expose the
+  dev gateway to the Internet.
+- **No durable room or session fact source.** The RoomDirectory, recovery
+  tokens and recent command results are lost on process restart. A typed,
+  versioned checkpoint/journal through an explicit TurboDB adapter is still
+  needed. Do not introduce ad-hoc native files.
+- The current single CFlow serial worker owns *all* rooms. Future sharding
+  must pin exactly one owner per `room_id`, fence `room_epoch`, and migrate
+  ownership only at an explicit quiescent boundary.
+- A graceful WebSocket CLOSE is handled; abrupt socket failure without a CLOSE
+  callback still needs a transport-terminal notification contract.
+- CLOSE admission can be rejected under a saturated CFlow queue. Reserved
+  close capacity and terminal reconciliation are separate fail-closed gates.
+- Expired session leases are collected on subsequent OPEN work only, not by a
+  continuously progressing timer. A quiet server can retain expired seats.
+- The TypeScript Lobby.scene has passed serialization-structure and syntax
+  tests; Creator Editor import and real Web preview remain unqualified (#2).
+- No dealing, bidding, out-card legality, scoring, replay, Flowie MQTT outbox,
+  KFCore inference, or multiplayer production login is implemented.
 
-## Qualification and remaining gates
+## Intended production flow
 
-| Milestone | Current qualification |
-|---|---|
-| M0 C11 bounded Room Core | Linux / Windows / macOS CTest passed |
-| M1a CHttp rooms + Cocos structural scene | real CHttp WS rooms + static scene checks passed |
-| M1a Cocos Editor/Web preview | **open Issue #2; not yet qualified** |
-| M1b1 in-process reconnect | rotating CSPRNG tickets, close/resume/replay tested |
-| M1b2 login and continuous terminal supervision | **not implemented** |
-| M1b3 independent CFlow owner + durable snapshots | **not implemented** |
-| M2 Dou Dizhu game rule/deal/bid/play | **not implemented** |
-| M3 Flowie committed-event fanout | **not implemented** |
-| M4 KFCore/DouZero baseline parity | **not implemented** |
+    authenticated CHttp/CNet ingress
+       -> CFlow per-room owner-affine mailbox
+       -> validate user, round/turn and owner epoch
+       -> atomic room/game commit + command outcome + outbox
+       -> Game ACK and authorized private player snapshots
+       -> Flowie MQTT publish of committed sanitized events
 
-Important limitations: the session registry only performs lazy expiry on
-ingress and does not store data across process restarts. A crashed TCP
-connection that never delivers a WebSocket CLOSE callback can remain marked
-attached until a future terminal/timeout solution is implemented. Cross-node
-room_epoch/fencing and state restoration are separately required.
+A MQTT PUBACK never substitutes for the game action commit. A model decision
+from KFCore/DouZero is a proposed action, not an authoritative mutation, and
+must be validated by the current Room Owner.
+
+## Evidence
+
+- PR #1: M0 and M1a tests on Linux/Windows/macOS, Cocos wire/scene tests.
+- Added CFlow Owner tests: independent worker, queue backpressure and both
+  executor shutdown policies in the installed-SDK Linux job.
+- Issue #2: Cocos Editor / Web build gate.
+- Issue #3: remaining authentication, durable state, terminal/expiry handling,
+  multi-owner sharding and reconciliation.
+
+The PR remains Draft until its safety and product qualifications are explicit.
