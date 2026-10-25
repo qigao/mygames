@@ -80,8 +80,9 @@ mygames_store_status mygames_room_store_claim_epoch(
 #define MYGAMES_STORE_TICKET_HASH_BYTES 32u
 
 mygames_store_status mygames_room_store_issue_session(
-    mygames_room_store *store, uint64_t epoch, mygames_player_id player,
-    const uint8_t token_hash[MYGAMES_STORE_TICKET_HASH_BYTES]);
+    mygames_room_store *store, uint64_t epoch,
+    const uint8_t token_hash[MYGAMES_STORE_TICKET_HASH_BYTES],
+    mygames_player_id *out_allocated_player);
 
 mygames_store_status mygames_room_store_detach_session(
     mygames_room_store *store, uint64_t epoch, mygames_player_id player,
