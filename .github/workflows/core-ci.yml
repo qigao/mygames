@@ -65,13 +65,18 @@ jobs:
             -DMYGAMES_ENABLE_TURBODB=ON \
             -DCMAKE_PREFIX_PATH="$SDK_PREFIX_PATH"
       - name: Build CHttp gateway and CFlow Owner conformance
-        run: cmake --build build/gateway --target mygames_server mygames_cflow_owner_test mygames_turbodb_store_test mygames_room_gateway_probe --parallel 2
+        run: cmake --build build/gateway --target mygames_server mygames_cflow_owner_test mygames_turbodb_store_test mygames_room_gateway_probe mygames_idle_expiry_probe --parallel 2
       - name: Verify worker isolation, bounded queue and shutdown drain
         run: ctest --test-dir build/gateway -C Release --output-on-failure -R 'mygames[.]cflow_owner'
       - name: Validate transactional TurboDB room persistence and outbox
         run: ctest --test-dir build/gateway -C Release --output-on-failure -R 'mygames[.]turbodb_store'
       - name: HTTP/WS real four-client test
         run: python3 scripts/ci/ci_gateway_smoke.py build/gateway/mygames_server
+      - name: Autonomous no-ingress expiry, transaction journal and Outbox
+        run: |
+          python3 scripts/ci/ci_idle_expiry_smoke.py \
+            build/gateway/mygames_server \
+            "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so"
       - name: Real persisted Room Owner WebSocket and fail-closed restart
         run: |
           python3 scripts/ci/ci_persistent_gateway_smoke.py \

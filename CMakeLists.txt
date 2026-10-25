@@ -67,6 +67,11 @@ if(MYGAMES_ENABLE_TURBODB)
       target_link_libraries(mygames_room_gateway_probe PRIVATE
         MyGames::Store Salts::Core)
     endif()
+    if(MYGAMES_ENABLE_GATEWAY)
+      add_executable(mygames_idle_expiry_probe
+        tests/room_idle_expiry_probe.c)
+      target_link_libraries(mygames_idle_expiry_probe PRIVATE MyGames::Store)
+    endif()
     add_executable(mygames_turbodb_store_test
       tests/room_store_turbodb_test.c)
     target_compile_definitions(mygames_turbodb_store_test PRIVATE
