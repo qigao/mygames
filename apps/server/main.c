@@ -8,6 +8,7 @@
 #include "mygames/session_registry.h"
 #include <salts/random.h>
 #include <salts/clock.h>
+#include <salts/thread.h>
 #include <cflow/executor.h>
 #if defined(MYGAMES_WITH_TURBODB)
 #include "mygames/room_store.h"
@@ -28,6 +29,8 @@
 #define MYGAMES_SESSION_GRACE_MS UINT64_C(30000)
 #define MYGAMES_OWNER_QUEUE_CAPACITY 128u
 #define MYGAMES_WS_MAX_INPUT_BYTES 1024u
+#define MYGAMES_TERMINAL_CAPACITY (MYGAMES_OWNER_QUEUE_CAPACITY + MYGAMES_PEER_CAPACITY)
+#define MYGAMES_TIMER_INTERVAL_MS 125u
 
 typedef struct response_cache {
     bool used;
@@ -44,10 +47,25 @@ typedef struct client_peer {
     chttp_server_websocket_session session;
 } client_peer;
 
+/* Bounded terminal records are independent of the ordinary CFlow queue.
+ * CHttp invokes CLOSE on its connection owner and never blocks on CFlow. */
+typedef struct terminal_record {
+    bool used;
+    uint64_t recorded_ms;
+    chttp_server_websocket_session session;
+} terminal_record;
+
 typedef struct dev_server_state {
     cflow_executor room_executor;
     cflow_executor_control room_control;
     atomic_bool accepting;
+    atomic_bool timer_stop;
+    atomic_bool tick_queued;
+    cmeta_thread_t timer_thread;
+    bool timer_started;
+    cmeta_mutex_t terminal_lock;
+    terminal_record pending_terminal[MYGAMES_TERMINAL_CAPACITY];
+    uint64_t last_sweep_ms; /* read/written only by CFlow worker */
     uint64_t room_epoch;
     uint64_t durable_sequence;
     bool store_halted;
@@ -60,7 +78,10 @@ typedef struct dev_server_state {
     response_cache cache[MYGAMES_SESSION_CAPACITY][MYGAMES_DEDUP_WINDOW];
     unsigned int cache_next[MYGAMES_SESSION_CAPACITY];
 } dev_server_state;
-typedef enum room_task_kind { ROOM_TASK_OPEN, ROOM_TASK_MESSAGE, ROOM_TASK_CLOSE, ROOM_TASK_BINARY } room_task_kind;
+typedef enum room_task_kind {
+    ROOM_TASK_OPEN, ROOM_TASK_MESSAGE, ROOM_TASK_CLOSE,
+    ROOM_TASK_BINARY, ROOM_TASK_TICK
+} room_task_kind;
 typedef struct room_task {
     dev_server_state *state;
     chttp_server_websocket_session session;
