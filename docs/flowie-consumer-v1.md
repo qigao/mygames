@@ -138,3 +138,23 @@ C11/CHttp/Cocos regressions.
 Tracking: [MyGames Issue #4](https://github.com/qigao/mygames/issues/4).
 
 Upstream deferred incoming settlement is tracked by [Flowie #22](https://github.com/qigao/flowie/issues/22); the current downstream CI does **not** close it.
+
+## Privileged archive catch-up (local CI qualification)
+
+The source's TurboDB Outbox retains committed event bytes after Broker
+PUBACK. A bounded test-only `mygames_event_reconcile_test` uses the
+**trusted** source sequence to fill a ConsumerProjection gap independently
+of MQTT delivery. It never updates RoomDirectory or silently advances past
+an unavailable/invalid event. An explicit `--verify-all` pass detects
+changed historical payloads by comparing durable SHA-256 receipts.
+
+[Reconciliation v1](flowie-reconciliation-v1.md) documents the simulated
+Flowie auto-PUBACK-before-DB-commit crash window, successful recovery of the
+uncommitted third event and two corruption/forgery denial cases.
+
+**The source archive is currently accessed using privileged local DB
+credentials**. This is not a production read-only, principal-authorized
+backfill endpoint; it does not close upstream Flowie #22 or guarantee
+network-to-DB exactly-once/no-loss for subscribers without trusted source
+access. Production still needs authenticated recovery, retention, offsets,
+live-Subscriber coordination and an actual business projection.

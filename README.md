@@ -159,3 +159,18 @@ after Publisher/Subscriber restarts is deduplicated without another effect.
 **This is not public MQTT deployment or guaranteed durable subscription:**
 deployed TLS, long-lived subscriber sessions/ACK-after-DB-commit and full
 business projection integration remain open in Issue #4.
+
+## Subscriber gap reconciliation (privileged local test)
+
+A bounded local `mygames_event_reconcile_test` can read committed source
+Outbox history **even after delivered=1**, validating exact schema and
+sequence before atomically updating the separate ConsumerProjection
+receipt/effect/cursor. Real Flowie CI now simulates a subscriber that
+receives an event but dies before durable projection; a trusted-source
+replay repairs the missing event without duplicate effects. Forged private
+fields or a historical SHA-256 receipt conflict reject closed.
+
+[Reconciliation v1](docs/flowie-reconciliation-v1.md). This is NOT a
+production authorized read-only backfill service, and Flowie #22 inbound
+deferred PUBACK remains a separate upstream prerequisite for full
+delivery-settlement semantics.
