@@ -29,7 +29,6 @@ static int reconcile_main(int argc, char **argv) {
     mygames_room_store *source = NULL;
     mygames_consumer_projection *consumer = NULL;
     mygames_room_directory rooms;
-    uint8_t payload[MYGAMES_STORE_EVENT_MAX];
     uint8_t hash[MYGAMES_CONSUMER_EVENT_DIGEST_BYTES];
     uint64_t source_epoch = 0u, source_seq = 0u;
     uint64_t last_seq = 0u, count = 0u, applied = 0u, replayed = 0u;
@@ -83,31 +82,50 @@ static int reconcile_main(int argc, char **argv) {
     begin_seq = verify_all ? 1u : last_seq + 1u;
     current = begin_seq;
     while (current <= source_seq && processed < budget) {
-        size_t len = 0u;
-        uint64_t new_count = UINT64_MAX;
-        st = mygames_room_store_get_committed_event(
-            source, current, payload, sizeof(payload), &len);
-        if (st != MYGAMES_STORE_OK ||
-            !mygames_outbox_public_event_validate(
-                payload, len, source_epoch, current) ||
-            cmeta_sha256(payload, len, hash) != SALTS_OK) {
-            fprintf(stderr, "Reconcile: missing/corrupt committed event"
+        mygames_store_archive_page page = {0};
+        uint64_t remaining = source_seq - current + 1u;
+        uint64_t cap = (uint64_t)budget - (uint64_t)processed;
+        size_t i;
+        if (cap > MYGAMES_STORE_ARCHIVE_PAGE_MAX)
+            cap = MYGAMES_STORE_ARCHIVE_PAGE_MAX;
+        if (cap > remaining) cap = remaining;
+        /* One pinned READONLY SQLite transaction per bounded page.
+         * Consumer effects/cursor are still committed individually and may
+         * recover after a crash at any partial page boundary. */
+        st = mygames_room_store_read_archive_page(
+            source, current - 1u, (uint32_t)cap, &page);
+        if (st != MYGAMES_STORE_OK || !page.count ||
+            page.checkpoint_sequence < source_seq ||
+            page.epoch < source_epoch || page.count > cap) {
+            fprintf(stderr, "Reconcile: missing/inconsistent archive page"
                             " seq=%" PRIu64 " status=%d\n", current, st);
             goto done;
         }
-        cs = mygames_consumer_projection_apply(
-            consumer, argv[4], argv[5], current, hash, &new_count);
-        memset(hash, 0, sizeof(hash));
-        if (cs == MYGAMES_CONSUMER_APPLIED) ++applied;
-        else if (cs == MYGAMES_CONSUMER_REPLAY) ++replayed;
-        else {
-            fprintf(stderr, "Reconcile: consumer refused seq=%" PRIu64
-                            " status=%d\n", current, cs);
-            goto done;
+        for (i = 0u; i < page.count; ++i) {
+            const mygames_store_archive_item *event = &page.items[i];
+            uint64_t new_count = UINT64_MAX;
+            if (event->sequence != current ||
+                !mygames_outbox_public_event_validate(
+                    event->payload, event->size, page.epoch, current) ||
+                cmeta_sha256(event->payload, event->size, hash) != SALTS_OK) {
+                fprintf(stderr, "Reconcile: missing/corrupt committed event"
+                                " seq=%" PRIu64 "\n", current);
+                goto done;
+            }
+            cs = mygames_consumer_projection_apply(
+                consumer, argv[4], argv[5], current, hash, &new_count);
+            memset(hash, 0, sizeof(hash));
+            if (cs == MYGAMES_CONSUMER_APPLIED) ++applied;
+            else if (cs == MYGAMES_CONSUMER_REPLAY) ++replayed;
+            else {
+                fprintf(stderr, "Reconcile: consumer refused seq=%" PRIu64
+                                " status=%d\n", current, cs);
+                goto done;
+            }
+            count = new_count;
+            ++processed;
+            ++current;
         }
-        count = new_count;
-        ++processed;
-        ++current;
     }
     if (current <= source_seq) {
         fprintf(stderr, "Reconcile: bounded batch incomplete, next=%" PRIu64
