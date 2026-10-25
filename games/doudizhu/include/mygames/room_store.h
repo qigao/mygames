@@ -29,7 +29,8 @@ typedef enum mygames_store_status {
     /* A dispatched commit can have landed. The connection is quarantined:
      * do not replay the operation without independent reconciliation. */
     MYGAMES_STORE_COMMIT_UNKNOWN,
-    MYGAMES_STORE_QUARANTINED
+    MYGAMES_STORE_QUARANTINED,
+    MYGAMES_STORE_READ_ONLY
 } mygames_store_status;
 
 /* One writer: call only from the unique Room Owner, not a CHttp callback.
@@ -40,6 +41,20 @@ typedef enum mygames_store_status {
  * Existing stores are validated rather than silently repaired or reset.
  */
 mygames_store_status mygames_room_store_open(
+    const char *sqlite_plugin_absolute_path, const char *database_path,
+    mygames_room_store **out_store);
+
+/* SOURCE ARCHIVE READER ONLY. The installed TurboDB SQLite driver is opened
+ * with open_mode=read_only (SQLITE_OPEN_READONLY); no schema creation, WAL
+ * configuration, checkpoint publication, session mutation or Outbox ACK.
+ * An existing source must pass the full checkpoint/journal verification.
+ * Any mutating call on this handle rejects with MYGAMES_STORE_READ_ONLY.
+ *
+ * This is NOT consumer authentication or a remotely accessible recovery
+ * service. Call from an isolated trusted backend only; a production service
+ * must separately enforce principal, namespace, ACL, rate and retention.
+ */
+mygames_store_status mygames_room_store_open_readonly(
     const char *sqlite_plugin_absolute_path, const char *database_path,
     mygames_room_store **out_store);
 
