@@ -72,6 +72,8 @@ jobs:
         run: ctest --test-dir build/gateway -C Release --output-on-failure -R 'mygames[.]turbodb_store'
       - name: HTTP/WS real four-client test
         run: python3 scripts/ci/ci_gateway_smoke.py build/gateway/mygames_server
+      - name: Verify CLOSE survives ordinary CFlow mailbox FULL
+        run: python3 scripts/ci/ci_terminal_stress.py build/gateway/mygames_server
       - name: Autonomous no-ingress expiry, transaction journal and Outbox
         run: |
           python3 scripts/ci/ci_idle_expiry_smoke.py \
