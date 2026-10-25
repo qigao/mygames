@@ -125,6 +125,23 @@ try {
     assert.equal((await b.receive(ack('snapshot-2'))).revision, 6);
     assert.equal((await b.receive(snap(6))).revision, 6);
 
+    // A genuine WebSocket CLOSE (rather than room.leave) removes a waiting
+    // player and publishes a higher room revision to the remaining member.
+    b.close();
+    const afterClose = await c.receive(snap(7));
+    assert.equal(afterClose.seats[1], null);
+    assert.equal(afterClose.owner_id, afterClose.seats[2].player_id);
+
+    // Reuse a freed seat, but never reuse the previous connection identity.
+    const e = await connect();
+    e.send('room.join', 'join-after-close', {room_id: id});
+    assert.equal((await e.receive(ack('join-after-close'))).seat, 0);
+    const afterJoin = await c.receive(snap(8));
+    assert.equal(afterJoin.seats.filter(Boolean).length, 2);
+    await e.receive(snap(8));
+
+    e.close();
+    assert.equal((await c.receive(snap(9))).seats[0], null);
     console.log('MyGames CHttp room WebSocket integration: PASS');
 } finally {
     for (const c of clients) c.close();
