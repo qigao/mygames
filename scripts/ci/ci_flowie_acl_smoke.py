@@ -37,12 +37,12 @@ def check_ready(proc, handle, needle, seconds=12):
     raise RuntimeError("Flowie readiness timeout: " + needle)
 
 def main() -> int:
-    if len(sys.argv) != 8:
+    if len(sys.argv) != 9:
         raise SystemExit(
             "usage: ci_flowie_acl_smoke.py "
-            "broker client publisher seed outbox_audit consumer_audit sqlite-plugin"
+            "broker client publisher seed outbox_audit consumer_audit reconcile sqlite-plugin"
         )
-    broker, client, publisher, seed, audit, consumer_audit, plugin = [
+    broker, client, publisher, seed, audit, consumer_audit, reconcile, plugin = [
         str(pathlib.Path(p).resolve()) for p in sys.argv[1:]
     ]
     with tempfile.TemporaryDirectory(prefix="mygames-flowie-acl-") as temp:
@@ -142,6 +142,45 @@ def main() -> int:
                 log.seek(0)
                 events = log.read().count("BROKER_EVENT_ACCEPTED")
                 assert events == 3, f"secure broker accepted {events}, expected 3"
+
+                # Intentionally simulate inbound Client auto-PUBACK BEFORE
+                # durable ConsumerProjection effect, then hard-kill the
+                # subscriber. This demonstrates the loss window in Flowie
+                # 1.0.4, not a completed deferred-ACK implementation.
+                run([seed, plugin, database, "--append"], env)
+                run([audit, plugin, database, "3"], env)
+                subscriber = None
+                with (root / "subscriber-uncommitted.log").open(
+                        "w+t", encoding="utf-8") as sublog:
+                    subenv = env.copy()
+                    subenv["MYGAMES_TEST_EXPECT_PROJECTION"] = "applied"
+                    subscriber = subprocess.Popen(
+                        [client, "subscriber-no-commit"],
+                        stdout=sublog, stderr=subprocess.STDOUT, env=subenv)
+                    try:
+                        check_ready(subscriber, sublog, "FLOWIE_ACL_SUBSCRIBER_READY")
+                        run([publisher, plugin, database, "--once"], env)
+                        check_ready(subscriber, sublog, "FLOWIE_RECEIVED_BUT_NOT_COMMITTED")
+                    finally:
+                        if subscriber.poll() is None:
+                            subscriber.kill()
+                            subscriber.wait(timeout=5)
+                # Publisher has observed positive PUBACK and its Outbox
+                # row is delivered, while ConsumerProjection remained seq2.
+                run([audit, plugin, database, "0"], env)
+                durable_audit(2)
+                run([reconcile, plugin, database, consumer_db,
+                     namespace, "backend-projection-v1", "--catchup", "128"], env)
+                durable_audit(3)
+                # An audit from the first committed sequence must replay
+                # all three immutable receipts with no second side effect.
+                run([reconcile, plugin, database, consumer_db,
+                     namespace, "backend-projection-v1", "--verify-all", "128"], env)
+                durable_audit(3)
+                log.flush()
+                log.seek(0)
+                assert log.read().count("BROKER_EVENT_ACCEPTED") == 4
+
             finally:
                 if server.poll() is None:
                     try:

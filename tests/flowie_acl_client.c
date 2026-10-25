@@ -191,7 +191,9 @@ int main(int argc, char **argv) {
     if (argc != 2) return 2;
     mode = argv[1];
     expect_connect = strcmp(mode, "bad-secret") != 0;
-    if (strcmp(mode, "subscriber") == 0 || strcmp(mode, "subscriber-listen") == 0) {
+    if (strcmp(mode, "subscriber") == 0 ||
+        strcmp(mode, "subscriber-listen") == 0 ||
+        strcmp(mode, "subscriber-no-commit") == 0) {
         identity = "svc-consumer";
         password = getenv("MYGAMES_TEST_CONSUMER_SECRET");
         client_id = "mygames-consumer-v1";
@@ -251,7 +253,8 @@ int main(int argc, char **argv) {
     config.on_subscribe = on_subscribe;
     config.on_publish = on_publish;
     config.user_data = &p;
-    if (strcmp(mode, "subscriber-listen") == 0) {
+    if ((strcmp(mode, "subscriber-listen") == 0 ||
+         strcmp(mode, "subscriber-no-commit") == 0)) {
         handler.filter = (flowie_mqtt_span_t){
             (const uint8_t *)TOPIC, sizeof(TOPIC) - 1u};
         handler.on_message = on_message;
@@ -306,12 +309,23 @@ int main(int argc, char **argv) {
             goto cleanup;
         if (atomic_load_explicit(&p.operation_allowed, memory_order_acquire) !=
             (strcmp(mode, "subscriber") == 0 ||
-             strcmp(mode, "subscriber-listen") == 0))
+             strcmp(mode, "subscriber-listen") == 0 ||
+             strcmp(mode, "subscriber-no-commit") == 0))
             goto cleanup;
-        if (strcmp(mode, "subscriber-listen") == 0) {
+        if ((strcmp(mode, "subscriber-listen") == 0 ||
+         strcmp(mode, "subscriber-no-commit") == 0)) {
             puts("FLOWIE_ACL_SUBSCRIBER_READY");
             fflush(stdout);
             if (!wait_bool(&p.received, 9000u)) goto cleanup;
+            if (strcmp(mode, "subscriber-no-commit") == 0) {
+                /* Explicitly simulate a crash window after Flowie's
+                 * on_message returned SUCCESS (auto PUBACK happens on the
+                 * client worker) but before the consumer's DB transaction.
+                 * The harness kills this process after Publisher PUBACK. */
+                puts("FLOWIE_RECEIVED_BUT_NOT_COMMITTED");
+                fflush(stdout);
+                while (true) cmeta_sleep_ms(100u);
+            }
             if (!project_received_event(&p)) goto cleanup;
         }
     }

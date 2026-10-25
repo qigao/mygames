@@ -177,6 +177,11 @@ if(MYGAMES_ENABLE_FLOWIE)
     target_link_libraries(mygames_flowie_acl_client_test PRIVATE
       Flowie::Client MyGames::ConsumerProjection MyGames::Outbox Salts::Core Orm::C)
     target_compile_features(mygames_flowie_acl_client_test PRIVATE c_std_11)
+    add_executable(mygames_event_reconcile_test apps/consumer/room_event_reconcile.c)
+    target_compile_features(mygames_event_reconcile_test PRIVATE c_std_11)
+    target_link_libraries(mygames_event_reconcile_test PRIVATE
+      MyGames::Store MyGames::ConsumerProjection MyGames::Outbox
+      Salts::Core Orm::C)
     add_executable(mygames_flowie_broker_test tests/flowie_local_broker.c)
     target_link_libraries(mygames_flowie_broker_test PRIVATE
       Flowie::Flowie Salts::Core)
