@@ -1,9 +1,10 @@
 # M4 proposal: authenticated read-only recovery service (NOT IMPLEMENTED)
 
-Status: **design/qualification contract**; current PR #1 contains only a
-local trusted-source reconciliation CLI and a real TurboDB SQLite read-only
-archive handle. It has **no authenticated HTTP recovery endpoint**, no
-long-lived supervised consumer, and no production no-loss guarantee.
+Status: **design and staged local implementation**. PR #1 contains a
+local reconciliation CLI, a real TurboDB SQLite read-only archive handle, and
+a pure-C11 certificate-fingerprint admission/rate-policy core. It has **no
+authenticated HTTP recovery endpoint**, no deployed identity provisioning,
+no long-lived supervised consumer, and no production no-loss guarantee.
 
 Related: [MyGames #4](https://github.com/qigao/mygames/issues/4),
 [Flowie #22](https://github.com/qigao/flowie/issues/22),
@@ -24,6 +25,22 @@ Opening an absent/inconsistent archive fails without creating/repairing
 schema, setting WAL, claiming owner epoch or publishing an ACK. All transactional
 writer methods on that handle return `MYGAMES_STORE_READ_ONLY`. This
 does not by itself authenticate a client or make an archive tamper-proof.
+
+## Implemented policy-only admission core (NOT mTLS transport)
+
+`MyGames::RecoveryGate` is now a dependency-free C11 library that copies
+explicit policy entries and binds a caller-supplied **verified** TLS peer leaf
+SHA256 fingerprint to one source namespace/consumer stream. It denies unknown
+or disabled identities, duplicate stream registrations, malformed ACLs,
+out-of-range cursor/page requests, concurrent work per principal and exhausted
+per-process token buckets. Each granted read has a generation-fenced terminal
+release so stale/double release cannot refund credits or free a newer grant.
+CMake runs deterministic admission tests on the Linux/Windows/macOS core jobs.
+
+**Critical:** No CHttp route calls this module yet. It does not verify TLS,
+supply an actual service certificate, provide distributed rate limits, persist
+consumer progress or grant database access. Until an authenticated CHttp/CNet
+endpoint has explicit exact-head tests, it is **not** a recovery service.
 
 ## Proposed M4 network API — contract only
 
