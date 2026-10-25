@@ -174,6 +174,18 @@ int main(int argc, char **argv) {
     check(mygames_room_store_ack_event(store, 1u, 1u), MYGAMES_STORE_OK);
     check(mygames_room_store_ack_event(store, 1u, 1u),
           MYGAMES_STORE_NOT_FOUND);
+    /* Positive Broker settlement is NOT permission to erase immutable
+     * source event history: offline subscribers must still reconcile it. */
+    check(mygames_room_store_get_committed_event(
+        store, 1u, event, 1u, &outbox_bytes), MYGAMES_STORE_CAPACITY);
+    assert(outbox_bytes == sizeof(event_a) - 1u);
+    check(mygames_room_store_get_committed_event(
+        store, 1u, event, sizeof(event), &outbox_bytes), MYGAMES_STORE_OK);
+    assert(outbox_bytes == sizeof(event_a) - 1u);
+    assert(!memcmp(event, event_a, outbox_bytes));
+    check(mygames_room_store_get_committed_event(
+        store, 2u, event, sizeof(event), &outbox_bytes), MYGAMES_STORE_NOT_FOUND);
+
     check(mygames_room_store_next_event(
         store, 0u, event, sizeof(event), &outbox_bytes, &seq),
         MYGAMES_STORE_NOT_FOUND);

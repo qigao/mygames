@@ -1214,6 +1214,58 @@ done:
     return status;
 }
 
+mygames_store_status mygames_room_store_get_committed_event(
+    mygames_room_store *store, uint64_t event_sequence,
+    void *payload, size_t capacity, size_t *out_size) {
+    orm_result_t *result = NULL;
+    orm_error_t error;
+    orm_status_t rc;
+    orm_value_t arg;
+    orm_blob_t stored = {0};
+    uint64_t row_count = 0u;
+    int64_t stored_seq = 0;
+    persisted_head head = {0};
+    bool exists = false;
+    mygames_store_status status;
+    if (!store || !event_sequence || event_sequence > (uint64_t)INT64_MAX ||
+        !out_size || (!payload && capacity)) return MYGAMES_STORE_INVALID;
+    if (!owner_valid(store)) return MYGAMES_STORE_QUARANTINED;
+    status = head_read(store, NULL, &head, &exists);
+    if (status != MYGAMES_STORE_OK) return status;
+    if (!exists) return MYGAMES_STORE_UNINITIALIZED;
+    if (event_sequence > head.seq) return MYGAMES_STORE_NOT_FOUND;
+    status = verify_head(&head, NULL);
+    if (status != MYGAMES_STORE_OK) return status;
+    arg = orm_i64((int64_t)event_sequence);
+    status = backend_query(store, NULL,
+        "select seq,payload from mg_outbox where seq=?1",
+        &arg, 1u, &result);
+    if (status != MYGAMES_STORE_OK) return status;
+    orm_error_init(&error);
+    rc = orm_result_row_count(result, &row_count, &error);
+    if (rc == ORM_STATUS_OK && row_count == 1u) {
+        rc = orm_result_get_int64(result, 0u, 0u, &stored_seq, &error);
+        if (rc == ORM_STATUS_OK)
+            rc = orm_result_get_blob(result, 0u, 1u, &stored, &error);
+    }
+    if (rc != ORM_STATUS_OK) status = error_from_orm(store, rc, &error);
+    else if (row_count != 1u || stored_seq != (int64_t)event_sequence ||
+             !stored.data || stored.size == 0u ||
+             stored.size > MYGAMES_STORE_EVENT_MAX)
+        status = MYGAMES_STORE_CORRUPT;
+    else if (capacity < stored.size) {
+        *out_size = stored.size;
+        status = MYGAMES_STORE_CAPACITY;
+    } else if (!payload) status = MYGAMES_STORE_INVALID;
+    else {
+        memcpy(payload, stored.data, stored.size);
+        *out_size = stored.size;
+        status = MYGAMES_STORE_OK;
+    }
+    orm_result_destroy(result);
+    return status;
+}
+
 mygames_store_status mygames_room_store_ack_event(
     mygames_room_store *store, uint64_t epoch, uint64_t sequence) {
     persisted_head head = {0};

@@ -190,6 +190,21 @@ mygames_store_status mygames_room_store_get_outcome(
 mygames_store_status mygames_room_store_next_event(
     mygames_room_store *store, uint64_t after_sequence,
     void *payload, size_t capacity, size_t *out_size, uint64_t *out_sequence);
+/* Privileged local recovery/read API: retrieve an immutable, already
+ * COMMITTED event by exact global sequence, INCLUDING events whose Outbox
+ * `delivered=1`. This reads the original canonical bytes without changing
+ * delivery state or ACKing a client.
+ *
+ * The source database must be made available only to a trusted backend.
+ * This API does not authorize an MQTT subscriber or validate its principal.
+ * An absent event at seq<=durable checkpoint seq is corruption, not an
+ * empty result. A future authenticated backfill service should expose
+ * this capability without sharing direct source DB write credentials.
+ */
+mygames_store_status mygames_room_store_get_committed_event(
+    mygames_room_store *store, uint64_t event_sequence,
+    void *payload, size_t capacity, size_t *out_size);
+
 mygames_store_status mygames_room_store_ack_event(
     mygames_room_store *store, uint64_t epoch, uint64_t sequence);
 
