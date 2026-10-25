@@ -3,6 +3,9 @@
  * *separate* PUBLISH and SUBSCRIBE grants. No credential is printed.
  */
 #include <flowie_mqtt_client.h>
+#include "mygames/consumer_projection.h"
+#include "mygames/outbox_dispatch.h"
+#include <cmeta_crypto.h>
 #include <salts/clock.h>
 #include <salts/thread.h>
 #include <salts/error_codes.h>
@@ -11,6 +14,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <limits.h>
 #include <string.h>
 
 #define TOPIC "mygames/internal/v1/room-events"
@@ -21,6 +25,8 @@ typedef struct probe {
     atomic_bool operation_done;
     atomic_bool operation_allowed;
     atomic_bool received;
+    uint8_t received_payload[MYGAMES_STORE_EVENT_MAX + 1u];
+    size_t received_size; /* published by received release store */
 } probe;
 
 static bool wait_bool(atomic_bool *flag, uint64_t deadline_ms) {
@@ -87,9 +93,82 @@ static int on_message(flowie_mqtt_client_t *client,
                    sizeof(expected) - 1u) == 0)
             recognized = true;
     }
-    if (!recognized) return SALTS_EPROTO;
+    if (!recognized || message->payload.size == 0u ||
+        message->payload.size > MYGAMES_STORE_EVENT_MAX)
+        return SALTS_EPROTO;
+    if (atomic_load_explicit(&p->received, memory_order_acquire))
+        return SALTS_ENOBUFS;
+    memcpy(p->received_payload, message->payload.data,
+           message->payload.size);
+    p->received_payload[message->payload.size] = 0u;
+    p->received_size = message->payload.size;
     atomic_store_explicit(&p->received, true, memory_order_release);
     return SALTS_OK;
+}
+
+/* Parse integers from already fully copied, bounded event bytes. Only after
+ * strict canonical schema validation are these values trusted. */
+static bool read_positive_field(const char *json, const char *field,
+                                uint64_t *out) {
+    const char *where, *cursor;
+    uint64_t value = 0u;
+    if (!json || !field || !out) return false;
+    where = strstr(json, field);
+    if (!where) return false;
+    cursor = where + strlen(field);
+    if (*cursor < '1' || *cursor > '9') return false;
+    while (*cursor >= '0' && *cursor <= '9') {
+        uint64_t digit = (uint64_t)(*cursor - '0');
+        if (value > (UINT64_MAX - digit) / 10u) return false;
+        value = value * 10u + digit;
+        ++cursor;
+    }
+    if (*cursor != '}' && *cursor != ',') return false;
+    *out = value;
+    return true;
+}
+
+static bool project_received_event(const probe *p) {
+    const char *database = getenv("MYGAMES_TEST_PROJECTION_DB");
+    const char *driver = getenv("MYGAMES_TEST_PROJECTION_DRIVER");
+    const char *ns = getenv("MYGAMES_TEST_SOURCE_NAMESPACE");
+    const char *expected = getenv("MYGAMES_TEST_EXPECT_PROJECTION");
+    mygames_consumer_projection *projection = NULL;
+    uint8_t hash[MYGAMES_CONSUMER_EVENT_DIGEST_BYTES];
+    uint64_t epoch = 0u, seq = 0u, applied = 0u;
+    mygames_consumer_status status;
+    bool ok;
+    if (!database && !driver && !ns) return true; /* ACL-only test */
+    if (!database || !driver || !ns || !*database || !*driver || !*ns ||
+        !read_positive_field((const char *)p->received_payload,
+                             "\"room_epoch\":", &epoch) ||
+        !read_positive_field((const char *)p->received_payload,
+                             "\"seq\":", &seq) ||
+        !mygames_outbox_public_event_validate(p->received_payload,
+                                              p->received_size, epoch, seq))
+        return false;
+    if (cmeta_sha256(p->received_payload, p->received_size, hash) != SALTS_OK)
+        return false;
+    status = mygames_consumer_projection_open(driver, database, &projection);
+    if (status != MYGAMES_CONSUMER_APPLIED || !projection) return false;
+    status = mygames_consumer_projection_apply(
+        projection, ns, "backend-projection-v1", seq, hash, &applied);
+    ok = status == MYGAMES_CONSUMER_APPLIED ||
+         status == MYGAMES_CONSUMER_REPLAY;
+    if (expected && strcmp(expected,"applied") == 0)
+        ok = ok && status == MYGAMES_CONSUMER_APPLIED;
+    if (expected && strcmp(expected,"replay") == 0)
+        ok = ok && status == MYGAMES_CONSUMER_REPLAY;
+    if (ok)
+        printf("FLOWIE_ACL_PROJECTION_%s count=%llu seq=%llu\n",
+               status == MYGAMES_CONSUMER_REPLAY ? "REPLAY" : "APPLIED",
+               (unsigned long long)applied, (unsigned long long)seq);
+    else
+        fprintf(stderr, "Subscriber projection rejected event: status=%d\n",
+                (int)status);
+    mygames_consumer_projection_close(projection);
+    memset(hash, 0, sizeof(hash));
+    return ok;
 }
 
 int main(int argc, char **argv) {
@@ -209,6 +288,7 @@ int main(int argc, char **argv) {
             puts("FLOWIE_ACL_SUBSCRIBER_READY");
             fflush(stdout);
             if (!wait_bool(&p.received, 9000u)) goto cleanup;
+            if (!project_received_event(&p)) goto cleanup;
         }
     }
     if (expect_publish) {
