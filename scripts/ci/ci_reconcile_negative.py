@@ -58,6 +58,27 @@ def main() -> int:
                 if "consumer refused seq=1" not in refused.stderr:
                     raise AssertionError("Forged historical event was not detected")
                 run([audit,plugin,projection,ns,"2","2"],env)
+        # The explicit batch cap must report INCOMPLETE without inventing
+        # an async retry. Accepted first-page effects are durable, and the
+        # next invocation resumes exactly at the following sequence.
+        bounded_source=str(pathlib.Path(root)/"bounded-source.sqlite")
+        bounded_consumer=str(pathlib.Path(root)/"bounded-consumer.sqlite")
+        run([seed,plugin,bounded_source,"--seed"],env)
+        first=run([reconcile,plugin,bounded_source,bounded_consumer,ns,consumer,
+                   "--catchup","1"],env,success=False)
+        if first.returncode != 3 or "bounded batch incomplete" not in first.stderr:
+            raise AssertionError("Batch capacity was not explicitly reported")
+        run([audit,plugin,bounded_consumer,ns,"1","1"],env)
+        run([reconcile,plugin,bounded_source,bounded_consumer,ns,consumer,
+             "--catchup","1"],env)
+        run([audit,plugin,bounded_consumer,ns,"2","2"],env)
+        verify=run([reconcile,plugin,bounded_source,bounded_consumer,ns,consumer,
+                    "--verify-all","1"],env,success=False)
+        if verify.returncode != 3:
+            raise AssertionError("Historical verification bypassed batch bound")
+        run([reconcile,plugin,bounded_source,bounded_consumer,ns,consumer,
+             "--verify-all","128"],env)
+        run([audit,plugin,bounded_consumer,ns,"2","2"],env)
         print("mygames.reconcile_fail_closed: PASS "
               "(private payload reject, changed receipt conflict, no effect)",flush=True)
     return 0
