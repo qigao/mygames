@@ -93,7 +93,7 @@ static int on_message(flowie_mqtt_client_t *client,
 }
 
 int main(int argc, char **argv) {
-    flowie_mqtt_client_config_t config = {0};
+    flowie_mqtt_client_config_t config = FLOWIE_MQTT_CLIENT_CONFIG_INIT;
     flowie_mqtt_connect_packet_t connect = {0};
     flowie_mqtt_subscribe_packet_t subscribe = {0};
     flowie_mqtt_subscription_t subscription = {0};
@@ -162,8 +162,13 @@ int main(int argc, char **argv) {
         config.topic_handlers.data = &handler;
         config.topic_handlers.count = 1u;
     }
-    if (flowie_mqtt_client_create(&config, &client) != SALTS_OK || !client)
-        return 3;
+    {
+        const int created = flowie_mqtt_client_create(&config, &client);
+        if (created != SALTS_OK || !client) {
+            fprintf(stderr, "Flowie ACL Client create status=%d\n", created);
+            return 3;
+        }
+    }
     connect.size = sizeof(connect);
     connect.abi_version = FLOWIE_MQTT_PROTOCOL_ABI_V1;
     connect.version = FLOWIE_MQTT_VERSION_5;
