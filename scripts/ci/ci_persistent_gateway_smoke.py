@@ -43,16 +43,40 @@ def main() -> int:
             env=env, timeout=25, check=True,
         )
 
-        # Session identity/tickets remain ephemeral. Nonempty persisted rooms
-        # must NOT be silently rebound to freshly numbered unauthenticated users.
-        reopened = subprocess.run(
-            [server], input=b"\n", env=env, timeout=20,
-            capture_output=True, check=False,
-        )
-        combined = reopened.stdout + reopened.stderr
-        if reopened.returncode == 0 or b"orphaned seats" not in combined:
-            raise AssertionError("Restart must fail closed on orphaned sessions: "
-                                 + combined[-2500:].decode(errors="replace"))
+        # Cold restart: the old process did not persist plaintext tickets.
+        # Its hashed leases are atomically detached by an Owner Epoch claim.
+        # Only a client possessing the previous bearer capability can reclaim
+        # the original player id and seat; all unknown clients stay provisional.
+        reopened = subprocess.Popen(
+            [server], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, env=env)
+        try:
+            deadline = time.monotonic() + 12.0
+            while time.monotonic() < deadline:
+                if reopened.poll() is not None:
+                    raise RuntimeError("durable server exited before recovery test")
+                try:
+                    with urllib.request.urlopen(
+                        "http://127.0.0.1:1780/health", timeout=1) as response:
+                        if response.status == 200:
+                            break
+                except (OSError, urllib.error.URLError):
+                    time.sleep(0.12)
+            else:
+                raise RuntimeError("durable restart did not expose health endpoint")
+            subprocess.run(
+                ["node", "scripts/room_persistent_resume_smoke.mjs"],
+                env=env, timeout=18, check=True)
+        finally:
+            try:
+                output, _ = reopened.communicate(input=b"\n", timeout=8)
+            except subprocess.TimeoutExpired:
+                reopened.kill()
+                output, _ = reopened.communicate(timeout=5)
+                raise RuntimeError("durable restart failed to stop")
+        if reopened.returncode != 0:
+            raise RuntimeError("durable restart exited unexpectedly: "
+                               + output[-2500:].decode(errors="replace"))
         # A test-build-only fault after checkpoint UPDATE must not produce
         # a room ACK, room state, command result, or an Outbox event.
         fault_db = str(pathlib.Path(root) / "room-fault.sqlite")
@@ -98,7 +122,8 @@ def main() -> int:
               flush=True)
 
         print("mygames.gateway_persistent: PASS "
-              "(ACK-on-commit, reopened facts and fail-closed restart)", flush=True)
+              "(ACK-on-commit, hashed durable ticket recovery, old ticket rejected)",
+              flush=True)
     return 0
 
 
