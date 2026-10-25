@@ -3,6 +3,7 @@
 
 #include "mygames/room_store.h"
 #include <stddef.h>
+#include <stdbool.h>
 #include <stdint.h>
 #ifdef __cplusplus
 extern "C" {
@@ -40,6 +41,14 @@ typedef enum mygames_outbox_result {
  * Call only from the single, independent publisher worker; the Room Owner is
  * not re-entered from the MQTT callback.
  */
+/* Strict canonical allowlist for **publicly distributable** v1 room events.
+ * Rejects unknown event types/keys, nested values, escaped payloads, private
+ * cards, session tickets and inconsistent sequence/epoch. Event epoch may be
+ * older than current DB Owner epoch following a restart. */
+bool mygames_outbox_public_event_validate(
+    const uint8_t *payload, size_t size,
+    uint64_t current_epoch, uint64_t event_sequence);
+
 mygames_outbox_result mygames_outbox_dispatch_one(
     mygames_room_store *store, mygames_outbox_publish_fn publish,
     void *context, uint64_t *out_sequence);
