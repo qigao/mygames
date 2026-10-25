@@ -174,6 +174,27 @@ def run(binary: Path, seed: Path, sqlite_driver: Path,
             print("mygames.recovery_tls_diagnostic: "
                   + " | ".join(diagnostics), flush=True)
 
+            # Diagnostic-only RFC 8446 middlebox compatibility isolation.
+            # This changes only a dummy TLS1.3 ChangeCipherSpec emission,
+            # NOT certificate verification, cipher suite, or mTLS identity.
+            # The default OpenSSL ClientHello remains mandatory below.
+            if hasattr(ssl, "OP_ENABLE_MIDDLEBOX_COMPAT"):
+                no_dummy_ccs = client_context(ca, client_cert, client_key)
+                no_dummy_ccs.minimum_version = ssl.TLSVersion.TLSv1_3
+                no_dummy_ccs.maximum_version = ssl.TLSVersion.TLSv1_3
+                no_dummy_ccs.options &= ~ssl.OP_ENABLE_MIDDLEBOX_COMPAT
+                try:
+                    probe_status, probe_data = fetch(
+                        port, prefix + "?after=0&limit=1", no_dummy_ccs)
+                    print("mygames.recovery_tls_no_dummy_ccs_diagnostic: "
+                          f"HTTP={probe_status} "
+                          f"cursor={probe_data.get('resume_after')}",
+                          flush=True)
+                except (ssl.SSLError, urllib.error.URLError, OSError) as exc:
+                    print("mygames.recovery_tls_no_dummy_ccs_diagnostic: "
+                          f"{type(exc).__name__}: {str(exc)[:250]}",
+                          flush=True)
+
             status, data = fetch(port, prefix + "?after=0&limit=1", good)
             check(status == 200, f"authorized first page: {status}")
             check(data["source_namespace"] == "trusted-source-v1",
