@@ -295,19 +295,48 @@ static void handle_session_resume(dev_server_state *state, client_peer *peer,
     }
 }
 
+#if defined(MYGAMES_WITH_TURBODB)
+static bool normalize_command_digest(const mygames_wire_command *command,
+                                      uint8_t digest[MYGAMES_STORE_COMMAND_DIGEST_BYTES]) {
+    char normalized[192];
+    const int n = snprintf(normalized, sizeof(normalized), "v1|%d|%s|%u",
+                           (int)command->kind, command->room_id,
+                           command->ready ? 1u : 0u);
+    return n > 0 && (size_t)n < sizeof(normalized) &&
+           cmeta_sha256(normalized, (size_t)n, digest) == SALTS_OK;
+}
+
+static void storage_rejection(dev_server_state *state,
+                              const chttp_server_websocket_session *session,
+                              const mygames_wire_command *command) {
+    char message[160];
+    state->store_halted = true; /* single CFlow Owner stops issuing game ACKs */
+    if (write_error(message, sizeof(message), command->request_id,
+                    "storage_unavailable")) (void)send_text(session, message);
+}
+#endif
+
 static void ws_handle_command(dev_server_state *state, client_peer *client,
-                              const chttp_server_websocket_session *session, const void *bytes, size_t size) {
+                              const chttp_server_websocket_session *session,
+                              const void *bytes, size_t size) {
     mygames_wire_command command;
     mygames_wire_status parse_result;
     response_cache *previous;
+    const mygames_session_record *identity;
     const mygames_room *room = NULL;
     mygames_room_status result = MYGAMES_ROOM_OK;
+    mygames_room_directory *target = &state->rooms;
     char reply[256];
     char room_id[MYGAMES_ROOM_ID_CAPACITY] = {0};
     unsigned int seat = 0u;
     uint64_t revision = 0u;
     bool changed = false;
-    const mygames_session_record *identity;
+#if defined(MYGAMES_WITH_TURBODB)
+    mygames_room_directory staged;
+    uint8_t digest[MYGAMES_STORE_COMMAND_DIGEST_BYTES];
+    bool persistent_command = false;
+#endif
+
     parse_result = mygames_wire_decode_command(bytes, size, &command);
     if (parse_result != MYGAMES_WIRE_OK) {
         const char *code = parse_result == MYGAMES_WIRE_TOO_LARGE ? "oversized_message" :
@@ -334,6 +363,45 @@ static void ws_handle_command(dev_server_state *state, client_peer *client,
             "{\"v\":1,\"type\":\"server.error\",\"code\":\"session_stale\"}");
         return;
     }
+
+#if defined(MYGAMES_WITH_TURBODB)
+    persistent_command = state->store != NULL &&
+                         command.kind != MYGAMES_COMMAND_GET_SNAPSHOT;
+    if (state->store && state->store_halted) {
+        storage_rejection(state, session, &command);
+        return;
+    }
+    if (persistent_command) {
+        unsigned char saved[MYGAMES_STORE_RESULT_MAX];
+        size_t saved_size = 0u;
+        uint64_t saved_seq = 0u;
+        mygames_store_status status;
+        if (identity->player > (uint64_t)INT64_MAX ||
+            !normalize_command_digest(&command, digest)) {
+            storage_rejection(state, session, &command);
+            return;
+        }
+        /* The durable journal, not a per-socket byte comparison, determines
+         * semantic replay for previously committed commands. */
+        status = mygames_room_store_get_outcome(
+            state->store, identity->player, command.request_id, digest,
+            saved, sizeof(saved), &saved_size, &saved_seq);
+        if (status == MYGAMES_STORE_OK) {
+            if (!saved_size) { storage_rejection(state, session, &command); return; }
+            (void)chttp_server_websocket_send_text(session, saved, saved_size);
+            return;
+        }
+        if (status == MYGAMES_STORE_REQUEST_CONFLICT) {
+            (void)send_text(session,
+                "{\"v\":1,\"type\":\"server.error\",\"code\":\"request_id_conflict\"}");
+            return;
+        }
+        if (status != MYGAMES_STORE_NOT_FOUND) {
+            storage_rejection(state, session, &command);
+            return;
+        }
+    }
+#endif
     previous = cached_request(state, client->session_slot, command.request_id);
     if (previous) {
         if (size == previous->request_bytes &&
@@ -345,25 +413,31 @@ static void ws_handle_command(dev_server_state *state, client_peer *client,
         }
         return;
     }
-    room = mygames_room_directory_get_player(&state->rooms, identity->player);
+#if defined(MYGAMES_WITH_TURBODB)
+    if (persistent_command) {
+        staged = state->rooms;
+        target = &staged; /* no live mutation before database commit */
+    }
+#endif
+    room = mygames_room_directory_get_player(target, identity->player);
     if (command.kind == MYGAMES_COMMAND_CREATE_ROOM) {
-        result = mygames_room_directory_create(&state->rooms, identity->player, &room);
+        result = mygames_room_directory_create(target, identity->player, &room);
         changed = result == MYGAMES_ROOM_OK;
     } else if (command.kind == MYGAMES_COMMAND_JOIN_ROOM) {
-        result = mygames_room_directory_join(&state->rooms, command.room_id,
+        result = mygames_room_directory_join(target, command.room_id,
                                               identity->player, &seat);
         if (result == MYGAMES_ROOM_OK || result == MYGAMES_ROOM_ALREADY_PRESENT)
-            room = mygames_room_directory_get_player(&state->rooms, identity->player);
+            room = mygames_room_directory_get_player(target, identity->player);
         changed = result == MYGAMES_ROOM_OK;
     } else if (command.kind == MYGAMES_COMMAND_READY) {
-        result = mygames_room_directory_ready(&state->rooms, identity->player, command.ready);
+        result = mygames_room_directory_ready(target, identity->player, command.ready);
         changed = result == MYGAMES_ROOM_OK;
-        room = mygames_room_directory_get_player(&state->rooms, identity->player);
+        room = mygames_room_directory_get_player(target, identity->player);
     } else if (command.kind == MYGAMES_COMMAND_LEAVE_ROOM) {
         if (room) memcpy(room_id, room->id, strlen(room->id) + 1u);
-        result = mygames_room_directory_leave(&state->rooms, identity->player);
+        result = mygames_room_directory_leave(target, identity->player);
         changed = result == MYGAMES_ROOM_OK;
-        room = mygames_room_directory_get(&state->rooms, room_id);
+        room = mygames_room_directory_get(target, room_id);
         seat = MYGAMES_ROOM_SEATS;
     } else if (command.kind == MYGAMES_COMMAND_GET_SNAPSHOT) {
         result = room ? MYGAMES_ROOM_OK : MYGAMES_ROOM_NOT_FOUND;
@@ -393,19 +467,69 @@ static void ws_handle_command(dev_server_state *state, client_peer *client,
             command.request_id, room_id, revision, seat);
         if (n <= 0 || (size_t)n >= sizeof(reply)) return;
     }
+
+#if defined(MYGAMES_WITH_TURBODB)
+    if (persistent_command) {
+        char sanitized_event[MYGAMES_STORE_EVENT_MAX];
+        uint64_t committed_sequence = 0u;
+        mygames_store_status status;
+        int length;
+        if (state->durable_sequence >= (uint64_t)INT64_MAX) {
+            storage_rejection(state, session, &command);
+            return;
+        }
+        length = snprintf(sanitized_event, sizeof(sanitized_event),
+            "{\"v\":1,\"type\":\"room.command_accepted\","
+            "\"room_id\":\"%s\",\"room_epoch\":%" PRIu64 ","
+            "\"revision\":%" PRIu64 ",\"seq\":%" PRIu64 "}",
+            room_id, state->room_epoch, revision, state->durable_sequence + 1u);
+        if (length <= 0 || (size_t)length >= sizeof(sanitized_event)) {
+            storage_rejection(state, session, &command);
+            return;
+        }
+        status = mygames_room_store_commit(
+            state->store, identity->player, target,
+            state->room_epoch, state->durable_sequence,
+            command.request_id, digest, reply, strlen(reply),
+            sanitized_event, (size_t)length, &committed_sequence);
+        if (status == MYGAMES_STORE_REPLAY) {
+            uint8_t saved[MYGAMES_STORE_RESULT_MAX];
+            size_t saved_size = 0u;
+            uint64_t saved_sequence = 0u;
+            status = mygames_room_store_get_outcome(
+                state->store, identity->player, command.request_id, digest,
+                saved, sizeof(saved), &saved_size, &saved_sequence);
+            if (status != MYGAMES_STORE_OK || !saved_size) {
+                storage_rejection(state, session, &command);
+                return;
+            }
+            (void)chttp_server_websocket_send_text(session, saved, saved_size);
+            return;
+        }
+        if (status != MYGAMES_STORE_OK) {
+            fprintf(stderr, "Room transaction rejected (%d), halting admissions\n",
+                    (int)status);
+            storage_rejection(state, session, &command);
+            return;
+        }
+        /* This assignment is after confirmed COMMIT, before Game ACK. No
+         * mutable pointer into staged survives the copy. */
+        state->rooms = staged;
+        state->durable_sequence = committed_sequence;
+        room = mygames_room_directory_get(&state->rooms, room_id);
+    }
+#endif
+
     remember_request(state, client->session_slot, &command, bytes, size, reply);
     (void)send_text(session, reply);
     if (changed) {
         if (room) publish_snapshot(state, room);
-        /* If the last participant leaves the room, the room is gone and no
-         * subscribers remain. */
     } else if (room && command.kind == MYGAMES_COMMAND_GET_SNAPSHOT) {
         char snapshot[1024];
-        if (encode_snapshot(room, snapshot, sizeof(snapshot)))
+        if (encode_snapshot(state, room, snapshot, sizeof(snapshot)))
             (void)send_text(session, snapshot);
     }
 }
-
 
 /* Every room and session mutation happens on the single CFlow SerialExecutor
  * worker. Network callbacks only copy bounded input into admitted work. */
