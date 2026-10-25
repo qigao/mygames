@@ -135,6 +135,30 @@ def run(binary: Path, seed: Path, sqlite_driver: Path) -> None:
             untrusted = client_context(ca, rejected_cert, rejected_key)
             prefix = "/internal/recovery/v1/events"
 
+            # Diagnostic-only TLS protocol matrix. These remain verified
+            # mTLS requests, not a listener downgrade or production fallback.
+            # Retain mandatory unrestricted/default interoperability RED below.
+            diagnostics = []
+            for label, version in (
+                ("TLS1.2-only", ssl.TLSVersion.TLSv1_2),
+                ("TLS1.3-only", ssl.TLSVersion.TLSv1_3),
+            ):
+                probe = client_context(ca, client_cert, client_key)
+                probe.minimum_version = version
+                probe.maximum_version = version
+                try:
+                    probe_status, probe_body = fetch(
+                        port, prefix + "?after=0&limit=1", probe)
+                    diagnostics.append(
+                        f"{label}: HTTP {probe_status}, checkpoint="
+                        f"{probe_body.get('checkpoint_seq', 'none')}")
+                except (ssl.SSLError, urllib.error.URLError, OSError,
+                        ValueError) as exc:
+                    diagnostics.append(
+                        f"{label}: {type(exc).__name__}: {str(exc)[:180]}")
+            print("mygames.recovery_tls_diagnostic: "
+                  + " | ".join(diagnostics), flush=True)
+
             status, data = fetch(port, prefix + "?after=0&limit=1", good)
             check(status == 200, f"authorized first page: {status}")
             check(data["source_namespace"] == "trusted-source-v1",
