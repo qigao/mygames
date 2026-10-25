@@ -198,6 +198,10 @@ if(MYGAMES_ENABLE_FLOWIE)
   if(MYGAMES_ENABLE_GATEWAY)
     add_executable(mygames_recovery_service apps/consumer/recovery_service.c)
     target_compile_features(mygames_recovery_service PRIVATE c_std_11)
+    if(BUILD_TESTING)
+      target_compile_definitions(mygames_recovery_service PRIVATE
+        MYGAMES_RECOVERY_TEST_TRACE=1)
+    endif()
     target_link_libraries(mygames_recovery_service PRIVATE
       MyGames::RecoveryGate MyGames::RecoveryWire MyGames::Outbox
       MyGames::Store CHttp::Server Salts::Core Salts::Platform Orm::C)
