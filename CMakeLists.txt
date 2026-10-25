@@ -5,7 +5,8 @@ option(MYGAMES_ENABLE_GATEWAY "Build optional CHttp/CNet development gateway" OF
 
 add_library(mygames_room STATIC games/doudizhu/src/room.c
   games/doudizhu/src/room_directory.c
-  games/doudizhu/src/wire.c)
+  games/doudizhu/src/wire.c
+  games/doudizhu/src/session_registry.c)
 add_library(MyGames::Room ALIAS mygames_room)
 target_compile_features(mygames_room PUBLIC c_std_11)
 target_include_directories(mygames_room PUBLIC games/doudizhu/include)
@@ -43,4 +44,7 @@ if(BUILD_TESTING)
   add_executable(mygames_wire_test tests/wire_test.c)
   target_link_libraries(mygames_wire_test PRIVATE MyGames::Room)
   add_test(NAME mygames.wire COMMAND mygames_wire_test)
+  add_executable(mygames_session_test tests/session_registry_test.c)
+  target_link_libraries(mygames_session_test PRIVATE MyGames::Room)
+  add_test(NAME mygames.sessions COMMAND mygames_session_test)
 endif()
