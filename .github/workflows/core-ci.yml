@@ -62,10 +62,13 @@ jobs:
         run: |
           cmake -S . -B build/gateway -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_TESTING=ON -DMYGAMES_ENABLE_GATEWAY=ON \
+            -DMYGAMES_ENABLE_TURBODB=ON \
             -DCMAKE_PREFIX_PATH="$SDK_PREFIX_PATH"
       - name: Build CHttp gateway and CFlow Owner conformance
-        run: cmake --build build/gateway --target mygames_server mygames_cflow_owner_test --parallel 2
+        run: cmake --build build/gateway --target mygames_server mygames_cflow_owner_test mygames_turbodb_store_test --parallel 2
       - name: Verify worker isolation, bounded queue and shutdown drain
         run: ctest --test-dir build/gateway -C Release --output-on-failure -R 'mygames[.]cflow_owner'
+      - name: Validate transactional TurboDB room persistence and outbox
+        run: ctest --test-dir build/gateway -C Release --output-on-failure -R 'mygames[.]turbodb_store'
       - name: HTTP/WS real four-client test
         run: python3 scripts/ci/ci_gateway_smoke.py build/gateway/mygames_server

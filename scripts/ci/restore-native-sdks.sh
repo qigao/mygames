@@ -25,12 +25,18 @@ download salts-utils v4.3.0-rc.11 SaltsUtils.Native.4.3.0-rc.11.nupkg \
 download chttp v2.1.0-rc.6 CHttp.Native.2.1.0-rc.6.nupkg \
   d0e6e8c57c83e714443fd56bde9f0a203d44005656cf25fa6be2fe59cb9f03a2 chttp
 
+download turbodb v2.3.6 TurboDB.Native.2.3.6.nupkg \
+  e3cad4bd01207ad66dc579f0990e90af6384fc6d3d9410ed3d1b01cbf1c104a5 turbodb
+
 salts="$root/salts/sdk/linux-x64"
 utils="$root/saltsutils/sdk/linux-x64"
 chttp="$root/chttp/sdk/linux-x64"
+turbodb="$root/turbodb/sdk/linux-x64"
 for file in "$salts/lib/cmake/Salts/SaltsConfig.cmake" \
   "$utils/lib/cmake/SaltsUtils/SaltsUtilsConfig.cmake" \
-  "$chttp/lib/cmake/Chttp/ChttpConfig.cmake"; do
+  "$chttp/lib/cmake/Chttp/ChttpConfig.cmake" \
+  "$turbodb/lib/cmake/TurboDB/TurboDBConfig.cmake" \
+  "$turbodb/lib/turbodb/drivers/turbodb_driver_sqlite.so"; do
   test -f "$file" || { echo "Missing SDK file: $file" >&2; exit 1; }
 done
 
@@ -39,11 +45,12 @@ if [[ -n "$GITHUB_ENV" ]]; then
     printf 'SALTS_ROOT=%s\n' "$salts"
     printf 'SALTS_UTILS_ROOT=%s\n' "$utils"
     printf 'CHTTP_ROOT=%s\n' "$chttp"
-    printf 'SDK_PREFIX_PATH=%s;%s;%s\n' "$chttp" "$salts" "$utils"
-    printf 'LD_LIBRARY_PATH=%s/lib:%s/lib:%s/lib:%s/bin:%s/bin:%s/bin\n' \
-      "$chttp" "$utils" "$salts" "$chttp" "$utils" "$salts"
+    printf 'TURBODB_ROOT=%s\n' "$turbodb"
+    printf 'SDK_PREFIX_PATH=%s;%s;%s;%s\n' "$chttp" "$turbodb" "$salts" "$utils"
+    printf 'LD_LIBRARY_PATH=%s/lib:%s/lib:%s/lib:%s/lib:%s/bin:%s/bin:%s/bin\n' \
+      "$chttp" "$turbodb" "$utils" "$salts" "$chttp" "$utils" "$salts"
   } >> "$GITHUB_ENV"
 else
-  printf 'SALTS_ROOT=%s\nSALTS_UTILS_ROOT=%s\nCHTTP_ROOT=%s\n' \
-    "$salts" "$utils" "$chttp"
+  printf 'SALTS_ROOT=%s\nSALTS_UTILS_ROOT=%s\nCHTTP_ROOT=%s\nTURBODB_ROOT=%s\n' \
+    "$salts" "$utils" "$chttp" "$turbodb"
 fi
