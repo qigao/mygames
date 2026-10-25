@@ -459,6 +459,231 @@ mygames_store_status mygames_room_store_load(
     return MYGAMES_STORE_OK;
 }
 
+static bool ticket_hash_valid(
+    const uint8_t hash[MYGAMES_STORE_TICKET_HASH_BYTES]) {
+    uint8_t any = 0u;
+    size_t i;
+    if (!hash) return false;
+    for (i = 0u; i < MYGAMES_STORE_TICKET_HASH_BYTES; ++i) any |= hash[i];
+    return any != 0u;
+}
+
+static mygames_store_status transaction_require_epoch(
+    mygames_room_store *store, orm_transaction_t *tx, uint64_t epoch) {
+    persisted_head head = {0};
+    mygames_store_status status;
+    bool exists = false;
+    status = head_read(store, tx, &head, &exists);
+    if (status != MYGAMES_STORE_OK) return status;
+    if (!exists) return MYGAMES_STORE_UNINITIALIZED;
+    status = verify_head(&head, NULL);
+    if (status != MYGAMES_STORE_OK) return status;
+    return head.epoch == epoch ? MYGAMES_STORE_OK : MYGAMES_STORE_STALE_EPOCH;
+}
+
+mygames_store_status mygames_room_store_has_session(
+    mygames_room_store *store, mygames_player_id player) {
+    orm_result_t *result = NULL;
+    orm_value_t value;
+    orm_error_t error;
+    orm_status_t rc;
+    uint64_t rows = 0u;
+    int64_t generation = 0;
+    mygames_store_status status;
+    if (!store || !player || player > (uint64_t)INT64_MAX)
+        return MYGAMES_STORE_INVALID;
+    if (!owner_valid(store)) return MYGAMES_STORE_QUARANTINED;
+    value = orm_i64((int64_t)player);
+    status = backend_query(store, NULL,
+        "select generation from mg_session_leases where player_id=?1",
+        &value, 1u, &result);
+    if (status != MYGAMES_STORE_OK) return status;
+    orm_error_init(&error);
+    rc = orm_result_row_count(result, &rows, &error);
+    if (rc == ORM_STATUS_OK && rows == 1u)
+        rc = orm_result_get_int64(result, 0u, 0u, &generation, &error);
+    if (rc != ORM_STATUS_OK) status = error_from_orm(store, rc, &error);
+    else if (rows == 0u) status = MYGAMES_STORE_NOT_FOUND;
+    else if (rows != 1u || generation <= 0)
+        status = MYGAMES_STORE_CORRUPT;
+    orm_result_destroy(result);
+    return status;
+}
+
+mygames_store_status mygames_room_store_issue_session(
+    mygames_room_store *store, uint64_t epoch,
+    const uint8_t token_hash[MYGAMES_STORE_TICKET_HASH_BYTES],
+    mygames_player_id *out_allocated_player) {
+    orm_transaction_t *tx = NULL;
+    orm_result_t *result = NULL;
+    orm_error_t error;
+    orm_value_t args[3];
+    orm_status_t rc;
+    mygames_store_status status;
+    uint64_t rows = 0u, changed = 0u;
+    int64_t previous = 0;
+    if (!store || !out_allocated_player || !ticket_hash_valid(token_hash) ||
+        epoch == 0u || epoch > (uint64_t)INT64_MAX)
+        return MYGAMES_STORE_INVALID;
+    if (!owner_valid(store)) return MYGAMES_STORE_QUARANTINED;
+    status = begin_transaction(store, &tx);
+    if (status != MYGAMES_STORE_OK) return status;
+    status = transaction_require_epoch(store, tx, epoch);
+    if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
+    status = backend_query(store, tx,
+        "select last_issued from mg_identity_alloc where id=1",
+        NULL, 0u, &result);
+    if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
+    orm_error_init(&error);
+    rc = orm_result_row_count(result, &rows, &error);
+    if (rc == ORM_STATUS_OK && rows == 1u)
+        rc = orm_result_get_int64(result, 0u, 0u, &previous, &error);
+    orm_result_destroy(result);
+    if (rc != ORM_STATUS_OK) {
+        status = error_from_orm(store, rc, &error);
+        return rollback(store, tx, status);
+    }
+    if (rows != 1u || previous < 0 || previous >= INT64_MAX - 1)
+        return rollback(store, tx, MYGAMES_STORE_CORRUPT);
+    args[0] = orm_i64(previous + 1);
+    args[1] = orm_i64(previous);
+    status = execute(store, tx,
+        "update mg_identity_alloc set last_issued=?1 "
+        "where id=1 and last_issued=?2", args, 2u, &changed);
+    if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
+    if (changed != 1u)
+        return rollback(store, tx, MYGAMES_STORE_STALE_SEQUENCE);
+    args[0] = orm_i64(previous + 1);
+    args[1] = orm_blob(token_hash, MYGAMES_STORE_TICKET_HASH_BYTES);
+    status = execute(store, tx,
+        "insert into mg_session_leases("
+        "player_id,ticket_sha256,generation,attached,expires_at_ms) "
+        "values(?1,?2,1,1,0)", args, 2u, &changed);
+    if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
+    if (changed != 1u)
+        return rollback(store, tx, MYGAMES_STORE_CORRUPT);
+    status = commit_transaction(store, tx);
+    if (status == MYGAMES_STORE_OK)
+        *out_allocated_player = (mygames_player_id)(previous + 1);
+    return status;
+}
+
+mygames_store_status mygames_room_store_detach_session(
+    mygames_room_store *store, uint64_t epoch, mygames_player_id player,
+    uint64_t generation, uint64_t expires_at_realtime_ms) {
+    orm_transaction_t *tx = NULL;
+    orm_value_t args[3];
+    uint64_t changed = 0u;
+    mygames_store_status status;
+    if (!store || !player || player > (uint64_t)INT64_MAX ||
+        epoch == 0u || epoch > (uint64_t)INT64_MAX ||
+        generation == 0u || generation > (uint64_t)INT64_MAX ||
+        expires_at_realtime_ms == 0u ||
+        expires_at_realtime_ms > (uint64_t)INT64_MAX)
+        return MYGAMES_STORE_INVALID;
+    if (!owner_valid(store)) return MYGAMES_STORE_QUARANTINED;
+    status = begin_transaction(store, &tx);
+    if (status != MYGAMES_STORE_OK) return status;
+    status = transaction_require_epoch(store, tx, epoch);
+    if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
+    args[0] = orm_i64((int64_t)expires_at_realtime_ms);
+    args[1] = orm_i64((int64_t)player);
+    args[2] = orm_i64((int64_t)generation);
+    status = execute(store, tx,
+        "update mg_session_leases set attached=0,expires_at_ms=?1 "
+        "where player_id=?2 and generation=?3 and attached=1",
+        args, 3u, &changed);
+    if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
+    if (changed != 1u)
+        return rollback(store, tx, MYGAMES_STORE_NOT_FOUND);
+    return commit_transaction(store, tx);
+}
+
+mygames_store_status mygames_room_store_resume_session(
+    mygames_room_store *store, uint64_t epoch,
+    mygames_player_id temporary_player,
+    const uint8_t old_hash[MYGAMES_STORE_TICKET_HASH_BYTES],
+    const uint8_t rotated_hash[MYGAMES_STORE_TICKET_HASH_BYTES],
+    uint64_t now_realtime_ms,
+    mygames_player_id *out_player, uint64_t *out_generation) {
+    orm_transaction_t *tx = NULL;
+    orm_result_t *result = NULL;
+    orm_error_t error;
+    orm_status_t rc;
+    orm_value_t values[5];
+    uint64_t rows = 0u, changed = 0u;
+    int64_t player = 0, generation = 0, attached = 0, expires = 0;
+    mygames_store_status status;
+    if (!store || !temporary_player ||
+        temporary_player > (uint64_t)INT64_MAX ||
+        !ticket_hash_valid(old_hash) || !ticket_hash_valid(rotated_hash) ||
+        memcmp(old_hash, rotated_hash, MYGAMES_STORE_TICKET_HASH_BYTES) == 0 ||
+        epoch == 0u || epoch > (uint64_t)INT64_MAX ||
+        now_realtime_ms == 0u || now_realtime_ms > (uint64_t)INT64_MAX ||
+        !out_player || !out_generation)
+        return MYGAMES_STORE_INVALID;
+    if (!owner_valid(store)) return MYGAMES_STORE_QUARANTINED;
+    status = begin_transaction(store, &tx);
+    if (status != MYGAMES_STORE_OK) return status;
+    status = transaction_require_epoch(store, tx, epoch);
+    if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
+    values[0] = orm_blob(old_hash, MYGAMES_STORE_TICKET_HASH_BYTES);
+    status = backend_query(store, tx,
+        "select player_id,generation,attached,expires_at_ms "
+        "from mg_session_leases where ticket_sha256=?1",
+        values, 1u, &result);
+    if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
+    orm_error_init(&error);
+    rc = orm_result_row_count(result, &rows, &error);
+    if (rc == ORM_STATUS_OK && rows == 1u) {
+        rc = orm_result_get_int64(result, 0u, 0u, &player, &error);
+        if (rc == ORM_STATUS_OK)
+            rc = orm_result_get_int64(result, 0u, 1u, &generation, &error);
+        if (rc == ORM_STATUS_OK)
+            rc = orm_result_get_int64(result, 0u, 2u, &attached, &error);
+        if (rc == ORM_STATUS_OK)
+            rc = orm_result_get_int64(result, 0u, 3u, &expires, &error);
+    }
+    orm_result_destroy(result);
+    if (rc != ORM_STATUS_OK) {
+        status = error_from_orm(store, rc, &error);
+        return rollback(store, tx, status);
+    }
+    /* Same deliberately opaque outcome for invalid, expired, attached, or
+     * already rotated credentials; never disclose principal existence. */
+    if (rows != 1u || player <= 0 ||
+        player == (int64_t)temporary_player ||
+        generation <= 0 || generation >= INT64_MAX || attached != 0 ||
+        expires <= (int64_t)now_realtime_ms)
+        return rollback(store, tx, MYGAMES_STORE_NOT_FOUND);
+    values[0] = orm_i64((int64_t)temporary_player);
+    status = execute(store, tx,
+        "delete from mg_session_leases where player_id=?1 and attached=1",
+        values, 1u, &changed);
+    if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
+    if (changed != 1u)
+        return rollback(store, tx, MYGAMES_STORE_NOT_FOUND);
+    values[0] = orm_blob(rotated_hash, MYGAMES_STORE_TICKET_HASH_BYTES);
+    values[1] = orm_i64(generation + 1);
+    values[2] = orm_i64(player);
+    values[3] = orm_blob(old_hash, MYGAMES_STORE_TICKET_HASH_BYTES);
+    values[4] = orm_i64((int64_t)now_realtime_ms);
+    status = execute(store, tx,
+        "update mg_session_leases set ticket_sha256=?1,generation=?2,"
+        "attached=1,expires_at_ms=0 "
+        "where player_id=?3 and ticket_sha256=?4 and attached=0 "
+        "and expires_at_ms>?5", values, 5u, &changed);
+    if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
+    if (changed != 1u)
+        return rollback(store, tx, MYGAMES_STORE_NOT_FOUND);
+    status = commit_transaction(store, tx);
+    if (status == MYGAMES_STORE_OK) {
+        *out_player = (mygames_player_id)player;
+        *out_generation = (uint64_t)(generation + 1);
+    }
+    return status;
+}
+
 mygames_store_status mygames_room_store_player_high_watermark(
     mygames_room_store *store, mygames_player_id *out_player) {
     orm_result_t *result = NULL;
