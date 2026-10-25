@@ -69,6 +69,7 @@ typedef struct dev_server_state {
     uint64_t room_epoch;
     uint64_t durable_sequence;
     bool store_halted;
+    uint64_t session_grace_ms;
 #if defined(MYGAMES_WITH_TURBODB)
     mygames_room_store *store;
 #endif
@@ -895,7 +896,7 @@ static void room_event_apply(dev_server_state *state,
 #if defined(MYGAMES_WITH_TURBODB)
             if (state->store) {
                 const uint64_t now = cmeta_realtime_ms();
-                const uint64_t deadline = now + MYGAMES_SESSION_GRACE_MS;
+                const uint64_t deadline = now + state->session_grace_ms;
                 const mygames_store_status status =
                     (now != 0u && deadline > now && deadline <= (uint64_t)INT64_MAX) ?
                     mygames_room_store_detach_session(
@@ -912,7 +913,7 @@ static void room_event_apply(dev_server_state *state,
             if (can_detach) {
                 if (mygames_sessions_detach(&state->sessions, peer->session_slot,
                     peer->bound_generation, cmeta_monotonic_ms(),
-                    MYGAMES_SESSION_GRACE_MS) != MYGAMES_SESSION_OK) {
+                    state->session_grace_ms) != MYGAMES_SESSION_OK) {
                     state->store_halted = true;
                 }
             }
@@ -1165,7 +1166,7 @@ static bool prepare_room_store(dev_server_state *state) {
     }
     {
         const uint64_t now = cmeta_realtime_ms();
-        const uint64_t deadline = now + MYGAMES_SESSION_GRACE_MS;
+        const uint64_t deadline = now + state->session_grace_ms;
         if (now == 0u || deadline <= now || deadline > (uint64_t)INT64_MAX) {
             fprintf(stderr, "Invalid real-time clock for durable lease recovery\n");
             return false;
@@ -1221,6 +1222,22 @@ int main(void) {
     mygames_room_directory_init(&state.rooms);
     mygames_sessions_init(&state.sessions);
     state.room_epoch = 1u;
+    state.session_grace_ms = MYGAMES_SESSION_GRACE_MS;
+#if defined(MYGAMES_GATEWAY_STORE_FAULT_TESTING)
+    {
+        const char *override = getenv("MYGAMES_TEST_SESSION_GRACE_MS");
+        if (override && override[0]) {
+            char *end = NULL;
+            const unsigned long parsed = strtoul(override, &end, 10);
+            if (!end || *end != '\0' || parsed < 200ul ||
+                parsed > 5000ul) {
+                fprintf(stderr, "Invalid development lease test override\n");
+                return 1;
+            }
+            state.session_grace_ms = (uint64_t)parsed;
+        }
+    }
+#endif
     atomic_init(&state.accepting, true);
     atomic_init(&state.timer_stop, false);
     atomic_init(&state.tick_queued, false);
