@@ -65,6 +65,10 @@ def generate_leaf(root: Path, kind: str, ca_cert: Path,
 def client_context(ca: Path, cert: Path | None = None,
                    key: Path | None = None) -> ssl.SSLContext:
     ctx = ssl.create_default_context(cafile=str(ca))
+    # GmSSL's pinned TLS13 interoperability profile currently exercises
+    # prime256v1/ECDSA; avoid an implicit X25519 first key-share while
+    # independently investigating its HelloRetryRequest crash.
+    ctx.set_ecdh_curve("prime256v1")
     if cert and key:
         ctx.load_cert_chain(certfile=str(cert), keyfile=str(key))
     return ctx
