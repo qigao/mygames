@@ -243,6 +243,26 @@ static void collect_expired(dev_server_state *state) {
         if (!mygames_sessions_at(&state->sessions, i)) clear_cache(state, i);
 }
 
+#if defined(MYGAMES_WITH_TURBODB)
+/* Persist only SHA-256 of the canonical 64-hex random bearer capability. */
+static void ticket_hex(const uint8_t bytes[MYGAMES_SESSION_TICKET_BYTES],
+                       char out[MYGAMES_SESSION_TICKET_HEX + 1u]) {
+    static const char alphabet[] = "0123456789abcdef";
+    size_t i;
+    for (i = 0u; i < MYGAMES_SESSION_TICKET_BYTES; ++i) {
+        out[2u * i] = alphabet[bytes[i] >> 4u];
+        out[2u * i + 1u] = alphabet[bytes[i] & 0x0fu];
+    }
+    out[MYGAMES_SESSION_TICKET_HEX] = '\0';
+}
+
+static bool ticket_sha256(const char *token,
+                          uint8_t digest[MYGAMES_STORE_TICKET_HASH_BYTES]) {
+    return token != NULL &&
+           cmeta_sha256(token, MYGAMES_SESSION_TICKET_HEX, digest) == SALTS_OK;
+}
+#endif
+
 static void handle_session_resume(dev_server_state *state, client_peer *peer,
                                   const chttp_server_websocket_session *session,
                                   const mygames_wire_command *command) {
@@ -266,19 +286,84 @@ static void handle_session_resume(dev_server_state *state, client_peer *peer,
         (void)send_text(session, rejection);
         return;
     }
-    status = mygames_sessions_resume(&state->sessions, command->resume_token,
-                                    entropy, cmeta_monotonic_ms(), &claimed);
-    memset(entropy, 0, sizeof(entropy));
-    if (status != MYGAMES_SESSION_OK) {
-        (void)send_text(session, rejection);
-        return;
+#if defined(MYGAMES_WITH_TURBODB)
+    if (state->store) {
+        char new_token[MYGAMES_SESSION_TICKET_HEX + 1u];
+        uint8_t old_hash[MYGAMES_STORE_TICKET_HASH_BYTES];
+        uint8_t new_hash[MYGAMES_STORE_TICKET_HASH_BYTES];
+        mygames_player_id recovered_player = 0u;
+        uint64_t new_generation = 0u;
+        mygames_store_status durable;
+        mygames_session_registry staged;
+        size_t i, old_slot = MYGAMES_SESSION_CAPACITY;
+        const uint64_t now = cmeta_realtime_ms();
+        ticket_hex(entropy, new_token);
+        if (!ticket_sha256(command->resume_token, old_hash) ||
+            !ticket_sha256(new_token, new_hash) || now == 0u) {
+            memset(entropy, 0, sizeof(entropy));
+            state->store_halted = true;
+            (void)send_text(session, rejection);
+            return;
+        }
+        durable = mygames_room_store_resume_session(
+            state->store, state->room_epoch, original->player,
+            old_hash, new_hash, now, &recovered_player, &new_generation);
+        memset(old_hash, 0, sizeof(old_hash));
+        memset(new_hash, 0, sizeof(new_hash));
+        if (durable != MYGAMES_STORE_OK) {
+            if (durable != MYGAMES_STORE_NOT_FOUND) state->store_halted = true;
+            memset(entropy, 0, sizeof(entropy));
+            (void)send_text(session, rejection);
+            return;
+        }
+        /* The DB has authenticated the bearer proof and committed rotation.
+         * Stage the in-memory registry first. A failure must not issue READY. */
+        staged = state->sessions;
+        for (i = 0u; i < MYGAMES_SESSION_CAPACITY; ++i) {
+            const mygames_session_record *candidate = mygames_sessions_at(
+                &staged, i);
+            if (candidate && candidate->player == recovered_player) {
+                if (candidate->attached) {
+                    state->store_halted = true;
+                    memset(entropy, 0, sizeof(entropy));
+                    return;
+                }
+                old_slot = i;
+                (void)mygames_sessions_discard(&staged, i);
+                break;
+            }
+        }
+        (void)mygames_sessions_discard(&staged, temporary_slot);
+        status = mygames_sessions_import_active(
+            &staged, recovered_player, new_generation, entropy, &claimed);
+        memset(entropy, 0, sizeof(entropy));
+        if (status != MYGAMES_SESSION_OK) {
+            state->store_halted = true;
+            return; /* persisted ticket is rotated; no unsafe fallback */
+        }
+        state->sessions = staged;
+        clear_cache(state, temporary_slot);
+        if (old_slot != MYGAMES_SESSION_CAPACITY) clear_cache(state, old_slot);
+    } else
+#endif
+    {
+        status = mygames_sessions_resume(
+            &state->sessions, command->resume_token,
+            entropy, cmeta_monotonic_ms(), &claimed);
+        memset(entropy, 0, sizeof(entropy));
+        if (status != MYGAMES_SESSION_OK) {
+            (void)send_text(session, rejection);
+            return;
+        }
+        (void)mygames_sessions_discard(&state->sessions, temporary_slot);
+        clear_cache(state, temporary_slot);
     }
-    /* Revoke the freshly issued provisional credential on this connection. */
-    (void)mygames_sessions_discard(&state->sessions, temporary_slot);
-    clear_cache(state, temporary_slot);
     peer->session_slot = claimed;
     recovered = mygames_sessions_at(&state->sessions, claimed);
-    if (!recovered) return;
+    if (!recovered) {
+        state->store_halted = true;
+        return;
+    }
     peer->bound_generation = recovered->generation;
     length = snprintf(response, sizeof(response),
         "{\"v\":1,\"type\":\"session.ready\","
@@ -294,26 +379,6 @@ static void handle_session_resume(dev_server_state *state, client_peer *peer,
             (void)send_text(session, snapshot);
     }
 }
-
-#if defined(MYGAMES_WITH_TURBODB)
-/* Persist only SHA-256 of the canonical 64-hex random bearer capability. */
-static void ticket_hex(const uint8_t bytes[MYGAMES_SESSION_TICKET_BYTES],
-                       char out[MYGAMES_SESSION_TICKET_HEX + 1u]) {
-    static const char alphabet[] = "0123456789abcdef";
-    size_t i;
-    for (i = 0u; i < MYGAMES_SESSION_TICKET_BYTES; ++i) {
-        out[2u * i] = alphabet[bytes[i] >> 4u];
-        out[2u * i + 1u] = alphabet[bytes[i] & 0x0fu];
-    }
-    out[MYGAMES_SESSION_TICKET_HEX] = '\0';
-}
-
-static bool ticket_sha256(const char *token,
-                          uint8_t digest[MYGAMES_STORE_TICKET_HASH_BYTES]) {
-    return token != NULL &&
-           cmeta_sha256(token, MYGAMES_SESSION_TICKET_HEX, digest) == SALTS_OK;
-}
-#endif
 
 #if defined(MYGAMES_WITH_TURBODB)
 static bool normalize_command_digest(const mygames_wire_command *command,
