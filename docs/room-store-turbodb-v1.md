@@ -115,3 +115,14 @@ gameplay commit.
 
 Do not describe this as a complete production multiplayer persistence
 system before those remaining boundaries have been qualified.
+
+## MQTT publication boundary
+
+The separate optional Flowie Client publisher uses `next_event` and
+`ack_event` only. A positive QoS1 PUBACK is required before the transactional
+Outbox ACK. A crash after PUBACK but before database ACK causes a duplicate
+publication on retry, not silent message loss. This is an at-least-once
+delivery contract, not an exactly-once subscriber side effect. The
+service-only topic and strict event schema are specified in
+[Flowie Outbox v1](flowie-outbox-v1.md). Authenticated subscriber ACL,
+production TLS and consumer-side deduplication remain pending.

@@ -169,3 +169,21 @@ passed Linux/Windows/macOS core checks, the real no-ingress expiry/Outbox
 case, the mailbox-FULL CLOSE/reconnect case, and existing persisted
 restart/fault-injection tests. CHttp abrupt-socket terminal notification,
 TLS/public login and full-game policy still remain open.
+
+## Flowie MQTT Outbox Publisher (independent service)
+
+The `mygames_outbox_publisher` executable runs outside the CFlow room
+worker. It opens its own TurboDB/SQLite connection and Flowie MQTT v5 Client
+worker, reads unpublished rows in global sequence order, and keeps exactly
+one in-flight QoS1 publication. The callback reports settlement to the
+Publisher thread; the Publisher updates the Outbox only after a positive
+PUBACK. It does not call RoomDirectory or CHttp.
+
+The internal service-only topic is
+`mygames/internal/v1/room-events`. Exact room events are validated against
+a strict safe-field allowlist. Duplicate publication following a crash
+between PUBACK and DB ACK is expected, and requires subscriber deduplication.
+This has been demonstrated against a real local Flowie broker in SDK CI.
+Broker ACL/TLS and authorized consumption are **not implemented here**.
+
+[Flowie Publisher contract](flowie-outbox-v1.md).

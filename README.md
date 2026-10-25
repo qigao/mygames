@@ -129,3 +129,26 @@ always emits CLOSE on **abrupt TCP loss**; transport-terminal integration
 is a remaining gate. No external login, public WSS, Flowie MQTT publisher
 or full gameplay recovery is claimed.
 See [durable lease protocol](docs/session-lease-v1.md).
+
+## Flowie MQTT committed Outbox publisher
+
+The optional `mygames_outbox_publisher` executable consumes **only
+committed** TurboDB Outbox rows and publishes sanitized room events over the
+real `Flowie::Client` MQTT 5 protocol at QoS1. It ACKs an Outbox row
+**only after a successful PUBACK**, never just on command admission. If the
+process dies after Broker acceptance but before the DB ACK, it resends that
+same event after restart: the contract is **at least once**, so subscribers
+must deduplicate by durable event sequence.
+
+Build using `MYGAMES_ENABLE_FLOWIE=ON` (also requires TurboDB), and invoke
+the executable against an explicitly configured local broker. The development
+adapter is **127.0.0.1-only**, and the internal topic
+`mygames/internal/v1/room-events` is a service topic, **not a public client
+subscription**. CI exercises the released Flowie 1.0.4 Client and actual
+Flowie Broker endpoints, PUBACK, broker outage, crashed publisher and replay.
+The Publisher rejects extra private fields, recovery tickets and unknown
+event schemas before reaching MQTT.
+
+See [Flowie Outbox v1](docs/flowie-outbox-v1.md). Real broker authentication,
+ACL checks and subscriber deduplication/offsets are still required before
+opening access to any client or external service.
