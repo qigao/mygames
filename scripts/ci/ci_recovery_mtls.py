@@ -92,7 +92,8 @@ def check(condition: bool, why: str) -> None:
         raise AssertionError(why)
 
 
-def run(binary: Path, seed: Path, sqlite_driver: Path) -> None:
+def run(binary: Path, seed: Path, sqlite_driver: Path,
+        native_client: Path) -> None:
     if not shutil.which("openssl"):
         raise RuntimeError("OpenSSL CLI is required for ephemeral mTLS certs")
     with tempfile.TemporaryDirectory(prefix="mygames-recovery-mtls-") as work:
@@ -134,6 +135,20 @@ def run(binary: Path, seed: Path, sqlite_driver: Path) -> None:
             no_cert = client_context(ca)
             untrusted = client_context(ca, rejected_cert, rejected_key)
             prefix = "/internal/recovery/v1/events"
+
+            # The installed CHttp Client uses the SAME pinned native
+            # GmSSL provider as CHttp Server. This diagnostic distinguishes
+            # provider/self-interoperability from independent OpenSSL.
+            native = subprocess.run(
+                [str(native_client), str(port), str(ca),
+                 str(client_cert), str(client_key)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, timeout=15, check=False)
+            print("mygames.recovery_native_mtls_diagnostic: "
+                  f"exit={native.returncode} "
+                  f"stdout={native.stdout.strip()[:260]} "
+                  f"stderr={native.stderr.strip()[-580:]}", flush=True)
+            # Do not weaken the later mandatory OpenSSL acceptance gate.
 
             # Diagnostic-only TLS protocol matrix. These remain verified
             # mTLS requests, not a listener downgrade or production fallback.
@@ -230,6 +245,7 @@ def run(binary: Path, seed: Path, sqlite_driver: Path) -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 4:
-        sys.exit("usage: ci_recovery_mtls.py recovery-service seed-binary sqlite-driver")
+    if len(sys.argv) != 5:
+        sys.exit("usage: ci_recovery_mtls.py recovery-service seed-binary "
+                 "sqlite-driver native-client")
     run(*(Path(item).resolve() for item in sys.argv[1:]))
