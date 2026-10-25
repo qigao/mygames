@@ -9,6 +9,10 @@
 #include <salts/random.h>
 #include <salts/clock.h>
 #include <cflow/executor.h>
+#if defined(MYGAMES_WITH_TURBODB)
+#include "mygames/room_store.h"
+#include <cmeta_crypto.h>
+#endif
 #include <stdatomic.h>
 #include <stdlib.h>
 
@@ -44,6 +48,12 @@ typedef struct dev_server_state {
     cflow_executor room_executor;
     cflow_executor_control room_control;
     atomic_bool accepting;
+    uint64_t room_epoch;
+    uint64_t durable_sequence;
+    bool store_halted;
+#if defined(MYGAMES_WITH_TURBODB)
+    mygames_room_store *store;
+#endif
     mygames_room_directory rooms;
     mygames_session_registry sessions;
     client_peer peers[MYGAMES_PEER_CAPACITY];
@@ -139,15 +149,16 @@ static int health(void *user, const chttp_server_request_view *request,
     return chttp_server_reply(response, 200u, "application/json", body, sizeof(body) - 1u);
 }
 
-static bool encode_snapshot(const mygames_room *room, char *out, size_t capacity) {
+static bool encode_snapshot(const dev_server_state *state, const mygames_room *room,
+                            char *out, size_t capacity) {
     size_t n = 0;
     unsigned int i;
     if (!room || !out || capacity == 0) return false;
     if (!append(out, capacity, &n,
                 "{\"v\":1,\"type\":\"room.snapshot\",\"room_id\":\"%s\","
-                "\"room_epoch\":1,\"revision\":%" PRIu64 ",\"phase\":\"%s\","
+                "\"room_epoch\":%" PRIu64 ",\"revision\":%" PRIu64 ",\"phase\":\"%s\","
                 "\"owner_id\":\"%" PRIu64 "\",\"seats\":[",
-                room->id, room->revision,
+                room->id, state->room_epoch, room->revision,
                 room->phase == MYGAMES_ROOM_WAITING ? "waiting" : "starting",
                 room->owner)) return false;
     for (i = 0u; i < MYGAMES_ROOM_SEATS; ++i) {
@@ -169,7 +180,7 @@ static bool encode_snapshot(const mygames_room *room, char *out, size_t capacity
 static void publish_snapshot(dev_server_state *state, const mygames_room *room) {
     char json[1024];
     unsigned int i;
-    if (!room || !encode_snapshot(room, json, sizeof(json))) return;
+    if (!room || !encode_snapshot(state, room, json, sizeof(json))) return;
     for (i = 0; i < MYGAMES_PEER_CAPACITY; ++i) {
         client_peer *p = &state->peers[i];
         const mygames_room *member_room;
@@ -211,6 +222,11 @@ static bool write_error(char *out, size_t cap, const char *request_id,
 /* Single CHttp owner: room changes and session expiry happen in serial.
  * Lazy expiry is progress on ingress, not an autonomous time-based timer. */
 static void collect_expired(dev_server_state *state) {
+#if defined(MYGAMES_WITH_TURBODB)
+    /* Never perform non-transactional room eviction in durable mode.
+     * Timed eviction needs a committed system command and remains a gate. */
+    if (state->store) return;
+#endif
     mygames_player_id expired[MYGAMES_SESSION_CAPACITY] = {0};
     size_t i, n = mygames_sessions_collect_expired(
         &state->sessions, cmeta_monotonic_ms(), expired);
@@ -274,7 +290,7 @@ static void handle_session_resume(dev_server_state *state, client_peer *peer,
     room = mygames_room_directory_get_player(&state->rooms, recovered->player);
     if (room) {
         char snapshot[1024];
-        if (encode_snapshot(room, snapshot, sizeof(snapshot)))
+        if (encode_snapshot(state, room, snapshot, sizeof(snapshot)))
             (void)send_text(session, snapshot);
     }
 }
@@ -587,6 +603,7 @@ int main(void) {
     int rc, final_rc;
     mygames_room_directory_init(&state.rooms);
     mygames_sessions_init(&state.sessions);
+    state.room_epoch = 1u;
     atomic_init(&state.accepting, true);
     if (!cflow_executor_serial_init_with_capacity(
             &state.room_executor, MYGAMES_OWNER_QUEUE_CAPACITY)) {
