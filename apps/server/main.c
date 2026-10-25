@@ -66,6 +66,12 @@ typedef struct dev_server_state {
     cmeta_mutex_t terminal_lock;
     terminal_record pending_terminal[MYGAMES_TERMINAL_CAPACITY];
     uint64_t last_sweep_ms; /* read/written only by CFlow worker */
+    size_t room_queue_capacity;
+#if defined(MYGAMES_GATEWAY_STORE_FAULT_TESTING)
+    char pause_request_id[MYGAMES_REQUEST_ID_CAPACITY];
+    uint32_t pause_duration_ms;
+    atomic_bool pause_consumed;
+#endif
     uint64_t room_epoch;
     uint64_t durable_sequence;
     bool store_halted;
@@ -963,6 +969,26 @@ static void room_task_run(void *user) {
     dev_server_state *state;
     if (!task || !task->state) return;
     state = task->state;
+#if defined(MYGAMES_GATEWAY_STORE_FAULT_TESTING)
+    if (task->kind == ROOM_TASK_MESSAGE &&
+        state->pause_duration_ms && state->pause_request_id[0] &&
+        task->size <= MYGAMES_WS_MAX_INPUT_BYTES) {
+        char buffer[MYGAMES_WS_MAX_INPUT_BYTES + 1u];
+        char pattern[MYGAMES_REQUEST_ID_CAPACITY + 20u];
+        int length;
+        bool was_paused = false;
+        memcpy(buffer, task->payload, task->size);
+        buffer[task->size] = '\0';
+        length = snprintf(pattern, sizeof(pattern),
+                          "\"request_id\":\"%s\"", state->pause_request_id);
+        if (length > 0 && (size_t)length < sizeof(pattern) &&
+            strstr(buffer, pattern)) {
+            was_paused = atomic_exchange_explicit(
+                &state->pause_consumed, true, memory_order_acq_rel);
+            if (!was_paused) cmeta_sleep_ms(state->pause_duration_ms);
+        }
+    }
+#endif
     room_reconcile_terminals(state);
     if (task->kind == ROOM_TASK_OPEN)
         room_open_apply(state, &task->session);
@@ -1070,6 +1096,10 @@ static void ws_event(void *user, chttp_websocket *socket,
     admitted = room_submit(state, &session, kind, event->data, event->size);
     if (admitted != CFLOW_ADMISSION_ACCEPTED) {
         static const char reason[] = "room_queue_full";
+#if defined(MYGAMES_GATEWAY_STORE_FAULT_TESTING)
+        if (admitted == CFLOW_ADMISSION_FULL)
+            fprintf(stderr, "room owner queue FULL: closing WS but preserving terminal\n");
+#endif
         (void)chttp_websocket_close(socket, 1013u, reason, sizeof(reason) - 1u);
     }
 }
@@ -1223,6 +1253,7 @@ int main(void) {
     mygames_sessions_init(&state.sessions);
     state.room_epoch = 1u;
     state.session_grace_ms = MYGAMES_SESSION_GRACE_MS;
+    state.room_queue_capacity = MYGAMES_OWNER_QUEUE_CAPACITY;
 #if defined(MYGAMES_GATEWAY_STORE_FAULT_TESTING)
     {
         const char *override = getenv("MYGAMES_TEST_SESSION_GRACE_MS");
@@ -1236,6 +1267,31 @@ int main(void) {
             }
             state.session_grace_ms = (uint64_t)parsed;
         }
+        override = getenv("MYGAMES_TEST_ROOM_QUEUE_CAPACITY");
+        if (override && override[0]) {
+            char *end = NULL;
+            const unsigned long parsed = strtoul(override, &end, 10);
+            if (!end || *end != '\0' || parsed < 2ul ||
+                parsed > MYGAMES_OWNER_QUEUE_CAPACITY)
+                return 1;
+            state.room_queue_capacity = (size_t)parsed;
+        }
+        override = getenv("MYGAMES_TEST_PAUSE_REQUEST_ID");
+        if (override && override[0]) {
+            const size_t length = strlen(override);
+            if (!length || length >= sizeof(state.pause_request_id))
+                return 1;
+            memcpy(state.pause_request_id, override, length + 1u);
+        }
+        override = getenv("MYGAMES_TEST_PAUSE_OWNER_MS");
+        if (override && override[0]) {
+            char *end = NULL;
+            const unsigned long parsed = strtoul(override, &end, 10);
+            if (!end || *end != '\0' || parsed < 50ul || parsed > 2000ul)
+                return 1;
+            state.pause_duration_ms = (uint32_t)parsed;
+        }
+        atomic_init(&state.pause_consumed, false);
     }
 #endif
     atomic_init(&state.accepting, true);
@@ -1246,7 +1302,7 @@ int main(void) {
         return 1;
     }
     if (!cflow_executor_serial_init_with_capacity(
-            &state.room_executor, MYGAMES_OWNER_QUEUE_CAPACITY)) {
+            &state.room_executor, state.room_queue_capacity)) {
         fprintf(stderr, "CFlow SerialExecutor init failed\n");
         release_room_store(&state);
         return 1;
