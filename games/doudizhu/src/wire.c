@@ -72,10 +72,22 @@ static bool read_boolean(cursor *p, bool *out) {
 }
 static mygames_wire_status finish(const char *type, unsigned int fields,
                                    const mygames_wire_command *cmd) {
-    enum {V = 1u, T = 2u, ID = 4u, ROOM = 8u, READY = 16u};
+    enum {V = 1u, T = 2u, ID = 4u, ROOM = 8u, READY = 16u, TOKEN = 32u};
     if ((fields & (V | T)) != (V | T)) return MYGAMES_WIRE_INVALID;
     if (strcmp(type, "client.ping") == 0) {
         return fields == (V | T) ? MYGAMES_WIRE_OK : MYGAMES_WIRE_INVALID;
+    }
+    if (strcmp(type, "session.resume") == 0) {
+        size_t i;
+        if (fields != (V | T | TOKEN) ||
+            strlen(cmd->resume_token) != MYGAMES_WIRE_RESUME_TICKET_CAPACITY - 1u)
+            return MYGAMES_WIRE_INVALID;
+        for (i = 0u; i < MYGAMES_WIRE_RESUME_TICKET_CAPACITY - 1u; ++i) {
+            char ch = cmd->resume_token[i];
+            if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')))
+                return MYGAMES_WIRE_INVALID;
+        }
+        return MYGAMES_WIRE_OK;
     }
     if (strcmp(type, "room.create") == 0 ||
         strcmp(type, "room.leave") == 0 ||
@@ -95,7 +107,7 @@ static mygames_wire_status finish(const char *type, unsigned int fields,
 }
 mygames_wire_status mygames_wire_decode_command(const void *bytes, size_t size,
                                                  mygames_wire_command *out) {
-    enum {V = 1u, T = 2u, ID = 4u, ROOM = 8u, READY = 16u};
+    enum {V = 1u, T = 2u, ID = 4u, ROOM = 8u, READY = 16u, TOKEN = 32u};
     cursor p;
     char type[32] = {0};
     unsigned int fields = 0u;
@@ -119,6 +131,7 @@ mygames_wire_status mygames_wire_decode_command(const void *bytes, size_t size,
         else if (strcmp(key, "request_id") == 0) bit = ID;
         else if (strcmp(key, "room_id") == 0) bit = ROOM;
         else if (strcmp(key, "ready") == 0) bit = READY;
+        else if (strcmp(key, "resume_token") == 0) bit = TOKEN;
         else return MYGAMES_WIRE_INVALID;
         if (fields & bit) return MYGAMES_WIRE_INVALID;
         fields |= bit;
@@ -131,6 +144,9 @@ mygames_wire_status mygames_wire_decode_command(const void *bytes, size_t size,
                 return MYGAMES_WIRE_INVALID;
         } else if (bit == ROOM) {
             if (!read_string(&p, out->room_id, sizeof(out->room_id)))
+                return MYGAMES_WIRE_INVALID;
+        } else if (bit == TOKEN) {
+            if (!read_string(&p, out->resume_token, sizeof(out->resume_token)))
                 return MYGAMES_WIRE_INVALID;
         } else {
             if (!read_boolean(&p, &out->ready)) return MYGAMES_WIRE_INVALID;
@@ -154,6 +170,7 @@ mygames_wire_status mygames_wire_decode_command(const void *bytes, size_t size,
     else if (!strcmp(type, "room.join")) out->kind = MYGAMES_COMMAND_JOIN_ROOM;
     else if (!strcmp(type, "room.ready")) out->kind = MYGAMES_COMMAND_READY;
     else if (!strcmp(type, "room.leave")) out->kind = MYGAMES_COMMAND_LEAVE_ROOM;
+    else if (!strcmp(type, "session.resume")) out->kind = MYGAMES_COMMAND_RESUME_SESSION;
     else out->kind = MYGAMES_COMMAND_GET_SNAPSHOT;
     return MYGAMES_WIRE_OK;
 }

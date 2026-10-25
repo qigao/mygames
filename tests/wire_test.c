@@ -49,6 +49,21 @@ int main(void) {
     invalid("{\"v\":1,\"type\":\"room.create\",\"request_id\":\"a\\\"b\"}");
     invalid("{\"v\":1,\"type\":\"room.ready\",\"request_id\":\"a\",\"ready\":[true]}");
     invalid("{\"v\":1,\"type\":\"room.delete\",\"request_id\":\"r1\"}");
+    {
+        char json[160];
+        char ticket[65];
+        size_t i;
+        for (i = 0u; i < 64u; ++i) ticket[i] = 'a';
+        ticket[64] = '\\0';
+        (void)snprintf(json, sizeof(json),
+            "{\\\"v\\\":1,\\\"type\\\":\\\"session.resume\\\",\\\"resume_token\\\":\\\"%s\\\"}", ticket);
+        valid(json, MYGAMES_COMMAND_RESUME_SESSION);
+        ticket[0] = 'G';
+        (void)snprintf(json, sizeof(json),
+            "{\\\"v\\\":1,\\\"type\\\":\\\"session.resume\\\",\\\"resume_token\\\":\\\"%s\\\"}", ticket);
+        invalid(json);
+        invalid("{\\\"v\\\":1,\\\"type\\\":\\\"session.resume\\\"}");
+    }
     puts("mygames.wire: PASS");
     return 0;
 }

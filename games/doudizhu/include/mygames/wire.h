@@ -11,6 +11,7 @@ extern "C" {
 #define MYGAMES_WIRE_MAX_BYTES 512u
 #define MYGAMES_REQUEST_ID_CAPACITY 49u
 #define MYGAMES_WIRE_ROOM_ID_CAPACITY 40u
+#define MYGAMES_WIRE_RESUME_TICKET_CAPACITY 65u
 
 typedef enum mygames_wire_status {
     MYGAMES_WIRE_OK = 0,
@@ -26,13 +27,15 @@ typedef enum mygames_command_kind {
     MYGAMES_COMMAND_JOIN_ROOM,
     MYGAMES_COMMAND_READY,
     MYGAMES_COMMAND_LEAVE_ROOM,
-    MYGAMES_COMMAND_GET_SNAPSHOT
+    MYGAMES_COMMAND_GET_SNAPSHOT,
+    MYGAMES_COMMAND_RESUME_SESSION
 } mygames_command_kind;
 
 typedef struct mygames_wire_command {
     mygames_command_kind kind;
     char request_id[MYGAMES_REQUEST_ID_CAPACITY];
     char room_id[MYGAMES_WIRE_ROOM_ID_CAPACITY];
+    char resume_token[MYGAMES_WIRE_RESUME_TICKET_CAPACITY];
     bool ready;
 } mygames_wire_command;
 
