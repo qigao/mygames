@@ -976,7 +976,13 @@ mygames_store_status mygames_room_store_get_outcome(
     return MYGAMES_STORE_OK;
 }
 
-mygames_store_status mygames_room_store_commit(
+typedef struct optional_seated_expiry {
+    mygames_player_id player;
+    uint64_t generation;
+    uint64_t now_ms;
+} optional_seated_expiry;
+
+static mygames_store_status commit_room_internal(
     mygames_room_store *store, mygames_player_id player_id,
     const mygames_room_directory *post_command_rooms,
     uint64_t expected_epoch, uint64_t expected_sequence,
@@ -984,7 +990,8 @@ mygames_store_status mygames_room_store_commit(
     const uint8_t command_digest[MYGAMES_STORE_COMMAND_DIGEST_BYTES],
     const void *response, size_t response_bytes,
     const void *event_payload, size_t event_bytes,
-    uint64_t *out_committed_sequence) {
+    uint64_t *out_committed_sequence,
+    const optional_seated_expiry *expired) {
     orm_transaction_t *tx = NULL;
     persisted_head head = {0};
     recorded_outcome prior = {0};
@@ -1005,6 +1012,11 @@ mygames_store_status mygames_room_store_commit(
         expected_sequence >= (uint64_t)INT64_MAX)
         return MYGAMES_STORE_INVALID;
     if (!owner_valid(store)) return MYGAMES_STORE_QUARANTINED;
+    if (expired && (expired->player != player_id ||
+        expired->generation == 0u || expired->generation > (uint64_t)INT64_MAX ||
+        expired->now_ms == 0u || expired->now_ms > (uint64_t)INT64_MAX ||
+        mygames_room_directory_get_player(post_command_rooms, player_id)))
+        return MYGAMES_STORE_INVALID;
     if (mygames_room_checkpoint_encode(
             post_command_rooms, expected_epoch, image, sizeof(image), &image_size)
         != MYGAMES_CHECKPOINT_OK) return MYGAMES_STORE_INVALID;
@@ -1013,8 +1025,19 @@ mygames_store_status mygames_room_store_commit(
     status = head_read(store, tx, &head, &exists);
     if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
     if (!exists) return rollback(store, tx, MYGAMES_STORE_UNINITIALIZED);
-    status = verify_head(&head, NULL);
-    if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
+    if (expired) {
+        mygames_room_directory previous_rooms;
+        const mygames_room *prior_room;
+        status = verify_head(&head, &previous_rooms);
+        if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
+        prior_room = mygames_room_directory_get_player(
+            &previous_rooms, expired->player);
+        if (!prior_room || prior_room->phase != MYGAMES_ROOM_WAITING)
+            return rollback(store, tx, MYGAMES_STORE_NOT_FOUND);
+    } else {
+        status = verify_head(&head, NULL);
+        if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
+    }
     if (head.epoch != expected_epoch)
         return rollback(store, tx, MYGAMES_STORE_STALE_EPOCH);
     status = find_outcome(store, tx, player_id, request_id, &prior);
@@ -1053,6 +1076,21 @@ mygames_store_status mygames_room_store_commit(
     }
 #endif
 
+    if (expired) {
+        /* Atomic with Checkpoint+command+Outbox: a recovered or active
+         * lease cannot be deleted by stale timer work. */
+        args[0] = orm_i64((int64_t)expired->player);
+        args[1] = orm_i64((int64_t)expired->generation);
+        args[2] = orm_i64((int64_t)expired->now_ms);
+        status = execute(store, tx,
+            "delete from mg_session_leases where player_id=?1 "
+            "and generation=?2 and attached=0 and expires_at_ms<=?3",
+            args, 3u, &affected);
+        if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
+        if (affected != 1u)
+            return rollback(store, tx, MYGAMES_STORE_NOT_FOUND);
+    }
+
     args[0] = orm_i64((int64_t)player_id);
     args[1] = orm_text(request_id);
     args[2] = orm_blob(command_digest, MYGAMES_STORE_COMMAND_DIGEST_BYTES);
@@ -1084,6 +1122,41 @@ mygames_store_status mygames_room_store_commit(
     status = commit_transaction(store, tx);
     if (status == MYGAMES_STORE_OK) *out_committed_sequence = next_seq;
     return status;
+}
+
+mygames_store_status mygames_room_store_commit(
+    mygames_room_store *store, mygames_player_id player_id,
+    const mygames_room_directory *post_command_rooms,
+    uint64_t expected_epoch, uint64_t expected_sequence,
+    const char *request_id,
+    const uint8_t command_digest[MYGAMES_STORE_COMMAND_DIGEST_BYTES],
+    const void *response, size_t response_bytes,
+    const void *event_payload, size_t event_bytes,
+    uint64_t *out_committed_sequence) {
+    return commit_room_internal(
+        store, player_id, post_command_rooms, expected_epoch, expected_sequence,
+        request_id, command_digest, response, response_bytes,
+        event_payload, event_bytes, out_committed_sequence, NULL);
+}
+
+mygames_store_status mygames_room_store_expire_seated(
+    mygames_room_store *store,
+    const mygames_room_directory *post_expiry_rooms,
+    uint64_t expected_epoch, uint64_t expected_sequence,
+    mygames_player_id expired_player, uint64_t lease_generation,
+    uint64_t now_realtime_ms, const char *system_request_id,
+    const uint8_t command_digest[MYGAMES_STORE_COMMAND_DIGEST_BYTES],
+    const void *outcome, size_t outcome_bytes,
+    const void *sanitized_event, size_t event_bytes,
+    uint64_t *out_committed_sequence) {
+    const optional_seated_expiry expiry = {
+        expired_player, lease_generation, now_realtime_ms
+    };
+    return commit_room_internal(
+        store, expired_player, post_expiry_rooms,
+        expected_epoch, expected_sequence,
+        system_request_id, command_digest, outcome, outcome_bytes,
+        sanitized_event, event_bytes, out_committed_sequence, &expiry);
 }
 
 mygames_store_status mygames_room_store_next_event(
