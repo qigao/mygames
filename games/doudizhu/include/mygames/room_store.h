@@ -96,6 +96,29 @@ mygames_store_status mygames_room_store_resume_session(
     uint64_t now_realtime_ms,
     mygames_player_id *out_player, uint64_t *out_generation);
 
+/* Controlled cleanup of a just-issued credential for which the HELLO was
+ * never admitted. Caller MUST assert this player has no room membership.
+ * Only removes attached, generation-matching provisional leases.
+ */
+mygames_store_status mygames_room_store_discard_unsent_session(
+    mygames_room_store *store, uint64_t epoch,
+    mygames_player_id player, uint64_t generation);
+
+/* Enumerate and delete expired detached leases that own NO room seat. The
+ * caller must check room membership on the unique CFlow Room Owner before
+ * deleting. Neither function modifies RoomDirectory or command journal.
+ * after_player enables bounded, non-spinning sweeps past seated expirations.
+ */
+mygames_store_status mygames_room_store_next_expired_session(
+    mygames_room_store *store, uint64_t now_realtime_ms,
+    mygames_player_id after_player,
+    mygames_player_id *out_player, uint64_t *out_generation);
+
+mygames_store_status mygames_room_store_delete_expired_unseated(
+    mygames_room_store *store, uint64_t epoch,
+    mygames_player_id player, uint64_t generation,
+    uint64_t now_realtime_ms);
+
 mygames_store_status mygames_room_store_has_session(
     mygames_room_store *store, mygames_player_id player);
 
