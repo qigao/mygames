@@ -35,7 +35,7 @@ jobs:
       - name: Install pinned TypeScript syntax checker
         run: npm install --no-save --no-package-lock --ignore-scripts --no-audit --no-fund typescript@5.9.3
       - name: Validate wire, Cocos scene graph and TypeScript UI syntax
-        run: node --experimental-strip-types --test tests/protocol.test.mjs tests/cocos_scene.test.mjs tests/cocos_ts_syntax.test.mjs
+        run: node --experimental-strip-types --test tests/protocol.test.mjs tests/cocos_scene.test.mjs tests/cocos_ts_syntax.test.mjs tests/game_socket.test.mjs
 
 
   gateway-linux-sdk:
