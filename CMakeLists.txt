@@ -36,6 +36,12 @@ if(MYGAMES_ENABLE_TURBODB)
   add_library(mygames_room_store STATIC
     games/doudizhu/src/room_store_turbodb.c)
   add_library(MyGames::Store ALIAS mygames_room_store)
+  if(MYGAMES_ENABLE_GATEWAY)
+    target_compile_definitions(mygames_server PRIVATE
+      MYGAMES_WITH_TURBODB=1)
+    target_link_libraries(mygames_server PRIVATE
+      MyGames::Store Salts::Core)
+  endif()
   target_compile_features(mygames_room_store PUBLIC c_std_11)
   target_include_directories(mygames_room_store PUBLIC
     games/doudizhu/include)
