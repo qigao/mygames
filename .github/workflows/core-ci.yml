@@ -90,12 +90,6 @@ jobs:
             build/gateway/mygames_event_reconcile_test \
             build/gateway/mygames_flowie_consumer_projection_audit \
             "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so"
-      - name: Real CHttp/CNet mTLS readonly recovery and certificate rejection
-        run: |
-          python3 scripts/ci/ci_recovery_mtls.py \
-            build/gateway/mygames_recovery_service \
-            build/gateway/mygames_outbox_seed_test \
-            "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so"
       - name: Authenticated Flowie broker service ACL and subscriber fanout
         run: |
           python3 scripts/ci/ci_flowie_acl_smoke.py \
@@ -120,4 +114,10 @@ jobs:
         run: |
           python3 scripts/ci/ci_persistent_gateway_smoke.py \
             build/gateway/mygames_server \
+            "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so"
+      - name: Real CHttp/CNet mTLS readonly recovery and certificate rejection
+        run: |
+          python3 scripts/ci/ci_recovery_mtls.py \
+            build/gateway/mygames_recovery_service \
+            build/gateway/mygames_outbox_seed_test \
             "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so"
