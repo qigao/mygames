@@ -68,6 +68,44 @@ mygames_store_status mygames_room_store_claim_epoch(
     mygames_room_store *store, uint64_t expected_epoch,
     uint64_t *out_claimed_epoch);
 
+/* Development-only durable bearer lease contract. The SQLite DB stores
+ * ONLY SHA-256 of 256-bit random tickets (never plaintext). All calls run
+ * on the unique Room Owner. No external principal authentication is implied.
+ *
+ * The identity high-watermark is allocated transactionally and never reused
+ * even after a session row is deleted. Epoch CAS fences superseded owners.
+ * A server restart atomically detaches formerly connected sessions and
+ * grants only a bounded, absolute wall-clock grace to present their tickets.
+ */
+#define MYGAMES_STORE_TICKET_HASH_BYTES 32u
+
+mygames_store_status mygames_room_store_issue_session(
+    mygames_room_store *store, uint64_t epoch, mygames_player_id player,
+    const uint8_t token_hash[MYGAMES_STORE_TICKET_HASH_BYTES]);
+
+mygames_store_status mygames_room_store_detach_session(
+    mygames_room_store *store, uint64_t epoch, mygames_player_id player,
+    uint64_t generation, uint64_t expires_at_realtime_ms);
+
+mygames_store_status mygames_room_store_resume_session(
+    mygames_room_store *store, uint64_t epoch,
+    mygames_player_id temporary_player,
+    const uint8_t old_hash[MYGAMES_STORE_TICKET_HASH_BYTES],
+    const uint8_t rotated_hash[MYGAMES_STORE_TICKET_HASH_BYTES],
+    uint64_t now_realtime_ms,
+    mygames_player_id *out_player, uint64_t *out_generation);
+
+mygames_store_status mygames_room_store_has_session(
+    mygames_room_store *store, mygames_player_id player);
+
+/* Atomically updates the owner epoch in Checkpoint and transitions all old
+ * attached leases into detached, time-limited recovery capabilities. The
+ * deadline is computed by caller from a strictly bounded realtime grace.
+ */
+mygames_store_status mygames_room_store_claim_epoch_for_recovery(
+    mygames_room_store *store, uint64_t expected_epoch,
+    uint64_t recovery_deadline_realtime_ms, uint64_t *out_claimed_epoch);
+
 /* Atomic transaction covering:
  *   1. optimistic epoch+sequence CAS on durable checkpoint
  *   2. durable command ID + 32-byte semantic digest + exact response
