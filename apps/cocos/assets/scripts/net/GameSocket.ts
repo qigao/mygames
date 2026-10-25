@@ -1,9 +1,13 @@
-import {encodePing, encodeRoomCommand, parseServerFrame} from './Protocol';
-import type {RoomCommandType, ServerFrame} from './Protocol';
+import {encodePing, encodeResume, encodeRoomCommand, parseServerFrame} from './Protocol';
+import type {RoomCommandType, ServerFrame, ServerHello} from './Protocol';
 
 export type ConnectionState =
-    'offline' | 'connecting' | 'handshaking' | 'ready' | 'failed';
+    'offline' | 'connecting' | 'handshaking' | 'restoring' | 'ready' | 'failed';
 
+/**
+ * Cocos browser WS client. The recovery capability is kept in memory only.
+ * It is not a login token and must never be placed in a URL or debug log.
+ */
 export class GameSocket {
     private socket: WebSocket | null = null;
     private generation = 0;
@@ -11,15 +15,23 @@ export class GameSocket {
     private status: ConnectionState = 'offline';
     private roomsAvailable = false;
 
+    private resumeTicket: string | null = null;
+    private playerId: string | null = null;
+    private provisional: ServerHello | null = null;
+
     constructor(
         private readonly onState: (state: ConnectionState, reason?: string) => void,
         private readonly onFrame: (frame: ServerFrame) => void
     ) {}
 
     get state(): ConnectionState { return this.status; }
+    get canResume(): boolean { return this.resumeTicket !== null; }
+    get currentPlayerId(): string | null { return this.playerId; }
 
     connect(url: string): void {
-        this.disconnect();
+        // Replacing the WebSocket does NOT discard a previously received ticket.
+        // Explicit disconnect() is the only local credential-forgetting path.
+        this.closeTransport();
         if (!/^wss?:\/\//i.test(url)) {
             this.transition('failed', 'Invalid WebSocket URL');
             return;
@@ -45,19 +57,7 @@ export class GameSocket {
             }
             try {
                 const frame = parseServerFrame(event.data);
-                if (frame.type === 'server.hello') {
-                    if (this.status !== 'handshaking' ||
-                        !frame.capabilities.includes('ping')) {
-                        this.fail('Incompatible server handshake');
-                        return;
-                    }
-                    this.roomsAvailable = frame.capabilities.includes('rooms');
-                    this.transition('ready');
-                } else if (this.status !== 'ready') {
-                    this.fail('Event received before handshake');
-                    return;
-                }
-                this.onFrame(frame);
+                this.handleFrame(frame);
             } catch (error) {
                 this.fail(error instanceof Error ? error.message : 'Protocol error');
             }
@@ -69,6 +69,7 @@ export class GameSocket {
             if (id === this.generation && this.status !== 'failed') {
                 this.socket = null;
                 this.roomsAvailable = false;
+                this.provisional = null;
                 this.transition('offline');
             }
         };
@@ -78,38 +79,71 @@ export class GameSocket {
         this.ensureReady();
         this.socket!.send(encodePing());
     }
-
-    /** Server binds player identity to the current dev WS connection only. */
-    createRoom(): string {
-        return this.requestRoom('room.create');
-    }
+    createRoom(): string { return this.requestRoom('room.create'); }
     joinRoom(roomId: string): string {
         return this.requestRoom('room.join', {room_id: roomId});
     }
     setReady(ready: boolean): string {
         return this.requestRoom('room.ready', {ready});
     }
-    leaveRoom(): string {
-        return this.requestRoom('room.leave');
-    }
-    requestSnapshot(): string {
-        return this.requestRoom('room.snapshot.get');
+    leaveRoom(): string { return this.requestRoom('room.leave'); }
+    requestSnapshot(): string { return this.requestRoom('room.snapshot.get'); }
+
+    /** User-initiated logout: drops local recovery capability. */
+    disconnect(): void {
+        this.closeTransport();
+        this.resumeTicket = null;
+        this.playerId = null;
+        this.transition('offline');
     }
 
-    disconnect(): void {
-        ++this.generation;
-        this.roomsAvailable = false;
-        this.requestOrdinal = 0;
-        const previous = this.socket;
-        this.socket = null;
-        if (previous !== null) {
-            previous.onopen = null;
-            previous.onmessage = null;
-            previous.onerror = null;
-            previous.onclose = null;
-            previous.close();
+    private handleFrame(frame: ServerFrame): void {
+        if (frame.type === 'server.hello') {
+            if (this.status !== 'handshaking' ||
+                !frame.capabilities.includes('ping')) {
+                throw new Error('Incompatible server handshake');
+            }
+            this.roomsAvailable = frame.capabilities.includes('rooms');
+            if (this.resumeTicket && frame.resume_token && frame.player_id &&
+                frame.capabilities.includes('resume')) {
+                this.provisional = frame;
+                this.transition('restoring');
+                this.socket!.send(encodeResume(this.resumeTicket));
+                return;
+            }
+            this.resumeTicket = frame.resume_token ?? null;
+            this.playerId = frame.player_id ?? null;
+            this.transition('ready');
+            this.onFrame(frame);
+            return;
         }
-        this.transition('offline');
+        if (frame.type === 'session.ready') {
+            if (this.status !== 'restoring' || !this.provisional)
+                throw new Error('Unexpected session recovery');
+            this.resumeTicket = frame.resume_token;
+            this.playerId = frame.player_id;
+            this.provisional = null;
+            this.transition('ready');
+            this.onFrame(frame);
+            return;
+        }
+        if (frame.type === 'session.error') {
+            if (this.status !== 'restoring' || !this.provisional)
+                throw new Error('Unexpected recovery rejection');
+            // Recovery was rejected. Continue only as a brand-new, limited
+            // development session, and make the UI discard its old room state.
+            const fresh = this.provisional;
+            this.provisional = null;
+            this.resumeTicket = fresh.resume_token ?? null;
+            this.playerId = fresh.player_id ?? null;
+            this.transition('ready');
+            this.onFrame(frame);
+            this.onFrame(fresh);
+            return;
+        }
+        if (this.status !== 'ready')
+            throw new Error('Event received before session handshake');
+        this.onFrame(frame);
     }
 
     private requestRoom(type: RoomCommandType,
@@ -120,16 +154,19 @@ export class GameSocket {
         this.socket!.send(encodeRoomCommand(type, id, options));
         return id;
     }
+
     private ensureReady(): void {
         if (this.status !== 'ready' || this.socket?.readyState !== WebSocket.OPEN)
             throw new Error('Not connected');
     }
-    private fail(reason: string): void {
-        this.transition('failed', reason);
+
+    private closeTransport(): void {
+        ++this.generation;
+        this.roomsAvailable = false;
+        this.provisional = null;
+        this.requestOrdinal = 0;
         const previous = this.socket;
         this.socket = null;
-        this.roomsAvailable = false;
-        ++this.generation;
         if (previous) {
             previous.onopen = null;
             previous.onmessage = null;
@@ -137,6 +174,11 @@ export class GameSocket {
             previous.onclose = null;
             previous.close();
         }
+    }
+
+    private fail(reason: string): void {
+        this.closeTransport();
+        this.transition('failed', reason);
     }
     private transition(state: ConnectionState, reason?: string): void {
         this.status = state;
