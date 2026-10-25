@@ -3,6 +3,11 @@
 #include <cflow/executor.h>
 #include <salts/clock.h>
 
+/* Assertions are the TinyTest-like test oracle here: keep them enabled even
+ * when this installed-SDK qualification is built in Release. */
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
 #include <assert.h>
 #include <stdatomic.h>
 #include <stdbool.h>
