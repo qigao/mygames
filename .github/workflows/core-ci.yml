@@ -65,11 +65,13 @@ jobs:
             -DMYGAMES_ENABLE_TURBODB=ON -DMYGAMES_ENABLE_FLOWIE=ON \
             -DCMAKE_PREFIX_PATH="$SDK_PREFIX_PATH"
       - name: Build CHttp gateway and CFlow Owner conformance
-        run: cmake --build build/gateway --target mygames_server mygames_cflow_owner_test mygames_turbodb_store_test mygames_room_gateway_probe mygames_idle_expiry_probe mygames_outbox_publisher mygames_flowie_broker_test mygames_outbox_seed_test mygames_outbox_audit_test --parallel 2
+        run: cmake --build build/gateway --target mygames_server mygames_cflow_owner_test mygames_turbodb_store_test mygames_room_gateway_probe mygames_idle_expiry_probe mygames_outbox_publisher mygames_flowie_broker_test mygames_outbox_seed_test mygames_outbox_audit_test mygames_outbox_contract_test --parallel 2
       - name: Verify worker isolation, bounded queue and shutdown drain
         run: ctest --test-dir build/gateway -C Release --output-on-failure -R 'mygames[.]cflow_owner'
       - name: Validate transactional TurboDB room persistence and outbox
         run: ctest --test-dir build/gateway -C Release --output-on-failure -R 'mygames[.]turbodb_store'
+      - name: Reject private fields and incorrect room event sequence
+        run: ctest --test-dir build/gateway -C Release --output-on-failure -R 'mygames[.]outbox_contract'
       - name: Real Flowie MQTT QoS1 Outbox settlement and replay
         run: |
           python3 scripts/ci/ci_flowie_outbox_smoke.py \
