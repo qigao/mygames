@@ -1295,6 +1295,100 @@ mygames_store_status mygames_room_store_get_committed_event(
     return status;
 }
 
+/* This function intentionally uses a SQLite *read* transaction on a
+ * physical SQLITE_OPEN_READONLY handle. Separate head/event SELECTs are not
+ * sufficient to promise a consistent page during concurrent Room commits.
+ * Do not use begin_transaction(), which is reserved for write ownership. */
+mygames_store_status mygames_room_store_read_archive_page(
+    mygames_room_store *store, uint64_t after_sequence,
+    uint32_t max_events, mygames_store_archive_page *out_page) {
+    orm_transaction_t *tx = NULL;
+    orm_error_t error;
+    orm_status_t rc;
+    persisted_head head = {0};
+    mygames_store_archive_page page = {0};
+    mygames_store_status status;
+    bool exists = false;
+    uint64_t available, limit;
+    uint64_t i;
+
+    if (!store || !out_page || after_sequence > (uint64_t)INT64_MAX ||
+        max_events == 0u || max_events > MYGAMES_STORE_ARCHIVE_PAGE_MAX)
+        return MYGAMES_STORE_INVALID;
+    /* Unlike the normal Room Store, this API never makes a writer handle
+     * look like a read-only source; no output publication on failure. */
+    if (!store->read_only) return MYGAMES_STORE_READ_ONLY;
+    if (!owner_valid(store)) return MYGAMES_STORE_QUARANTINED;
+    orm_error_init(&error);
+    rc = orm_transaction_begin(
+        store->connection, ORM_ISOLATION_SERIALIZABLE, &tx, &error);
+    if (rc != ORM_STATUS_OK) return error_from_orm(store, rc, &error);
+
+    status = head_read(store, tx, &head, &exists);
+    if (status != MYGAMES_STORE_OK) goto fail;
+    if (!exists) { status = MYGAMES_STORE_UNINITIALIZED; goto fail; }
+    status = verify_head(&head, NULL);
+    if (status != MYGAMES_STORE_OK) goto fail;
+    status = validate_journal(store, tx, head.seq);
+    if (status != MYGAMES_STORE_OK) goto fail;
+    if (after_sequence > head.seq) {
+        status = MYGAMES_STORE_STALE_SEQUENCE;
+        goto fail;
+    }
+
+    page.epoch = head.epoch;
+    page.checkpoint_sequence = head.seq;
+    /* This store still requires a complete 1..checkpoint history and does
+     * not expose a configurable prune watermark. Never invent retention. */
+    page.retained_from_sequence = 1u;
+    page.resume_after_sequence = after_sequence;
+    available = head.seq - after_sequence;
+    limit = available < max_events ? available : max_events;
+    for (i = 0u; i < limit; ++i) {
+        orm_result_t *result = NULL;
+        orm_value_t arg = orm_i64((int64_t)(after_sequence + i + 1u));
+        orm_blob_t stored = {0};
+        uint64_t row_count = 0u;
+        int64_t stored_seq = 0;
+        mygames_store_archive_item *item = &page.items[i];
+
+        status = backend_query(store, tx,
+            "select seq,payload from mg_outbox where seq=?1",
+            &arg, 1u, &result);
+        if (status != MYGAMES_STORE_OK) goto fail;
+        orm_error_init(&error);
+        rc = orm_result_row_count(result, &row_count, &error);
+        if (rc == ORM_STATUS_OK && row_count == 1u)
+            rc = orm_result_get_int64(result, 0u, 0u, &stored_seq, &error);
+        if (rc == ORM_STATUS_OK && row_count == 1u)
+            rc = orm_result_get_blob(result, 0u, 1u, &stored, &error);
+
+        if (rc != ORM_STATUS_OK) status = error_from_orm(store, rc, &error);
+        else if (row_count != 1u ||
+                 stored_seq != (int64_t)(after_sequence + i + 1u) ||
+                 !stored.data || stored.size == 0u ||
+                 stored.size > MYGAMES_STORE_EVENT_MAX)
+            status = MYGAMES_STORE_CORRUPT;
+        else {
+            item->sequence = (uint64_t)stored_seq;
+            item->size = stored.size;
+            memcpy(item->payload, stored.data, stored.size);
+            status = MYGAMES_STORE_OK;
+        }
+        orm_result_destroy(result);
+        if (status != MYGAMES_STORE_OK) goto fail;
+        ++page.count;
+        page.resume_after_sequence = item->sequence;
+    }
+    page.has_more = page.resume_after_sequence < head.seq;
+    status = commit_transaction(store, tx);
+    if (status == MYGAMES_STORE_OK) *out_page = page;
+    return status;
+
+fail:
+    return rollback(store, tx, status);
+}
+
 mygames_store_status mygames_room_store_ack_event(
     mygames_room_store *store, uint64_t epoch, uint64_t sequence) {
     persisted_head head = {0};
