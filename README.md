@@ -5,13 +5,15 @@ A server-authoritative multiplayer game platform, initially for Dou Dizhu (æ–—åœ
 ## Current development prototype
 
 - **C11 Room Core:** bounded 32-room directory, three-seat admission, owner handover, ready state, revision tracking, lifecycle tests.
-- **C11 wire decoder:** strict bounded JSON subset with versioned room commands and regression tests.
+- **C11 wire decoder:** strict bounded JSON subset with versioned room and session.resume commands and regression tests.
+- **In-process reconnect:** OS-CSPRNG-generated 256-bit bearer tickets, 30-second detached grace,
+  rotating recovery credentials, stable room seating and request-id reuse protection.
 - **CHttp/CNet development gateway:** real WebSocket handlers for room.create / join / ready / leave / snapshot.get. **Loopback-only and unauthenticated.**
 - **Cocos Creator 3.8.8:** serialized Lobby.scene (Canvas/Camera/Bootstrap), TypeScript runtime-rendered room/lobby UI, WebSocket and room presentation state.
 - **CI:** Linux/Windows/macOS core tests and Node 22 TypeScript protocol tests. SDK gateway is opt-in and separately qualified.
 
-**Do not expose or deploy as a public game service.** The gateway lacks login,
-secure reconnect, gameplay, storage, Flowie integration and KFCore/DouZero.
+**Do not expose or deploy as a public game service.** The gateway lacks external user login, durable reconnect, gameplay, storage,
+Flowie integration and KFCore/DouZero.
 
 ## Core-only tests
 
@@ -48,3 +50,6 @@ In later milestones KFCore will run DouZero models and Flowie MQTT will fan out
 committed, sanitized room events; MQTT protocol acknowledgement never commits gameplay.
 
 License: AGPL-3.0, see LICENSE.
+
+**Recovery is not user authentication.** It is limited to graceful WebSocket Close and
+one process lifetime. See [session protocol](docs/protocol.md) and [remaining ownership gates](docs/architecture.md).

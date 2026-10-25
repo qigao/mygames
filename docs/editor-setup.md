@@ -36,3 +36,12 @@ unsupported until authentication and TLS are added.
 CI checks the serialized scene graph, `__id__` links, script/scene UUID metadata,
 TypeScript syntax and the WebSocket room protocol. It does **not** launch Cocos
 Editor or build a production Web/native package. Those are separate pending gates.
+
+## Resume smoke (dev-only)
+
+After joining the waiting room, close the WebSocket connection and press Connect
+again in the **same running Cocos scene instance**. The client retains its
+recovery capability in memory, sends `session.resume`, and should restore the
+original player ID and room snapshot. Restarting the Cocos page destroys that
+in-memory capability and starts a new provisional identity. This workflow is
+still pending actual Creator Editor/Web preview qualification (Issue #2).
