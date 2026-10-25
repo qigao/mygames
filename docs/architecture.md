@@ -8,7 +8,9 @@
   the server creates an **ephemeral** per-WebSocket numeric identity.
 - CHttp HTTP health, WebSocket room create/join/ready/leave/snapshot and
   bounded room snapshot fanout using generation-fenced server session handles.
-- Cocos TypeScript GameSocket, RoomStore, developer ConnectionPanel.
+- Cocos TypeScript GameSocket/RoomStore plus a serialized Lobby.scene, runtime
+  `LobbyBootstrap` vector-rendered room view and developer ConnectionPanel.
+  Editor import and Web build remain unqualified.
 - Core/Node tests without optional external SDK.
 - Rooms are **not durable**, have no authenticated reconnect, and do not yet
   start actual gameplay. Only WAITING room member leave is supported.

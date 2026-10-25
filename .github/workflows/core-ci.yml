@@ -32,8 +32,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Validate TypeScript wire framing
-        run: node --experimental-strip-types --test tests/protocol.test.mjs
+      - name: Install pinned TypeScript syntax checker
+        run: npm install --no-save --no-package-lock --ignore-scripts --no-audit --no-fund typescript@5.9.3
+      - name: Validate wire, Cocos scene graph and TypeScript UI syntax
+        run: node --experimental-strip-types --test tests/protocol.test.mjs tests/cocos_scene.test.mjs tests/cocos_ts_syntax.test.mjs
 
 
   gateway-linux-sdk:
