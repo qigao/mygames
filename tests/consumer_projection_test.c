@@ -1,4 +1,6 @@
 #include "mygames/consumer_projection.h"
+#include <orm.h>
+#include <orm_runtime.h>
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
@@ -7,6 +9,52 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
+
+/* Deliberately corrupt only this isolated test database via TurboDB,
+ * without directly editing native SQLite files or bypassing ORM ownership. */
+static void tamper_receipt_via_turbodb(const char *plugin, const char *database) {
+    orm_runtime_t *runtime = NULL;
+    orm_connection_t *connection = NULL;
+    orm_runtime_config_t runtime_cfg;
+    orm_driver_load_config_t load = {0};
+    orm_config_t cfg;
+    orm_option_t option;
+    orm_error_t error;
+    orm_query_t *query = NULL;
+    orm_result_t *result = NULL;
+    uint64_t removed = 0u;
+    orm_runtime_config_init(&runtime_cfg);
+    orm_error_init(&error);
+    assert(orm_runtime_create(&runtime_cfg, &runtime, &error) == ORM_STATUS_OK);
+    load.struct_size = sizeof(load);
+    load.abi_version = ORM_RUNTIME_ABI_VERSION;
+    load.module_path = orm_view(plugin);
+    load.expected_driver_id = orm_view("sqlite");
+    assert(orm_runtime_load_driver(runtime, &load, &error) == ORM_STATUS_OK);
+    orm_config(&cfg);
+    option.keyword = orm_view("filename");
+    option.value = orm_view(database);
+    cfg.driver = orm_view("sqlite");
+    cfg.options = &option;
+    cfg.option_count = 1u;
+    assert(orm_runtime_connect(runtime, &cfg, &connection, &error) == ORM_STATUS_OK);
+    assert(orm_raw(connection, orm_view(
+        "delete from mg_consumer_receipt where source_namespace=?1 "
+        "and consumer_id=?2 and event_seq=?3"),
+        &query, &error) == ORM_STATUS_OK);
+    assert(orm_query_bind(query, orm_text("arena-west"), &error) == ORM_STATUS_OK);
+    assert(orm_query_bind(query, orm_text("dashboard"), &error) == ORM_STATUS_OK);
+    assert(orm_query_bind(query, orm_i64(1), &error) == ORM_STATUS_OK);
+    assert(orm_query_execute(query, &result, &error) == ORM_STATUS_OK);
+    assert(orm_result_affected_rows(result, &removed, &error) == ORM_STATUS_OK);
+    assert(removed == 1u);
+    orm_result_destroy(result);
+    orm_query_destroy(query);
+    assert(orm_connection_close(connection, &error) == ORM_STATUS_OK);
+    orm_connection_release(connection);
+    assert(orm_runtime_close(runtime, &error) == ORM_STATUS_OK);
+    orm_runtime_release(runtime);
+}
 
 static void assert_snapshot(mygames_consumer_projection *store,
                             const char *ns, const char *id,
@@ -103,6 +151,13 @@ int main(int argc, char **argv) {
         == MYGAMES_CONSUMER_INVALID);
     assert_snapshot(store,"arena-west","dashboard",2u,2u);
     mygames_consumer_projection_close(store);
+    store = NULL;
+    tamper_receipt_via_turbodb(argv[1], argv[2]);
+    /* The cursor still says 2 applied effects, but one historical
+     * receipt is absent. A future service must not trust this state. */
+    assert(mygames_consumer_projection_open(argv[1], argv[2], &store)
+           == MYGAMES_CONSUMER_CORRUPT);
+    assert(store == NULL);
     (void)remove(argv[2]);
     if (snprintf(sidecar,sizeof(sidecar),"%s-wal",argv[2]) < (int)sizeof(sidecar))
         (void)remove(sidecar);
