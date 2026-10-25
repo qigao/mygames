@@ -416,6 +416,78 @@ int main(int argc, char **argv) {
         store = NULL;
     }
 
+    /* Expired seated leases must commit room removal, session retirement,
+     * command journal and Outbox under the SAME SQLite transaction. */
+    {
+        static const char expired_ack[] = "{\"type\":\"system.session_expired\"}";
+        static const char expired_event[] = "{\"type\":\"room.session_expired\"}";
+        static const char joined_ack[] = "{\"type\":\"room.ack\",\"seat\":2}";
+        static const char joined_event[] = "{\"type\":\"room.joined\"}";
+        uint8_t token_hash[MYGAMES_STORE_TICKET_HASH_BYTES];
+        uint8_t cmd_hash[MYGAMES_STORE_COMMAND_DIGEST_BYTES];
+        mygames_player_id expiring = 0u;
+        uint64_t committed = 0u;
+        mygames_room_directory staged, after;
+        memset(token_hash, 0xb3, sizeof(token_hash));
+        memset(cmd_hash, 0x4f, sizeof(cmd_hash));
+        check(mygames_room_store_open(argv[1], argv[2], &store),
+              MYGAMES_STORE_OK);
+        load(store, &staged, 4u, 3u);
+        check(mygames_room_store_issue_session(
+                  store, 4u, token_hash, &expiring), MYGAMES_STORE_OK);
+        assert(expiring == 107u);
+        assert(mygames_room_directory_join(
+                   &staged, "room-1", expiring, &seat) == MYGAMES_ROOM_OK);
+        check(mygames_room_store_commit(
+                  store, expiring, &staged, 4u, 3u, "join107", cmd_hash,
+                  joined_ack, sizeof(joined_ack) - 1u,
+                  joined_event, sizeof(joined_event) - 1u,
+                  &committed), MYGAMES_STORE_OK);
+        assert(committed == 4u);
+        check(mygames_room_store_detach_session(
+                  store, 4u, expiring, 1u, 100000u), MYGAMES_STORE_OK);
+        after = staged;
+        assert(mygames_room_directory_leave(&after, expiring) == MYGAMES_ROOM_OK);
+        assert(mygames_room_directory_get_player(&after, expiring) == NULL);
+
+        mygames_room_store_fail_after_checkpoint_once(store);
+        check(mygames_room_store_expire_seated(
+                  store, &after, 4u, 4u, expiring, 1u, 100001u,
+                  "sys-exp-1", cmd_hash,
+                  expired_ack, sizeof(expired_ack) - 1u,
+                  expired_event, sizeof(expired_event) - 1u, &committed),
+              MYGAMES_STORE_BACKEND_ERROR);
+        load(store, &loaded, 4u, 4u);
+        assert(mygames_room_directory_get_player(&loaded, expiring) != NULL);
+        assert(mygames_room_store_has_session(store, expiring) == MYGAMES_STORE_OK);
+        check(mygames_room_store_next_event(
+                  store, 4u, event, sizeof(event), &outbox_bytes, &seq),
+              MYGAMES_STORE_NOT_FOUND);
+
+        check(mygames_room_store_expire_seated(
+                  store, &after, 4u, 4u, expiring, 1u, 100001u,
+                  "sys-exp-1", cmd_hash,
+                  expired_ack, sizeof(expired_ack) - 1u,
+                  expired_event, sizeof(expired_event) - 1u, &committed),
+              MYGAMES_STORE_OK);
+        assert(committed == 5u);
+        load(store, &loaded, 4u, 5u);
+        assert(mygames_room_directory_get_player(&loaded, expiring) == NULL);
+        assert(mygames_room_store_has_session(store, expiring) ==
+               MYGAMES_STORE_NOT_FOUND);
+        check(mygames_room_store_get_outcome(
+                  store, expiring, "sys-exp-1", cmd_hash,
+                  reply, sizeof(reply), &result_bytes, &seq), MYGAMES_STORE_OK);
+        assert(seq == 5u);
+        check(mygames_room_store_next_event(
+                  store, 4u, event, sizeof(event), &outbox_bytes, &seq),
+              MYGAMES_STORE_OK);
+        assert(seq == 5u && outbox_bytes == sizeof(expired_event) - 1u);
+        assert(memcmp(event, expired_event, outbox_bytes) == 0);
+        mygames_room_store_close(store);
+        store = NULL;
+    }
+
     corrupt_journal_with_turbodb(argv[1], argv[2]);
     /* State checkpoint is still byte-valid, but command/outbox sequence is
      * no longer consistent: fail closed without destroying persisted data. */
