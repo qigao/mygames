@@ -3,7 +3,8 @@ project(MyGames VERSION 0.1.0 LANGUAGES C)
 
 option(MYGAMES_ENABLE_GATEWAY "Build optional CHttp/CNet development gateway" OFF)
 
-add_library(mygames_room STATIC games/doudizhu/src/room.c)
+add_library(mygames_room STATIC games/doudizhu/src/room.c
+  games/doudizhu/src/room_directory.c)
 add_library(MyGames::Room ALIAS mygames_room)
 target_compile_features(mygames_room PUBLIC c_std_11)
 target_include_directories(mygames_room PUBLIC games/doudizhu/include)
@@ -35,4 +36,7 @@ if(BUILD_TESTING)
     target_compile_options(mygames_room_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
   endif()
   add_test(NAME mygames.room COMMAND mygames_room_test)
+  add_executable(mygames_room_directory_test tests/room_directory_test.c)
+  target_link_libraries(mygames_room_directory_test PRIVATE MyGames::Room)
+  add_test(NAME mygames.room_directory COMMAND mygames_room_directory_test)
 endif()

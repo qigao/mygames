@@ -26,7 +26,8 @@ typedef enum mygames_room_status {
     MYGAMES_ROOM_NOT_FOUND,
     MYGAMES_ROOM_WRONG_PHASE,
     MYGAMES_ROOM_NOT_OWNER,
-    MYGAMES_ROOM_NOT_READY
+    MYGAMES_ROOM_NOT_READY,
+    MYGAMES_ROOM_IN_OTHER_ROOM
 } mygames_room_status;
 
 typedef struct mygames_room_seat {
