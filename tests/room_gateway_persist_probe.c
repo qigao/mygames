@@ -42,9 +42,19 @@ int main(int argc, char **argv) {
     assert(player_max >= 5u);
 
     assert(cmeta_sha256(canonical, sizeof(canonical) - 1u, digest) == SALTS_OK);
-    assert(mygames_room_store_get_outcome(
-        store, 1u, "create-1", digest,
-        ack, sizeof(ack) - 1u, &ack_len, &old_seq) == MYGAMES_STORE_OK);
+    {
+        const mygames_store_status status = mygames_room_store_get_outcome(
+            store, 1u, "create-1", digest,
+            ack, sizeof(ack) - 1u, &ack_len, &old_seq);
+        if (status != MYGAMES_STORE_OK) {
+            fprintf(stderr, "persist probe failed: status=%d player_max=%llu "
+                    "epoch=%llu sequence=%llu error=%s\n",
+                    (int)status, (unsigned long long)player_max,
+                    (unsigned long long)epoch, (unsigned long long)sequence,
+                    mygames_room_store_last_error(store));
+        }
+        assert(status == MYGAMES_STORE_OK);
+    }
     assert(old_seq == 1u && ack_len > 0u && ack_len < sizeof(ack));
     ack[ack_len] = '\0';
     assert(strstr(ack, "\"type\":\"room.ack\"") != NULL);
