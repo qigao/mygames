@@ -1,4 +1,5 @@
-import {encodePing, parseServerFrame, ServerFrame} from './Protocol';
+import {encodePing, parseServerFrame} from './Protocol';
+import type {ServerFrame} from './Protocol';
 
 export type ConnectionState =
     'offline' | 'connecting' | 'handshaking' | 'ready' | 'failed';

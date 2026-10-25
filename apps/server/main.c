@@ -71,8 +71,8 @@ static chttp_server_config development_config(void) {
     config.network.read_timeout_ms = 5000u;
     config.network.write_timeout_ms = 5000u;
     config.route_capacity = 4u;
-    config.middleware_capacity = 0u;
-    config.max_route_middleware_count = 0u;
+    config.middleware_capacity = 4u;
+    config.max_route_middleware_count = 4u;
     config.max_route_param_count = 2u;
     config.max_route_param_bytes = 128u;
     config.max_target_bytes = 256u;
