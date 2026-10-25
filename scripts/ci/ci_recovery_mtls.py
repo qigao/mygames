@@ -65,12 +65,14 @@ def generate_leaf(root: Path, kind: str, ca_cert: Path,
 
 
 def client_context(ca: Path, cert: Path | None = None,
-                   key: Path | None = None) -> ssl.SSLContext:
+                   key: Path | None = None,
+                   p256_only: bool = True) -> ssl.SSLContext:
     ctx = ssl.create_default_context(cafile=str(ca))
-    # GmSSL's pinned TLS13 interoperability profile currently exercises
-    # prime256v1/ECDSA; avoid an implicit X25519 first key-share while
-    # independently investigating its HelloRetryRequest crash.
-    ctx.set_ecdh_curve("prime256v1")
+    # Existing port12 release qualification keeps its pinned P256 scope.
+    # The independent port14 exact-source gate also REQUIRES the default
+    # X25519-first/OpenSSL middlebox profile; never silently downgrade it.
+    if p256_only:
+        ctx.set_ecdh_curve("prime256v1")
     if cert and key:
         ctx.load_cert_chain(certfile=str(cert), keyfile=str(key))
     return ctx
@@ -245,6 +247,28 @@ def run(binary: Path, seed: Path, sqlite_driver: Path,
                   "first page must be bounded and contiguous")
             check(data["events"][0]["payload"]["type"] ==
                   "room.command_accepted", "invalid canonical event type")
+            if os.environ.get("MYGAMES_RECOVERY_REQUIRE_DEFAULT_HRR") == "1":
+                # The same source, CA, client identity and authenticated
+                # CHttp route MUST also pass unmodified OpenSSL TLS1.3.
+                # This uses OpenSSL's default X25519-first ClientHello,
+                # HelloRetryRequest, and compatibility CCS.
+                standard_tls = client_context(
+                    ca, client_cert, client_key, p256_only=False)
+                standard_tls.minimum_version = ssl.TLSVersion.TLSv1_3
+                standard_tls.maximum_version = ssl.TLSVersion.TLSv1_3
+                check(
+                    standard_tls.options & ssl.OP_ENABLE_MIDDLEBOX_COMPAT != 0,
+                    "test must use default OpenSSL TLS1.3 middlebox mode")
+                default_status, default_page = fetch(
+                    port, prefix + "?after=0&limit=1", standard_tls)
+                check(default_status == 200 and
+                      default_page["source_namespace"] == "trusted-source-v1" and
+                      [e["seq"] for e in default_page["events"]] == [1] and
+                      default_page["resume_after"] == 1,
+                      "default OpenSSL HRR+CCS mTLS archive page refused")
+                print("mygames.recovery_mtls: PASS default OpenSSL "
+                      "X25519-first HRR+CCS with immutable source page",
+                      flush=True)
 
             status, data = fetch(port, prefix + "?limit=2&after=1", good)
             check(status == 200, "second page rejected")
