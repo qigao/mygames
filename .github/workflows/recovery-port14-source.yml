@@ -213,6 +213,11 @@ jobs:
               "$chttp" "$salts" "$utils" "$TURBODB_ROOT" "$FLOWIE_ROOT"
             echo "LD_LIBRARY_PATH=$chttp/lib:$salts/lib:$utils/lib:$TURBODB_ROOT/lib:$FLOWIE_ROOT/lib:$chttp/bin:$salts/bin:$utils/bin"
           } >> "$GITHUB_ENV"
+          # GITHUB_ENV exports become visible only to subsequent steps.
+          # ChttpConfig.cmake reads these variables in THIS exact shell.
+          export SALTS_ROOT="$salts"
+          export SALTS_UTILS_ROOT="$utils"
+          export CHTTP_ROOT="$chttp"
           export LD_LIBRARY_PATH="$chttp/lib:$salts/lib:$utils/lib:$TURBODB_ROOT/lib:$FLOWIE_ROOT/lib:$chttp/bin:$salts/bin:$utils/bin"
           cmake -S . -B build/recovery-port14 -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_TESTING=ON -DMYGAMES_ENABLE_GATEWAY=ON \
