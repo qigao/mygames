@@ -94,6 +94,26 @@ This qualifies **no duplicate side effect for events the application
 actually receives and durably processes**. It does not qualify the
 stronger statement "no messages can be lost across a Subscriber crash."
 
+## Fail-closed receipt history qualification
+
+On every projection database open, the adapter validates committed
+receipt coverage: the number of receipts must equal each cursor's
+`last_seq`, the contiguous interval must start at 1 and end at that
+sequence, and there may be no orphaned receipt without a parent cursor.
+The sample projection count must match the committed cursor.
+
+The C11 test uses the same TurboDB ORM SQLite plugin to delete one
+previously committed receipt while leaving its cursor apparently valid.
+A separate ORM Runtime then refuses the corrupted database rather than
+silently resuming at the next event. This protects a local ledger from
+incomplete recovery, but it is not a cryptographic integrity proof against
+an attacker with write access to all related tables.
+
+[Installed SDK CI #40220090282](https://github.com/qigao/mygames/actions/runs/40220090282)
+passed 5/5 including this corruption refusal, the real Broker ACL
+negative matrix, real MQTT duplicate/restart projection, and unchanged
+C11/CHttp/Cocos regressions.
+
 ## Still required before production
 
 - **Subscriber QoS1 ACK timing:** Flowie Client may acknowledge incoming
@@ -116,3 +136,5 @@ stronger statement "no messages can be lost across a Subscriber crash."
   Editor rendering remain separate workstreams.
 
 Tracking: [MyGames Issue #4](https://github.com/qigao/mygames/issues/4).
+
+Upstream deferred incoming settlement is tracked by [Flowie #22](https://github.com/qigao/flowie/issues/22); the current downstream CI does **not** close it.
