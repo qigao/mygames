@@ -11,6 +11,28 @@ extern "C" {
 #define MYGAMES_STORE_REQUEST_ID_MAX 48u
 #define MYGAMES_STORE_RESULT_MAX 1024u
 #define MYGAMES_STORE_EVENT_MAX 1024u
+#define MYGAMES_STORE_ARCHIVE_PAGE_MAX 16u
+
+/* Fixed-capacity immutable snapshot of exact committed Outbox events.
+ * A single readonly SQLite transaction pins checkpoint and page bytes.
+ * Receiver MUST still validate canonical public schema before responding.
+ * All history is currently retained: pruning/retention watermark != supported. */
+typedef struct mygames_store_archive_item {
+    uint64_t sequence;
+    size_t size;
+    uint8_t payload[MYGAMES_STORE_EVENT_MAX];
+} mygames_store_archive_item;
+
+typedef struct mygames_store_archive_page {
+    uint64_t epoch;
+    uint64_t checkpoint_sequence;
+    uint64_t retained_from_sequence;
+    uint64_t resume_after_sequence;
+    size_t count;
+    int has_more;
+    mygames_store_archive_item items[MYGAMES_STORE_ARCHIVE_PAGE_MAX];
+} mygames_store_archive_page;
+
 
 typedef struct mygames_room_store mygames_room_store;
 
@@ -219,6 +241,20 @@ mygames_store_status mygames_room_store_next_event(
 mygames_store_status mygames_room_store_get_committed_event(
     mygames_room_store *store, uint64_t event_sequence,
     void *payload, size_t capacity, size_t *out_size);
+
+/* Must be a read-only store handle. One SQLite read transaction sees both
+ * the verified checkpoint (including complete contiguous archive checks)
+ * and the returned 1..16 exact committed event bytes, even if the Room
+ * Owner concurrently publishes new transactions. Does not mutate a cursor,
+ * Outbox delivery status, Room Directory or consumer projection.
+ *
+ * after_sequence is a hint from the **consumer's durable DB cursor**.
+ * An after_sequence beyond the source snapshot returns STALE_SEQUENCE.
+ * No history pruning or retention gaps are presently supported.
+ */
+mygames_store_status mygames_room_store_read_archive_page(
+    mygames_room_store *store, uint64_t after_sequence,
+    uint32_t max_events, mygames_store_archive_page *out_page);
 
 mygames_store_status mygames_room_store_ack_event(
     mygames_room_store *store, uint64_t epoch, uint64_t sequence);
