@@ -435,6 +435,32 @@ mygames_store_status mygames_room_store_load(
     return MYGAMES_STORE_OK;
 }
 
+mygames_store_status mygames_room_store_player_high_watermark(
+    mygames_room_store *store, mygames_player_id *out_player) {
+    orm_result_t *result = NULL;
+    orm_error_t error;
+    orm_status_t rc;
+    int64_t maximum = 0;
+    uint64_t rows = 0u;
+    mygames_store_status status;
+    if (!store || !out_player) return MYGAMES_STORE_INVALID;
+    if (!owner_valid(store)) return MYGAMES_STORE_QUARANTINED;
+    status = backend_query(store, NULL,
+        "select coalesce(max(player_id),0) from mg_commands",
+        NULL, 0u, &result);
+    if (status != MYGAMES_STORE_OK) return status;
+    orm_error_init(&error);
+    rc = orm_result_row_count(result, &rows, &error);
+    if (rc == ORM_STATUS_OK && rows == 1u)
+        rc = orm_result_get_int64(result, 0u, 0u, &maximum, &error);
+    if (rc != ORM_STATUS_OK) status = error_from_orm(store, rc, &error);
+    else if (rows != 1u || maximum < 0 || maximum >= INT64_MAX)
+        status = MYGAMES_STORE_CORRUPT;
+    else *out_player = (mygames_player_id)maximum;
+    orm_result_destroy(result);
+    return status;
+}
+
 mygames_store_status mygames_room_store_claim_epoch(
     mygames_room_store *store, uint64_t expected_epoch,
     uint64_t *out_claimed_epoch) {

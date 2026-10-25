@@ -57,6 +57,13 @@ mygames_store_status mygames_room_store_load(
  * A stale owner cannot commit after another owner advances the epoch.
  * Does not elect an owner; external authority must decide who may claim.
  */
+/* Highest committed player ID in the durable command journal. A cold
+ * development gateway uses this to avoid reissuing old numeric identities.
+ * No session credentials are restored by this function.
+ */
+mygames_store_status mygames_room_store_player_high_watermark(
+    mygames_room_store *store, mygames_player_id *out_player);
+
 mygames_store_status mygames_room_store_claim_epoch(
     mygames_room_store *store, uint64_t expected_epoch,
     uint64_t *out_claimed_epoch);

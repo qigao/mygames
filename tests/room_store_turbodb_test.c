@@ -121,6 +121,12 @@ int main(int argc, char **argv) {
         response_a, sizeof(response_a) - 1u,
         event_a, sizeof(event_a) - 1u, &seq), MYGAMES_STORE_OK);
     assert(seq == 1u);
+    {
+        mygames_player_id maximum = 0u;
+        check(mygames_room_store_player_high_watermark(store, &maximum),
+              MYGAMES_STORE_OK);
+        assert(maximum == 100u);
+    }
     load(store, &loaded, 1u, 1u);
     assert(mygames_room_directory_get_player(&loaded, 101u)->seats[1].ready);
 
