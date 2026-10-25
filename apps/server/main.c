@@ -296,6 +296,26 @@ static void handle_session_resume(dev_server_state *state, client_peer *peer,
 }
 
 #if defined(MYGAMES_WITH_TURBODB)
+/* Persist only SHA-256 of the canonical 64-hex random bearer capability. */
+static void ticket_hex(const uint8_t bytes[MYGAMES_SESSION_TICKET_BYTES],
+                       char out[MYGAMES_SESSION_TICKET_HEX + 1u]) {
+    static const char alphabet[] = "0123456789abcdef";
+    size_t i;
+    for (i = 0u; i < MYGAMES_SESSION_TICKET_BYTES; ++i) {
+        out[2u * i] = alphabet[bytes[i] >> 4u];
+        out[2u * i + 1u] = alphabet[bytes[i] & 0x0fu];
+    }
+    out[MYGAMES_SESSION_TICKET_HEX] = '\0';
+}
+
+static bool ticket_sha256(const char *token,
+                          uint8_t digest[MYGAMES_STORE_TICKET_HASH_BYTES]) {
+    return token != NULL &&
+           cmeta_sha256(token, MYGAMES_SESSION_TICKET_HEX, digest) == SALTS_OK;
+}
+#endif
+
+#if defined(MYGAMES_WITH_TURBODB)
 static bool normalize_command_digest(const mygames_wire_command *command,
                                       uint8_t digest[MYGAMES_STORE_COMMAND_DIGEST_BYTES]) {
     char normalized[192];
@@ -551,7 +571,44 @@ static void room_open_apply(dev_server_state *state,
             rc = SALTS_EIO;
             break;
         }
-        status = mygames_sessions_issue(&state->sessions, entropy, &issued);
+#if defined(MYGAMES_WITH_TURBODB)
+        if (state->store) {
+            char token[MYGAMES_SESSION_TICKET_HEX + 1u];
+            uint8_t digest[MYGAMES_STORE_TICKET_HASH_BYTES];
+            mygames_player_id player = 0u;
+            mygames_store_status durable;
+            size_t free_slots = 0u, index;
+            for (index = 0u; index < MYGAMES_SESSION_CAPACITY; ++index)
+                if (!mygames_sessions_at(&state->sessions, index)) ++free_slots;
+            if (!free_slots) { rc = SALTS_ENOBUFS; break; }
+            ticket_hex(entropy, token);
+            if (!ticket_sha256(token, digest)) {
+                memset(entropy, 0, sizeof(entropy));
+                rc = SALTS_EIO;
+                break;
+            }
+            durable = mygames_room_store_issue_session(
+                state->store, state->room_epoch, digest, &player);
+            memset(digest, 0, sizeof(digest));
+            if (durable != MYGAMES_STORE_OK) {
+                state->store_halted = true;
+                memset(entropy, 0, sizeof(entropy));
+                rc = SALTS_EIO;
+                break;
+            }
+            status = mygames_sessions_import_active(
+                &state->sessions, player, 1u, entropy, &issued);
+            if (status != MYGAMES_SESSION_OK) {
+                state->store_halted = true; /* do not reassign durable ID */
+                memset(entropy, 0, sizeof(entropy));
+                rc = SALTS_EIO;
+                break;
+            }
+        } else
+#endif
+        {
+            status = mygames_sessions_issue(&state->sessions, entropy, &issued);
+        }
         memset(entropy, 0, sizeof(entropy));
         if (status != MYGAMES_SESSION_OK) break;
         identity = mygames_sessions_at(&state->sessions, issued);
