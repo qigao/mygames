@@ -712,9 +712,9 @@ mygames_store_status mygames_room_store_player_high_watermark(
     return status;
 }
 
-mygames_store_status mygames_room_store_claim_epoch(
+static mygames_store_status claim_epoch_internal(
     mygames_room_store *store, uint64_t expected_epoch,
-    uint64_t *out_claimed_epoch) {
+    uint64_t recovery_deadline, uint64_t *out_claimed_epoch) {
     persisted_head head = {0};
     mygames_room_directory decoded;
     orm_transaction_t *tx = NULL;
@@ -725,7 +725,8 @@ mygames_store_status mygames_room_store_claim_epoch(
     uint64_t rows = 0u;
     bool exists = false;
     if (!store || !out_claimed_epoch || !expected_epoch ||
-        expected_epoch >= (uint64_t)INT64_MAX)
+        expected_epoch >= (uint64_t)INT64_MAX ||
+        recovery_deadline > (uint64_t)INT64_MAX)
         return MYGAMES_STORE_INVALID;
     if (!owner_valid(store)) return MYGAMES_STORE_QUARANTINED;
     st = begin_transaction(store, &tx);
@@ -751,9 +752,31 @@ mygames_store_status mygames_room_store_claim_epoch(
     if (st != MYGAMES_STORE_OK) return rollback(store, tx, st);
     if (rows != 1u)
         return rollback(store, tx, MYGAMES_STORE_STALE_EPOCH);
+    if (recovery_deadline) {
+        orm_value_t deadline = orm_i64((int64_t)recovery_deadline);
+        st = execute(store, tx,
+            "update mg_session_leases set attached=0,expires_at_ms=?1 "
+            "where attached=1",
+            &deadline, 1u, NULL);
+        if (st != MYGAMES_STORE_OK) return rollback(store, tx, st);
+    }
     st = commit_transaction(store, tx);
     if (st == MYGAMES_STORE_OK) *out_claimed_epoch = expected_epoch + 1u;
     return st;
+}
+
+mygames_store_status mygames_room_store_claim_epoch(
+    mygames_room_store *store, uint64_t expected_epoch,
+    uint64_t *out_claimed_epoch) {
+    return claim_epoch_internal(store, expected_epoch, 0u, out_claimed_epoch);
+}
+
+mygames_store_status mygames_room_store_claim_epoch_for_recovery(
+    mygames_room_store *store, uint64_t expected_epoch,
+    uint64_t recovery_deadline_realtime_ms, uint64_t *out_claimed_epoch) {
+    if (!recovery_deadline_realtime_ms) return MYGAMES_STORE_INVALID;
+    return claim_epoch_internal(store, expected_epoch,
+                                recovery_deadline_realtime_ms, out_claimed_epoch);
 }
 
 
