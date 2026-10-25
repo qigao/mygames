@@ -192,6 +192,10 @@ static void recovery_worker(void *user) {
         reply.body_size = bytes;
         reply_rc = chttp_server_deferred_reply(&job->deferred, &reply);
     }
+#ifdef MYGAMES_RECOVERY_TEST_TRACE
+    fprintf(stderr, "mygames.recovery: worker status=%u reply_result=%d\\n",
+            status_code, reply_rc);
+#endif
     if (reply_rc != SALTS_OK)
         (void)chttp_server_deferred_cancel(&job->deferred);
     terminal_job(job);
@@ -208,6 +212,9 @@ static int recovery_get(void *user, const chttp_server_request_view *request,
     int rc;
 
     if (!app || !request || !response) return SALTS_EINVAL;
+#ifdef MYGAMES_RECOVERY_TEST_TRACE
+    fputs("mygames.recovery: HTTP route reached\\n", stderr);
+#endif
     if (!request->peer_certificate_sha256)
         return small_reply(response, 401u);
     if (request->body_size != 0u || request->body_streamed)
