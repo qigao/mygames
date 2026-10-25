@@ -62,14 +62,18 @@ The batch size must be 1..128, and an incomplete batch exits nonzero with
 the next sequence so a supervisor can explicitly continue. The tool does
 not attempt unbounded allocation or hidden background retries.
 
-**Security restriction:** This tool currently opens the source via the
-general `mygames_room_store_open` adapter, which is NOT a read-only
-credential API. It must only run in an isolated trusted local/CI
-environment. Do not give a normal Subscriber direct source database
-write privileges. A production backfill service must authenticate and
-authorize a Consumer principal, bind it to a stable source namespace,
-supply a genuinely read-only snapshot/archive API, and enforce bounded
-rate/cursor/retention policies.
+**Security restriction (M4 first slice):** This tool now opens the source
+using `mygames_room_store_open_readonly`, backed by TurboDB SQLite
+`open_mode=read_only` / `SQLITE_OPEN_READONLY`. It verifies the existing
+checkpoint+journal and refuses writes or missing database creation. The
+consumer still has **local trusted filesystem access** to the source,
+however: this is not remote principal authentication, a deployed
+read-only network endpoint, or an immutable tamper-evident archive.
+Only run this CLI in an isolated trusted local/CI environment.
+A production backfill service must authenticate and authorize a Consumer
+principal, bind it to a stable source namespace and retention policy,
+enforce bounded rate/cursor semantics, and serve stable page snapshots.
+Track the separate M4 contract at [Issue #5](https://github.com/qigao/mygames/issues/5).
 
 ## Test evidence / exact boundaries
 
@@ -105,7 +109,7 @@ guarantee against a database administrator who can change all records.
   bounded, nonblocking deferred inbound QoS1 settlement, or a provably
   durable Broker session/reconnection contract. The MyGames test does not
   replace this with worker-thread blocking or a fake ACK.
-- A supervised authorized **read-only backfill service**, with isolated
+- A supervised authorized **read-only backfill service** (not merely the new local read-only source connection), with isolated
   identity, namespace pinning, TLS/ACL, archive retention long enough for
   the slowest consumer, paging and operational lag metrics.
 - A real consumer projection business effect in the SAME transaction as
