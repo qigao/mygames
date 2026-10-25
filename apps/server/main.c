@@ -244,8 +244,86 @@ static void collect_expired(dev_server_state *state) {
                 return;
             }
             after = player;
-            if (mygames_room_directory_get_player(&state->rooms, player))
-                continue; /* never orphan a seat by deleting its proof */
+            if (mygames_room_directory_get_player(&state->rooms, player)) {
+                const mygames_room *occupied =
+                    mygames_room_directory_get_player(&state->rooms, player);
+                mygames_room_directory staged;
+                const mygames_room *after_room;
+                mygames_store_status committed;
+                uint64_t committed_seq = 0u;
+                uint8_t digest[MYGAMES_STORE_COMMAND_DIGEST_BYTES];
+                char request_id[MYGAMES_STORE_REQUEST_ID_MAX + 1u];
+                char command[128], outcome[192], event[384];
+                char room_id[MYGAMES_ROOM_ID_CAPACITY];
+                int n;
+                if (!occupied || occupied->phase != MYGAMES_ROOM_WAITING)
+                    continue; /* game-state transitions are a separate gate */
+                memcpy(room_id, occupied->id, strlen(occupied->id) + 1u);
+                staged = state->rooms;
+                if (mygames_room_directory_leave(&staged, player) != MYGAMES_ROOM_OK) {
+                    state->store_halted = true;
+                    return;
+                }
+                n = snprintf(request_id, sizeof(request_id),
+                    "lease-exp-%" PRIu64 "-%" PRIu64,
+                    state->room_epoch, generation);
+                if (n <= 0 || (size_t)n >= sizeof(request_id)) {
+                    state->store_halted = true;
+                    return;
+                }
+                n = snprintf(command, sizeof(command),
+                    "system.expire|%" PRIu64 "|%" PRIu64 "|%" PRIu64,
+                    player, generation, state->room_epoch);
+                if (n <= 0 || (size_t)n >= sizeof(command) ||
+                    cmeta_sha256(command, (size_t)n, digest) != SALTS_OK) {
+                    state->store_halted = true;
+                    return;
+                }
+                n = snprintf(outcome, sizeof(outcome),
+                    "{\"v\":1,\"type\":\"room.session_expired\","
+                    "\"player_id\":\"%" PRIu64 "\"}", player);
+                if (n <= 0 || (size_t)n >= sizeof(outcome)) {
+                    state->store_halted = true;
+                    return;
+                }
+                {
+                    const size_t outcome_len = (size_t)n;
+                    n = snprintf(event, sizeof(event),
+                        "{\"v\":1,\"type\":\"room.session_expired\","
+                        "\"room_id\":\"%s\",\"player_id\":\"%" PRIu64 "\","
+                        "\"room_epoch\":%" PRIu64 ",\"seq\":%" PRIu64 "}",
+                        room_id, player, state->room_epoch,
+                        state->durable_sequence + 1u);
+                    if (n <= 0 || (size_t)n >= sizeof(event)) {
+                        state->store_halted = true;
+                        return;
+                    }
+                    committed = mygames_room_store_expire_seated(
+                        state->store, &staged,
+                        state->room_epoch, state->durable_sequence,
+                        player, generation, now,
+                        request_id, digest, outcome, outcome_len,
+                        event, (size_t)n, &committed_seq);
+                }
+                memset(digest, 0, sizeof(digest));
+                if (committed != MYGAMES_STORE_OK) {
+                    fprintf(stderr, "Expired seat transaction failed: %d\n",
+                            (int)committed);
+                    state->store_halted = true;
+                    return;
+                }
+                state->rooms = staged;
+                state->durable_sequence = committed_seq;
+                after_room = mygames_room_directory_get(&state->rooms, room_id);
+                if (after_room) publish_snapshot(state, after_room);
+            } else {
+                status = mygames_room_store_delete_expired_unseated(
+                    state->store, state->room_epoch, player, generation, now);
+                if (status != MYGAMES_STORE_OK) {
+                    state->store_halted = true;
+                    return;
+                }
+            }
             for (i = 0u; i < MYGAMES_SESSION_CAPACITY; ++i) {
                 const mygames_session_record *record =
                     mygames_sessions_at(&state->sessions, i);
@@ -253,12 +331,6 @@ static void collect_expired(dev_server_state *state) {
                     state->store_halted = true;
                     return; /* persistent/memory authority contradiction */
                 }
-            }
-            status = mygames_room_store_delete_expired_unseated(
-                state->store, state->room_epoch, player, generation, now);
-            if (status != MYGAMES_STORE_OK) {
-                state->store_halted = true;
-                return;
             }
             for (i = 0u; i < MYGAMES_SESSION_CAPACITY; ++i) {
                 const mygames_session_record *record =
