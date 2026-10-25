@@ -1,54 +1,47 @@
 # MyGames
 
-An open, server-authoritative multiplayer game platform, beginning with Dou Dizhu (斗地主).
+A server-authoritative multiplayer game platform, initially for Dou Dizhu (斗地主).
 
-## First bootstrap
+## Current development prototype
 
-- **C11 room core:** fixed three-seat rooms, join/leave/ready, owner handover, start admission, monotonically increasing revision, and lifecycle regression tests.
-- **CHttp/CNet development gateway (opt-in):** GET /health + WebSocket /ws greeting/ping, bound to loopback only.
-- **Cocos Creator 3.8.8 / TypeScript:** project manifest, WebSocket client, versioned frame parsing and a connection UI component.
-- **Core CI:** Linux / Windows / macOS, no optional external SDK needed.
+- **C11 Room Core:** bounded 32-room directory, three-seat admission, owner handover, ready state, revision tracking, lifecycle tests.
+- **C11 wire decoder:** strict bounded JSON subset with versioned room commands and regression tests.
+- **CHttp/CNet development gateway:** real WebSocket handlers for room.create / join / ready / leave / snapshot.get. **Loopback-only and unauthenticated.**
+- **Cocos Creator 3.8.8:** TypeScript wire, socket client, room presentation store and Editor-bindable buttons.
+- **CI:** Linux/Windows/macOS core tests and Node 22 TypeScript protocol tests. SDK gateway is opt-in and separately qualified.
 
-**Not yet implemented:** complete Cocos scenes/prefabs, session authentication, full room networking, game rules/dealing, MQTT fanout, persistent state, matchmaking, or KFCore/DouZero integration. This repository must not be deployed as an Internet-facing game service yet.
+**Do not expose or deploy as a public game service.** The gateway lacks login,
+secure reconnect, gameplay, storage, Flowie integration and KFCore/DouZero.
 
-## Build C11 core (no SDK)
+## Core-only tests
 
     cmake -S . -B build/core -DBUILD_TESTING=ON
     cmake --build build/core --parallel
     ctest --test-dir build/core --output-on-failure
 
-Or use the bundled Ninja preset:
+Or use the Ninja core-debug preset included in CMakePresets.json.
 
-    cmake --preset core-debug
-    cmake --build --preset core-debug
-    ctest --preset core-debug
-
-## Build the development gateway (installed CHttp SDK required)
-
-Configure CMake with CHttp (and its transitive Salts/CNet dependencies) discoverable through CMAKE_PREFIX_PATH:
+## Development gateway (requires installed CHttp SDK)
 
     cmake -S . -B build/gateway -DMYGAMES_ENABLE_GATEWAY=ON -DCMAKE_PREFIX_PATH=/path/to/installed/sdk
     cmake --build build/gateway --target mygames_server
 
-Start the executable. It binds 127.0.0.1:1780, then:
+Start mygames_server on 127.0.0.1:1780. For real network smoke:
 
-- GET http://127.0.0.1:1780/health
-- WS ws://127.0.0.1:1780/ws
-- Run node scripts/ws_smoke.mjs with Node.js 22+ while the gateway runs
+    node scripts/ws_smoke.mjs
+    node scripts/room_ws_smoke.mjs
 
-The gateway only supports a versioned server.hello / client.ping / server.pong handshake, not room commands. It is **unauthenticated, intentionally loopback-only and development-only**. Never publish it to an untrusted network.
+Node.js 22+ required. These scripts are **not** run by core CI because they
+need a separately installed compatible CHttp/CNet SDK and live server.
 
-## Cocos Creator
+## Cocos
 
-Open apps/cocos in **Cocos Creator 3.8.8**. The source scaffold has package.json, assets/scripts, and tsconfig.json. Cocos Editor needs to generate/serialize the scenes and prefabs; follow [the editor setup](docs/editor-setup.md). No game assets were copied from third-party projects.
+Open apps/cocos in Cocos Creator 3.8.8. Set up the development buttons using
+[docs/editor-setup.md](docs/editor-setup.md). No third-party game textures or sounds
+have been copied.
 
-## Architecture
+See [wire protocol](docs/protocol.md) and [architecture](docs/architecture.md).
+In later milestones KFCore will run DouZero models and Flowie MQTT will fan out
+committed, sanitized room events; MQTT protocol acknowledgement never commits gameplay.
 
-See [architecture](docs/architecture.md) and [protocol](docs/protocol.md).
-
-- KFCore = model package, backend and DouZero inference (future);
-- CHttp/CNet = network ingress; CFlow = room-owner scheduling (future);
-- Flowie MQTT = committed game-event distribution, not authoritative game-state writes;
-- Game Room = the **single writer** for room and play state.
-
-AGPL-3.0; see LICENSE. Consider dependency and asset licensing before distribution.
+License: AGPL-3.0, see LICENSE.

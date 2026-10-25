@@ -1,50 +1,61 @@
-# MyGames architecture (bootstrap and planned milestones)
+# MyGames architecture / delivery gates
 
-## Ownership
+## Implemented today (development only)
 
-The room state is a bounded POD C11 model. Today only the in-process room library and lifecycle unit tests exist; no network handler mutates it yet.
+- A fixed-size, process-local C11 RoomDirectory, writable only from the development
+  CHttp server's explicitly configured **one connection Owner**.
+- C11 bounded flat-JSON command validation. Commands cannot invent player IDs;
+  the server creates an **ephemeral** per-WebSocket numeric identity.
+- CHttp HTTP health, WebSocket room create/join/ready/leave/snapshot and
+  bounded room snapshot fanout using generation-fenced server session handles.
+- Cocos TypeScript GameSocket, RoomStore, developer ConnectionPanel.
+- Core/Node tests without optional external SDK.
+- Rooms are **not durable**, have no authenticated reconnect, and do not yet
+  start actual gameplay. Only WAITING room member leave is supported.
 
-Planned data plane:
+## Planned production layering
 
-    Cocos Creator / WebSocket client
-                |
-           CHttp/CNet gateway
-                |
-     authenticated command dispatch
-                |
-       Room Owner (CFlow actor)
-          |           |
-    game transaction   +--> KFCore/DouZero inference (async)
-          |
-    Game Store commit + event outbox
-          |
-       Flowie MQTT PUBLISH
-          |
-    gateway, bot and replay subscribers
+    Cocos Creator clients
+              |
+    CHttp/CNet authenticated gateway
+              |
+      CFlow room-owner scheduler
+              |
+        C11 Room/Game Engine  <---- asynchronous KFCore/DouZero worker
+              |
+     Game Store commit + Outbox
+              |
+        Flowie MQTT PUBLISH
+              |
+        gateways/replay/bots
 
-No direct writes to authoritative room state by MQTT callbacks, UI code, or inference contexts.
+Room command -> single Owner -> validate -> commit -> Game ACK.
+Only post-commit events enter Flowie. MQTT PUBACK != Room/Game ACK.
+Flowie maintains MQTT protocol sessions, not authoritative room/game sessions.
+Room Owner and network connection Owner may differ in production.
 
-The first version intentionally isolates three responsibilities:
-- Room commands: ordered by one logical owner, with room_epoch + turn_id + command_id fencing.
-- MQTT: at-least-once delivery where configured, ordered business events by room sequence; MQTT ACK is **not** a gameplay commit.
-- KFCore: immutable model weights, worker-exclusive ExecutionContext, stale AI decisions rejected by the room actor.
+## Milestones and evidence
 
-## Phases
-
-| Phase | Deliverable | Evidence |
+| Stage | Deliverable | Qualification |
 |---|---|---|
-| M0 (this PR) | Room POD/state invariants, CHttp dev handshake, Cocos TS scripts | Core CTest matrix; manual gateway + Creator checks pending |
-| M1 | HTTP/WS auth, lobby, create/join/ready, room snapshots | 3 clients, concurrency, duplicate and disconnect tests |
-| M2 | Deterministic Dou Dizhu deal/bid/play/settle | exhaustive card-type and replay tests |
-| M3 | Flowie QoS1 committed-event fanout | outbox retry, duplicates, subscriber recovery |
-| M4 | DouZero/KFCore CPU inference | three-position Python-vs-native parity |
-| M5 | replay, spectators, matchmaking and multi-node ownership | owner epoch, durable recovery and failure tests |
+| M0 | C11 room model; CHttp WS handshake; Cocos TS source | core CI, TypeScript protocol CI |
+| M1a (current Draft) | networked dev room create/join/ready/leave/snapshot | core tests; live CHttp SDK, WS clients and Cocos Editor pending |
+| M1b | actual authentication, session binding, reconnect, durable snapshots, CFlow owner | real concurrency/expiry/ABA and recovery |
+| M2 | deterministic deal, bid, play, settle, replays | exhaustive rule and randomized replay tests |
+| M3 | transactional outbox + Flowie MQTT fanout | duplicates, reorder, backpressure, ACL |
+| M4 | KFCore ONNX DouZero bots | Python/ONNX/native three-position parity |
+| M5 | matchmaking, spectator, rankings and cluster | owner epoch failover, durable recovery |
 
-## Security and lifecycle
+## Safety/consistency
 
-- The development gateway is loopback-only and unauthenticated. Do not expose it externally.
-- Production gateway must authenticate clients and authorize room membership before commands or private snapshots.
-- Never publish player hand cards to a public room topic; use individually authorized private paths.
-- Reconnect reads an authoritative room snapshot and resumes strictly sequenced events.
-- All callback-scope CHttp/CNet views are borrowed; async processing must copy owned bytes before returning.
-- Stop admission, settle inflight work, stop owners and only then destroy handlers/plugins.
+- No player can join more than one room at a time.
+- Room mutations are single-threaded in the prototype; CFlow is not yet wired.
+- CHttp packet views are callback-scoped. The synchronous C11 decoder copies
+  command fields and never retains packet buffers.
+- Snapshot publish may fail due to capacity or stale session; clients must
+  request snapshots; no silent assumption of exactly-once fanout.
+- The current 8-entry per-connection duplicate cache is NOT a durable
+  request-id log; it is insufficient for authenticated retry/reconnect.
+- Do not publish private hand cards to room-wide topics or bypass
+  membership-aware serialization.
+- Do not interpret a successful QoS ACK as validation or commit of a play.
