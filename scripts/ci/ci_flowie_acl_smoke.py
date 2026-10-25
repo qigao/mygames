@@ -68,7 +68,10 @@ def main() -> int:
             try:
                 check_ready(server, log, "FLOWIE_SECURE_BROKER_READY")
                 for mode in ("bad-secret", "publisher-subscribe-denied",
-                             "player-subscribe-denied", "player-publish-denied",
+                             "publisher-other-topic-denied",
+                             "player-subscribe-denied", "player-wildcard-denied",
+                             "player-publish-denied",
+                             "subscriber-wildcard-denied", "consumer-publish-denied",
                              "subscriber"):
                     run([client, mode], env)
                 log.flush()
