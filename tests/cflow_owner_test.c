@@ -2,6 +2,7 @@
 
 #include <cflow/executor.h>
 #include <salts/clock.h>
+#include <salts/thread.h>
 
 /* Assertions are the TinyTest-like test oracle here: keep them enabled even
  * when this installed-SDK qualification is built in Release. */
