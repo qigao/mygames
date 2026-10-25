@@ -177,6 +177,46 @@ static mygames_consumer_status read_cursor(
     return st;
 }
 
+/* Do not treat a plausible cursor as truth after crash/corruption when
+ * the receipt history no longer matches its committed projection count.
+ * SQLite uniqueness guarantees no repeated event_seq per consumer stream;
+ * min/max/count must cover the exact contiguous interval 1..last_seq. */
+static mygames_consumer_status validate_receipt_history(
+    mygames_consumer_projection *s, orm_transaction_t *tx) {
+    static const char sql[] =
+        "select "
+        "(select count(*) from mg_consumer_cursor where "
+        "last_seq<>applied_count) + "
+        "(select count(*) from mg_consumer_cursor c where "
+        "(select count(*) from mg_consumer_receipt r where "
+        "r.source_namespace=c.source_namespace and "
+        "r.consumer_id=c.consumer_id)<>c.last_seq or "
+        "(c.last_seq>0 and ("
+        "coalesce((select min(r.event_seq) from mg_consumer_receipt r where "
+        "r.source_namespace=c.source_namespace and r.consumer_id=c.consumer_id),0)<>1 or "
+        "coalesce((select max(r.event_seq) from mg_consumer_receipt r where "
+        "r.source_namespace=c.source_namespace and r.consumer_id=c.consumer_id),0)<>c.last_seq))) + "
+        "(select count(*) from mg_consumer_receipt r where "
+        "not exists (select 1 from mg_consumer_cursor c where "
+        "c.source_namespace=r.source_namespace and c.consumer_id=r.consumer_id))";
+    orm_result_t *result = NULL;
+    orm_error_t error;
+    orm_status_t rc;
+    uint64_t rows = 0u;
+    int64_t inconsistent = 0;
+    mygames_consumer_status st = query(s, tx, sql, NULL, 0u, &result);
+    if (st != MYGAMES_CONSUMER_APPLIED) return st;
+    orm_error_init(&error);
+    rc = orm_result_row_count(result, &rows, &error);
+    if (rc == ORM_STATUS_OK && rows == 1u)
+        rc = orm_result_get_int64(result, 0u, 0u, &inconsistent, &error);
+    if (rc != ORM_STATUS_OK) st = orm_failure(s, rc);
+    else if (rows != 1u || inconsistent != 0)
+        st = MYGAMES_CONSUMER_CORRUPT;
+    orm_result_destroy(result);
+    return st;
+}
+
 mygames_consumer_status mygames_consumer_projection_open(
     const char *sqlite_driver_absolute_path, const char *database_path,
     mygames_consumer_projection **out) {
@@ -249,6 +289,11 @@ mygames_consumer_status mygames_consumer_projection_open(
             (void)rollback(s, tx, st);
             goto fail_store;
         }
+    }
+    st = validate_receipt_history(s, tx);
+    if (st != MYGAMES_CONSUMER_APPLIED) {
+        st = rollback(s, tx, st);
+        goto fail_store;
     }
     st = commit(s, tx);
     if (st != MYGAMES_CONSUMER_APPLIED) goto fail_store;
