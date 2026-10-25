@@ -285,6 +285,96 @@ int main(int argc, char **argv) {
     mygames_room_store_close(store);
     store = NULL;
 
+    /* A disconnected player is recovered by an opaque 256-bit ticket
+     * fingerprint; SQLite never needs the plaintext bearer capability. */
+    {
+        uint8_t old_hash[MYGAMES_STORE_TICKET_HASH_BYTES];
+        uint8_t provisional_hash[MYGAMES_STORE_TICKET_HASH_BYTES];
+        uint8_t rotated_hash[MYGAMES_STORE_TICKET_HASH_BYTES];
+        uint8_t later_hash[MYGAMES_STORE_TICKET_HASH_BYTES];
+        uint8_t temp_hash[MYGAMES_STORE_TICKET_HASH_BYTES];
+        mygames_player_id old_player = 0u, temporary_player = 0u;
+        mygames_player_id recovered_player = 0u, next_player = 0u;
+        uint64_t recovered_generation = 0u;
+        memset(old_hash, 0x12, sizeof(old_hash));
+        memset(provisional_hash, 0x34, sizeof(provisional_hash));
+        memset(rotated_hash, 0x56, sizeof(rotated_hash));
+        memset(later_hash, 0x78, sizeof(later_hash));
+        memset(temp_hash, 0x9a, sizeof(temp_hash));
+        check(mygames_room_store_open(argv[1], argv[2], &store),
+              MYGAMES_STORE_OK);
+        load(store, &loaded, 3u, 3u);
+        check(mygames_room_store_issue_session(
+                  store, 3u, old_hash, &old_player), MYGAMES_STORE_OK);
+        assert(old_player == 102u);
+        check(mygames_room_store_issue_session(
+                  store, 3u, provisional_hash, &temporary_player),
+              MYGAMES_STORE_OK);
+        assert(temporary_player == 103u);
+        check(mygames_room_store_has_session(store, old_player),
+              MYGAMES_STORE_OK);
+        check(mygames_room_store_resume_session(
+                  store, 3u, temporary_player, old_hash, rotated_hash,
+                  40000u, &recovered_player, &recovered_generation),
+              MYGAMES_STORE_NOT_FOUND); /* active lease is not transferable */
+        check(mygames_room_store_detach_session(
+                  store, 3u, old_player, 1u, 50000u), MYGAMES_STORE_OK);
+        check(mygames_room_store_resume_session(
+                  store, 3u, temporary_player, old_hash, rotated_hash,
+                  40000u, &recovered_player, &recovered_generation),
+              MYGAMES_STORE_OK);
+        assert(recovered_player == old_player && recovered_generation == 2u);
+        check(mygames_room_store_has_session(store, temporary_player),
+              MYGAMES_STORE_NOT_FOUND);
+        check(mygames_room_store_resume_session(
+                  store, 3u, temporary_player, old_hash, later_hash,
+                  40001u, &recovered_player, &recovered_generation),
+              MYGAMES_STORE_NOT_FOUND); /* old hash is consumed */
+        check(mygames_room_store_detach_session(
+                  store, 3u, old_player, 1u, 52000u),
+              MYGAMES_STORE_NOT_FOUND); /* stale generation */
+        check(mygames_room_store_player_high_watermark(store, &next_player),
+              MYGAMES_STORE_OK);
+        assert(next_player == 103u);
+        mygames_room_store_close(store);
+        store = NULL;
+
+        /* Re-open from disk. The old process had a live connection, so the
+         * epoch takeover must atomically make it detached for recovery. */
+        check(mygames_room_store_open(argv[1], argv[2], &store),
+              MYGAMES_STORE_OK);
+        check(mygames_room_store_claim_epoch_for_recovery(
+                  store, 3u, 60000u, &claimed), MYGAMES_STORE_OK);
+        assert(claimed == 4u);
+        load(store, &loaded, 4u, 3u);
+        check(mygames_room_store_issue_session(
+                  store, 3u, temp_hash, &next_player),
+              MYGAMES_STORE_STALE_EPOCH);
+        check(mygames_room_store_issue_session(
+                  store, 4u, temp_hash, &next_player), MYGAMES_STORE_OK);
+        assert(next_player == 104u);
+        check(mygames_room_store_resume_session(
+                  store, 4u, next_player, rotated_hash, later_hash,
+                  60000u, &recovered_player, &recovered_generation),
+              MYGAMES_STORE_NOT_FOUND); /* inclusive expiry boundary */
+        check(mygames_room_store_resume_session(
+                  store, 4u, next_player, rotated_hash, later_hash,
+                  59999u, &recovered_player, &recovered_generation),
+              MYGAMES_STORE_OK);
+        assert(recovered_player == old_player && recovered_generation == 3u);
+        check(mygames_room_store_detach_session(
+                  store, 3u, old_player, 3u, 70000u),
+              MYGAMES_STORE_STALE_EPOCH);
+        check(mygames_room_store_detach_session(
+                  store, 4u, old_player, 3u, 70000u),
+              MYGAMES_STORE_OK);
+        check(mygames_room_store_player_high_watermark(store, &next_player),
+              MYGAMES_STORE_OK);
+        assert(next_player == 104u);
+        mygames_room_store_close(store);
+        store = NULL;
+    }
+
     corrupt_journal_with_turbodb(argv[1], argv[2]);
     /* State checkpoint is still byte-valid, but command/outbox sequence is
      * no longer consistent: fail closed without destroying persisted data. */
