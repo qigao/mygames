@@ -141,6 +141,23 @@ int main(int argc, char **argv) {
         store, 100u, "req-2", digest_b, reply, sizeof(reply), &result_bytes, &seq),
         MYGAMES_STORE_NOT_FOUND);
 
+    /* A second injection point is AFTER the command journal INSERT and
+     * BEFORE outbox INSERT. All three facts must still roll back together. */
+    mygames_room_store_fail_after_command_once(store);
+    check(mygames_room_store_commit(
+        store, 100u, &rooms, 1u, 1u, "req-2", digest_b,
+        response_b, sizeof(response_b) - 1u,
+        event_b, sizeof(event_b) - 1u, &seq),
+        MYGAMES_STORE_BACKEND_ERROR);
+    load(store, &loaded, 1u, 1u);
+    assert(mygames_room_directory_get_player(&loaded, 101u)->seats[1].ready);
+    check(mygames_room_store_get_outcome(
+        store, 100u, "req-2", digest_b, reply, sizeof(reply), &result_bytes, &seq),
+        MYGAMES_STORE_NOT_FOUND);
+    check(mygames_room_store_next_event(
+        store, 1u, event, sizeof(event), &outbox_bytes, &seq),
+        MYGAMES_STORE_NOT_FOUND);
+
     check(mygames_room_store_claim_epoch(store, 2u, &claimed),
           MYGAMES_STORE_STALE_EPOCH);
     check(mygames_room_store_claim_epoch(store, 1u, &claimed),

@@ -15,6 +15,7 @@ struct mygames_room_store {
     bool quarantined;
 #ifdef MYGAMES_STORE_FAULT_TESTING
     bool fail_after_checkpoint;
+    bool fail_after_command;
 #endif
     char last_error[ORM_C_ERROR_MESSAGE_CAPACITY];
 };
@@ -611,6 +612,13 @@ mygames_store_status mygames_room_store_commit(
     if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
     if (affected != 1u) return rollback(store, tx, MYGAMES_STORE_CORRUPT);
 
+#ifdef MYGAMES_STORE_FAULT_TESTING
+    if (store->fail_after_command) {
+        store->fail_after_command = false;
+        return rollback(store, tx, MYGAMES_STORE_BACKEND_ERROR);
+    }
+#endif
+
     args[0] = orm_i64((int64_t)next_seq);
     args[1] = orm_blob(event_payload, event_bytes);
     status = execute(store, tx,
@@ -713,5 +721,8 @@ mygames_store_status mygames_room_store_ack_event(
 #ifdef MYGAMES_STORE_FAULT_TESTING
 void mygames_room_store_fail_after_checkpoint_once(mygames_room_store *store) {
     if (store) store->fail_after_checkpoint = true;
+}
+void mygames_room_store_fail_after_command_once(mygames_room_store *store) {
+    if (store) store->fail_after_command = true;
 }
 #endif

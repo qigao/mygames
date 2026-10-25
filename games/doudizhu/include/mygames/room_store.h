@@ -108,6 +108,7 @@ mygames_store_status mygames_room_store_ack_event(
  */
 #ifdef MYGAMES_STORE_FAULT_TESTING
 void mygames_room_store_fail_after_checkpoint_once(mygames_room_store *store);
+void mygames_room_store_fail_after_command_once(mygames_room_store *store);
 #endif
 #ifdef __cplusplus
 }
