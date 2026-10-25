@@ -5,6 +5,9 @@
 #include <http_server/http.h>
 #include "mygames/room_directory.h"
 #include "mygames/wire.h"
+#include "mygames/session_registry.h"
+#include <salts/random.h>
+#include <salts/clock.h>
 
 #include <inttypes.h>
 #include <stdarg.h>
@@ -15,6 +18,7 @@
 
 #define MYGAMES_PEER_CAPACITY 32u
 #define MYGAMES_DEDUP_WINDOW 8u
+#define MYGAMES_SESSION_GRACE_MS UINT64_C(30000)
 
 typedef struct response_cache {
     bool used;
@@ -26,16 +30,17 @@ typedef struct response_cache {
 
 typedef struct client_peer {
     bool occupied;
-    mygames_player_id player;
+    size_t session_slot;
+    uint64_t bound_generation;
     chttp_server_websocket_session session;
-    response_cache cache[MYGAMES_DEDUP_WINDOW];
-    unsigned int next_cache;
 } client_peer;
 
 typedef struct dev_server_state {
     mygames_room_directory rooms;
+    mygames_session_registry sessions;
     client_peer peers[MYGAMES_PEER_CAPACITY];
-    uint64_t next_player;
+    response_cache cache[MYGAMES_SESSION_CAPACITY][MYGAMES_DEDUP_WINDOW];
+    unsigned int cache_next[MYGAMES_SESSION_CAPACITY];
 } dev_server_state;
 
 static bool append(char *buffer, size_t capacity, size_t *length,
@@ -68,26 +73,41 @@ static client_peer *find_peer(dev_server_state *state,
     return NULL;
 }
 
-static response_cache *cached_request(client_peer *peer,
+static response_cache *cached_request(dev_server_state *state, size_t slot,
                                       const char *request_id) {
     unsigned int i;
-    for (i = 0; i < MYGAMES_DEDUP_WINDOW; ++i) {
-        response_cache *item = &peer->cache[i];
+    for (i = 0u; i < MYGAMES_DEDUP_WINDOW; ++i) {
+        response_cache *item = &state->cache[slot][i];
         if (item->used && strcmp(item->request_id, request_id) == 0) return item;
     }
     return NULL;
 }
 
-static void remember_request(client_peer *peer, const mygames_wire_command *command,
+static void remember_request(dev_server_state *state, size_t slot,
+                             const mygames_wire_command *command,
                              const void *bytes, size_t size, const char *response) {
-    response_cache *item = &peer->cache[peer->next_cache % MYGAMES_DEDUP_WINDOW];
-    peer->next_cache++;
+    response_cache *item = &state->cache[slot]
+        [state->cache_next[slot]++ % MYGAMES_DEDUP_WINDOW];
     memset(item, 0, sizeof(*item));
     memcpy(item->request_id, command->request_id, strlen(command->request_id) + 1u);
     memcpy(item->request, bytes, size);
     item->request_bytes = size;
     memcpy(item->response, response, strlen(response) + 1u);
     item->used = true;
+}
+
+static void clear_cache(dev_server_state *state, size_t slot) {
+    memset(state->cache[slot], 0, sizeof(state->cache[slot]));
+    state->cache_next[slot] = 0u;
+}
+
+static const mygames_session_record *current_identity(
+    const dev_server_state *state, const client_peer *peer) {
+    const mygames_session_record *record;
+    if (!state || !peer || !peer->occupied) return NULL;
+    record = mygames_sessions_at(&state->sessions, peer->session_slot);
+    return record && record->attached && record->generation == peer->bound_generation
+               ? record : NULL;
 }
 
 static int send_text(chttp_websocket *socket, const char *text) {
@@ -136,8 +156,9 @@ static void publish_snapshot(dev_server_state *state, const mygames_room *room) 
     for (i = 0; i < MYGAMES_PEER_CAPACITY; ++i) {
         client_peer *p = &state->peers[i];
         const mygames_room *member_room;
-        if (!p->occupied) continue;
-        member_room = mygames_room_directory_get_player(&state->rooms, p->player);
+        const mygames_session_record *record = current_identity(state, p);
+        if (!record) continue;
+        member_room = mygames_room_directory_get_player(&state->rooms, record->player);
         if (member_room == room) {
             const int rc = chttp_server_websocket_send_text(&p->session, json, strlen(json));
             if (rc != SALTS_OK)
@@ -169,6 +190,78 @@ static bool write_error(char *out, size_t cap, const char *request_id,
     return count > 0 && (size_t)count < cap;
 }
 
+
+/* Single CHttp owner: room changes and session expiry happen in serial.
+ * Lazy expiry is progress on ingress, not an autonomous time-based timer. */
+static void collect_expired(dev_server_state *state) {
+    mygames_player_id expired[MYGAMES_SESSION_CAPACITY] = {0};
+    size_t i, n = mygames_sessions_collect_expired(
+        &state->sessions, cmeta_monotonic_ms(), expired);
+    for (i = 0u; i < n; ++i) {
+        const mygames_room *room = mygames_room_directory_get_player(
+            &state->rooms, expired[i]);
+        char id[MYGAMES_ROOM_ID_CAPACITY] = {0};
+        if (!room || room->phase != MYGAMES_ROOM_WAITING) continue;
+        memcpy(id, room->id, strlen(room->id) + 1u);
+        if (mygames_room_directory_leave(&state->rooms, expired[i]) == MYGAMES_ROOM_OK)
+            publish_snapshot(state, mygames_room_directory_get(&state->rooms, id));
+    }
+    for (i = 0u; i < MYGAMES_SESSION_CAPACITY; ++i)
+        if (!mygames_sessions_at(&state->sessions, i)) clear_cache(state, i);
+}
+
+static void handle_session_resume(dev_server_state *state, client_peer *peer,
+                                  chttp_websocket *socket,
+                                  const mygames_wire_command *command) {
+    static const char rejection[] =
+        "{\"v\":1,\"type\":\"session.error\",\"code\":\"resume_rejected\"}";
+    uint8_t entropy[MYGAMES_SESSION_TICKET_BYTES];
+    const mygames_session_record *original = current_identity(state, peer);
+    const mygames_session_record *recovered;
+    size_t claimed = MYGAMES_SESSION_CAPACITY;
+    size_t temporary_slot = peer->session_slot;
+    mygames_session_status status;
+    char response[256];
+    const mygames_room *room;
+    int length;
+    if (!original ||
+        mygames_room_directory_get_player(&state->rooms, original->player)) {
+        (void)send_text(socket, rejection);
+        return;
+    }
+    if (cmeta_platform_secure_random(entropy, sizeof(entropy)) != SALTS_OK) {
+        (void)send_text(socket, rejection);
+        return;
+    }
+    status = mygames_sessions_resume(&state->sessions, command->resume_token,
+                                    entropy, cmeta_monotonic_ms(), &claimed);
+    memset(entropy, 0, sizeof(entropy));
+    if (status != MYGAMES_SESSION_OK) {
+        (void)send_text(socket, rejection);
+        return;
+    }
+    /* Revoke the freshly issued provisional credential on this connection. */
+    (void)mygames_sessions_discard(&state->sessions, temporary_slot);
+    clear_cache(state, temporary_slot);
+    peer->session_slot = claimed;
+    recovered = mygames_sessions_at(&state->sessions, claimed);
+    if (!recovered) return;
+    peer->bound_generation = recovered->generation;
+    length = snprintf(response, sizeof(response),
+        "{\"v\":1,\"type\":\"session.ready\","
+        "\"player_id\":\"%" PRIu64 "\",\"generation\":%" PRIu64 ","
+        "\"resume_token\":\"%s\",\"resumed\":true}",
+        recovered->player, recovered->generation, recovered->ticket);
+    if (length <= 0 || (size_t)length >= sizeof(response)) return;
+    if (send_text(socket, response) != SALTS_OK) return;
+    room = mygames_room_directory_get_player(&state->rooms, recovered->player);
+    if (room) {
+        char snapshot[1024];
+        if (encode_snapshot(room, snapshot, sizeof(snapshot)))
+            (void)send_text(socket, snapshot);
+    }
+}
+
 static void ws_handle_command(dev_server_state *state, client_peer *client,
                               chttp_websocket *socket, const void *bytes, size_t size) {
     mygames_wire_command command;
@@ -181,6 +274,7 @@ static void ws_handle_command(dev_server_state *state, client_peer *client,
     unsigned int seat = 0u;
     uint64_t revision = 0u;
     bool changed = false;
+    const mygames_session_record *identity;
     parse_result = mygames_wire_decode_command(bytes, size, &command);
     if (parse_result != MYGAMES_WIRE_OK) {
         const char *code = parse_result == MYGAMES_WIRE_TOO_LARGE ? "oversized_message" :
@@ -197,7 +291,17 @@ static void ws_handle_command(dev_server_state *state, client_peer *client,
         (void)send_text(socket, "{\"v\":1,\"type\":\"server.pong\"}");
         return;
     }
-    previous = cached_request(client, command.request_id);
+    if (command.kind == MYGAMES_COMMAND_RESUME_SESSION) {
+        handle_session_resume(state, client, socket, &command);
+        return;
+    }
+    identity = current_identity(state, client);
+    if (!identity) {
+        (void)send_text(socket,
+            "{\"v\":1,\"type\":\"server.error\",\"code\":\"session_stale\"}");
+        return;
+    }
+    previous = cached_request(state, client->session_slot, command.request_id);
     if (previous) {
         if (size == previous->request_bytes &&
             memcmp(bytes, previous->request, size) == 0) {
@@ -208,23 +312,23 @@ static void ws_handle_command(dev_server_state *state, client_peer *client,
         }
         return;
     }
-    room = mygames_room_directory_get_player(&state->rooms, client->player);
+    room = mygames_room_directory_get_player(&state->rooms, identity->player);
     if (command.kind == MYGAMES_COMMAND_CREATE_ROOM) {
-        result = mygames_room_directory_create(&state->rooms, client->player, &room);
+        result = mygames_room_directory_create(&state->rooms, identity->player, &room);
         changed = result == MYGAMES_ROOM_OK;
     } else if (command.kind == MYGAMES_COMMAND_JOIN_ROOM) {
         result = mygames_room_directory_join(&state->rooms, command.room_id,
-                                              client->player, &seat);
+                                              identity->player, &seat);
         if (result == MYGAMES_ROOM_OK || result == MYGAMES_ROOM_ALREADY_PRESENT)
-            room = mygames_room_directory_get_player(&state->rooms, client->player);
+            room = mygames_room_directory_get_player(&state->rooms, identity->player);
         changed = result == MYGAMES_ROOM_OK;
     } else if (command.kind == MYGAMES_COMMAND_READY) {
-        result = mygames_room_directory_ready(&state->rooms, client->player, command.ready);
+        result = mygames_room_directory_ready(&state->rooms, identity->player, command.ready);
         changed = result == MYGAMES_ROOM_OK;
-        room = mygames_room_directory_get_player(&state->rooms, client->player);
+        room = mygames_room_directory_get_player(&state->rooms, identity->player);
     } else if (command.kind == MYGAMES_COMMAND_LEAVE_ROOM) {
         if (room) memcpy(room_id, room->id, strlen(room->id) + 1u);
-        result = mygames_room_directory_leave(&state->rooms, client->player);
+        result = mygames_room_directory_leave(&state->rooms, identity->player);
         changed = result == MYGAMES_ROOM_OK;
         room = mygames_room_directory_get(&state->rooms, room_id);
         seat = MYGAMES_ROOM_SEATS;
@@ -236,7 +340,7 @@ static void ws_handle_command(dev_server_state *state, client_peer *client,
     if (result != MYGAMES_ROOM_OK && result != MYGAMES_ROOM_ALREADY_PRESENT) {
         if (!write_error(reply, sizeof(reply), command.request_id, status_string(result)))
             return;
-        remember_request(client, &command, bytes, size, reply);
+        remember_request(state, client->session_slot, &command, bytes, size, reply);
         (void)send_text(socket, reply);
         return;
     }
@@ -244,7 +348,7 @@ static void ws_handle_command(dev_server_state *state, client_peer *client,
         revision = room->revision;
         if (command.kind != MYGAMES_COMMAND_LEAVE_ROOM) {
             unsigned int current_seat;
-            if (mygames_room_find_seat(room, client->player, &current_seat) == MYGAMES_ROOM_OK)
+            if (mygames_room_find_seat(room, identity->player, &current_seat) == MYGAMES_ROOM_OK)
                 seat = current_seat;
         }
         memcpy(room_id, room->id, strlen(room->id) + 1u);
@@ -256,7 +360,7 @@ static void ws_handle_command(dev_server_state *state, client_peer *client,
             command.request_id, room_id, revision, seat);
         if (n <= 0 || (size_t)n >= sizeof(reply)) return;
     }
-    remember_request(client, &command, bytes, size, reply);
+    remember_request(state, client->session_slot, &command, bytes, size, reply);
     (void)send_text(socket, reply);
     if (changed) {
         if (room) publish_snapshot(state, room);
@@ -274,33 +378,49 @@ static int ws_open(void *user, chttp_websocket *socket,
                    chttp_server_response *response) {
     dev_server_state *state = (dev_server_state *)user;
     chttp_server_websocket_session session = {0};
-    char hello[192];
+    uint8_t entropy[MYGAMES_SESSION_TICKET_BYTES];
+    const mygames_session_record *identity;
+    char hello[272];
+    size_t issued = MYGAMES_SESSION_CAPACITY;
     unsigned int i;
     int rc;
     (void)request;
     (void)response;
-    if (!state || state->next_player == UINT64_MAX) return SALTS_ENOBUFS;
+    if (!state) return SALTS_EINVAL;
+    collect_expired(state);
     rc = chttp_server_websocket_session_capture(socket, &session);
     if (rc != SALTS_OK) return rc;
     for (i = 0u; i < MYGAMES_PEER_CAPACITY; ++i) {
-        client_peer *p = &state->peers[i];
-        if (p->occupied) continue;
-        memset(p, 0, sizeof(*p));
-        p->occupied = true;
-        p->player = ++state->next_player;
-        p->session = session;
-        {
-            int n = snprintf(hello, sizeof(hello),
-                "{\"v\":1,\"type\":\"server.hello\","
-                "\"capabilities\":[\"ping\",\"rooms\"],\"player_id\":\"%" PRIu64 "\"}",
-                p->player);
-            if (n <= 0 || (size_t)n >= sizeof(hello)) {
-                memset(p, 0, sizeof(*p));
-                return SALTS_EINVAL;
-            }
+        client_peer *peer = &state->peers[i];
+        mygames_session_status status;
+        int n;
+        if (peer->occupied) continue;
+        if (cmeta_platform_secure_random(entropy, sizeof(entropy)) != SALTS_OK)
+            return SALTS_EIO;
+        status = mygames_sessions_issue(&state->sessions, entropy, &issued);
+        memset(entropy, 0, sizeof(entropy));
+        if (status != MYGAMES_SESSION_OK) return SALTS_ENOBUFS;
+        identity = mygames_sessions_at(&state->sessions, issued);
+        if (!identity) return SALTS_EIO;
+        clear_cache(state, issued);
+        n = snprintf(hello, sizeof(hello),
+            "{\"v\":1,\"type\":\"server.hello\","
+            "\"capabilities\":[\"ping\",\"rooms\",\"resume\"],"
+            "\"player_id\":\"%" PRIu64 "\",\"resume_token\":\"%s\"}",
+            identity->player, identity->ticket);
+        if (n <= 0 || (size_t)n >= sizeof(hello)) {
+            (void)mygames_sessions_discard(&state->sessions, issued);
+            return SALTS_EINVAL;
         }
+        peer->occupied = true;
+        peer->session_slot = issued;
+        peer->bound_generation = identity->generation;
+        peer->session = session;
         rc = send_text(socket, hello);
-        if (rc != SALTS_OK) memset(p, 0, sizeof(*p));
+        if (rc != SALTS_OK) {
+            memset(peer, 0, sizeof(*peer));
+            (void)mygames_sessions_discard(&state->sessions, issued);
+        }
         return rc;
     }
     return SALTS_ENOBUFS;
@@ -317,14 +437,11 @@ static void ws_event(void *user, chttp_websocket *socket,
     peer = find_peer(state, &session);
     if (!peer) return;
     if (event->kind == CHTTP_WEBSOCKET_EVENT_CLOSE) {
-        const mygames_room *old_room =
-            mygames_room_directory_get_player(&state->rooms, peer->player);
-        char room_id[MYGAMES_ROOM_ID_CAPACITY] = {0};
-        if (old_room && old_room->phase == MYGAMES_ROOM_WAITING) {
-            memcpy(room_id, old_room->id, strlen(old_room->id) + 1u);
-            if (mygames_room_directory_leave(&state->rooms, peer->player) == MYGAMES_ROOM_OK)
-                publish_snapshot(state, mygames_room_directory_get(&state->rooms, room_id));
+        if (current_identity(state, peer)) {
+            (void)mygames_sessions_detach(&state->sessions, peer->session_slot,
+                peer->bound_generation, cmeta_monotonic_ms(), MYGAMES_SESSION_GRACE_MS);
         }
+        /* Do not delete room membership until the bounded resume lease ends. */
         memset(peer, 0, sizeof(*peer));
         return;
     }
@@ -388,6 +505,7 @@ int main(void) {
     dev_server_state state = {0};
     int rc;
     mygames_room_directory_init(&state.rooms);
+    mygames_sessions_init(&state.sessions);
     rc = chttp_server_init(&server, &config);
     if (rc != SALTS_OK) {
         fprintf(stderr, "CHttp init failed: %d\n", rc);
