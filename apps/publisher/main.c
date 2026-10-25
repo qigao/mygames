@@ -78,8 +78,7 @@ static mygames_outbox_delivery publish_qos1(
     size_t payload_size, uint64_t epoch, uint64_t sequence) {
     publisher *pub = (publisher *)context;
     flowie_mqtt_client_publish_topic_t topic = {0};
-    flowie_mqtt_client_publish_topic_vec_t topics =
-        FLOWIE_MQTT_CLIENT_PUBLISH_TOPIC_VEC_INIT;
+    flowie_mqtt_client_publish_topic_vec_t topics = {0};
     int rc;
     (void)epoch; (void)sequence;
     if (!pub || !pub->client || !topic_name || !payload ||
@@ -94,6 +93,7 @@ static mygames_outbox_delivery publish_qos1(
     topic.topic = (flowie_mqtt_span_t){
         (const uint8_t *)topic_name, strlen(topic_name)};
     topic.payload = (flowie_mqtt_span_t){payload, payload_size};
+    topics.size = sizeof(topics);
     topics.version = FLOWIE_MQTT_VERSION_5;
     topics.count = 1u;
     topics.data = &topic;
@@ -121,7 +121,7 @@ static bool valid_port(const char *arg, int *out) {
 }
 static int publisher_main(int argc, char **argv) {
     flowie_mqtt_client_config_t cfg = FLOWIE_MQTT_CLIENT_CONFIG_INIT;
-    flowie_mqtt_connect_packet_t conn = FLOWIE_MQTT_CONNECT_PACKET_INIT;
+    flowie_mqtt_connect_packet_t conn = {0};
     publisher pub = {0};
     mygames_room_store *store = NULL;
     const char *port_override = getenv("MYGAMES_MQTT_PORT");
@@ -176,6 +176,8 @@ static int publisher_main(int argc, char **argv) {
         fprintf(stderr, "Flowie MQTT client init failed: %d\n", rc);
         goto cleanup;
     }
+    conn.size = sizeof(conn);
+    conn.abi_version = FLOWIE_MQTT_PROTOCOL_ABI_V1;
     conn.version = FLOWIE_MQTT_VERSION_5;
     conn.clean_start = 1u;
     conn.keep_alive = 10u;
