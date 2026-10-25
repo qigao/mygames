@@ -106,3 +106,14 @@ CTest; it does **not** mean any room or session is persisted. An actual
 TurboDB transaction and command/event/outbox journal must be implemented
 and verified before advertising crash recovery. Details:
 [checkpoint v1](room-checkpoint-v1.md).
+
+## TurboDB transaction module (optional, isolated from the live gateway)
+
+The `MyGames::Store` library loads the exact TurboDB SQLite Driver and
+transactionally writes a Room Checkpoint, per-player command result and
+unpublished event. It supports explicit owner-epoch compare-and-swap and
+validated recovery from disk. This is *implemented and SDK-tested as a
+standalone persistence boundary*, but it is **not yet the commit path used
+by the live CHttp Room Owner**. Do not report client room commands as durable
+until that integration is completed and tested end-to-end. See
+[TurboDB v1](room-store-turbodb-v1.md).

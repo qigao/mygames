@@ -75,3 +75,19 @@ serializing and rejects corrupt or unsupported snapshots without modifying
 state. See [checkpoint v1 specification](docs/room-checkpoint-v1.md).
 This is **only a storage-neutral codec**: no TurboDB, durable journal,
 restart recovery or user authentication has been implemented yet.
+
+
+## Optional TurboDB transactional store
+
+`games/doudizhu/src/room_store_turbodb.c` provides an opt-in transactional
+room store using TurboDB ORM and the explicit SQLite Driver plugin. A single
+confirmed transaction persists the post-command Room Checkpoint, durable
+per-player command result and an unpublished Outbox event. It supports
+owner-epoch CAS fencing, failed-commit quarantine, and validated reload from a
+real SQLite database after closing and reopening the ORM Runtime.
+
+Build with `MYGAMES_ENABLE_TURBODB=ON` and a compatible installed TurboDB
+SDK. [Transaction contract](docs/room-store-turbodb-v1.md).
+**Not yet connected to the CHttp game server**: existing networked lobby
+commands do not become durable merely by enabling this library. Authentication,
+process recovery, and Flowie publisher integration are subsequent gates.
