@@ -54,9 +54,10 @@ including reconnection, secret rotation and cross-socket duplicate requests.
 - **No real user authentication or authorization authority.** Loopback-only
   bearer recovery tickets are not an identity provider. Do not expose the
   dev gateway to the Internet.
-- The optional TurboDB mode does persist RoomDirectory checkpoints and committed
-  per-player command results, but does NOT persist login principals or session
-  tickets. After restart with seats present, the gateway refuses startup.
+- TurboDB mode persists room facts, per-player command outcomes and SHA-256
+  digests of recovery tickets; it does **not** persist plaintext tickets or
+  externally authenticated login principals. A client must present a valid
+  prior bearer ticket to recover its original identity across restarts.
 - The current single CFlow serial worker owns *all* rooms. Future sharding
   must pin exactly one owner per `room_id`, fence `room_epoch`, and migrate
   ownership only at an explicit quiescent boundary.
@@ -64,9 +65,10 @@ including reconnection, secret rotation and cross-socket duplicate requests.
   callback still needs a transport-terminal notification contract.
 - CLOSE admission can be rejected under a saturated CFlow queue. Reserved
   close capacity and terminal reconciliation are separate fail-closed gates.
-- Memory-only mode collects expired sessions lazily on ingress, not using a
-  timer. Durable mode suppresses seated-player expiry until it can commit a
-  journalled system command; bounded session slots can eventually fill.
+- Expiration is still ingress-driven, not scheduled autonomously. Durable
+  mode now transactionally deletes expired **unseated** leases in bounded
+  sweeps. Seated-player expiry is withheld pending a committed system
+  command/Outbox, so orphaned seats can still exhaust bounded resources.
 - The TypeScript Lobby.scene has passed serialization-structure and syntax
   tests; Creator Editor import and real Web preview remain unqualified (#2).
 - No dealing, bidding, out-card legality, scoring, replay, Flowie MQTT outbox,
@@ -120,10 +122,21 @@ without these variables remains in-memory.
 
 Installed-SDK CI runs the *actual* durable WebSocket service with four
 clients, then closes it, independently reopens its SQLite datastore to
-verify state, command outcome, epoch and Outbox, and proves a restart with
-orphaned session credentials refuses startup. See
+verify state, command outcome, epoch and Outbox, then restarts and proves a
+valid old bearer ticket recovers the same player and seat, rotates the token,
+and rejects old-token replay. See
 [TurboDB store contract](room-store-turbodb-v1.md).
 
-This does not supply an identity authority, durable session recovery,
-autonomous lease expiry, a Flowie publisher, or full-process restoration
-of active gameplay. Those remain tracked in Issue #3.
+This implements **development-only bearer-based restart reattachment**, but
+not an external identity authority, automatic seated expiry, abnormal
+transport-terminal recovery, a Flowie publisher, or completed gameplay. Those remain tracked in Issue #3.
+
+## Persistent bearer session lease v1
+
+See [session lease specification](session-lease-v1.md). In TurboDB mode,
+transactional player ID allocation and salted-by-entropy 256-bit random
+tickets are enforced by the Room Owner. Only SHA-256 ticket digests are stored.
+The owner epoch CAS also detaches old-process leases within an absolute UTC
+recovery grace. A reconnecting client must rotate its ticket in the same
+TurboDB transaction that removes its provisional session. This is a local
+development capability, not externally verified user authentication.

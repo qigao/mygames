@@ -6,14 +6,16 @@ A server-authoritative multiplayer game platform, initially for Dou Dizhu (æ–—åœ
 
 - **C11 Room Core:** bounded 32-room directory, three-seat admission, owner handover, ready state, revision tracking, lifecycle tests.
 - **C11 wire decoder:** strict bounded JSON subset with versioned room and session.resume commands and regression tests.
-- **In-process reconnect:** OS-CSPRNG-generated 256-bit bearer tickets, 30-second detached grace,
-  rotating recovery credentials, stable room seating and request-id reuse protection.
+- **Recovery:** OS-CSPRNG-generated 256-bit bearer tickets, 30-second detached grace,
+  rotating credentials, per-session idempotence; optional TurboDB mode can
+  recover the same seat after a process restart using SHA-256-only stored tickets.
 - **CHttp/CNet development gateway:** real WebSocket handlers for room.create / join / ready / leave / snapshot.get. **Loopback-only and unauthenticated.**
 - **Cocos Creator 3.8.8:** serialized Lobby.scene (Canvas/Camera/Bootstrap), TypeScript runtime-rendered room/lobby UI, WebSocket and room presentation state.
 - **CI:** Linux/Windows/macOS core tests and Node 22 TypeScript protocol tests. SDK gateway is opt-in and separately qualified.
 
-**Do not expose or deploy as a public game service.** The gateway lacks authenticated user login, durable session recovery, gameplay,
-Flowie integration and KFCore/DouZero. The database-backed command path is opt-in.
+**Do not expose or deploy as a public game service.** The gateway lacks externally verified user login, public WSS admission, gameplay,
+Flowie integration and KFCore/DouZero. Hashed bearer-based restart recovery is
+available only in the optional local TurboDB development mode.
 
 ## Core-only tests
 
@@ -51,8 +53,10 @@ committed, sanitized room events; MQTT protocol acknowledgement never commits ga
 
 License: AGPL-3.0, see LICENSE.
 
-**Recovery is not user authentication.** It is limited to graceful WebSocket Close and
-one process lifetime. See [session protocol](docs/protocol.md) and [remaining ownership gates](docs/architecture.md).
+**Bearer-token recovery is not user authentication.** In-memory-only mode does
+not survive process restart; TurboDB mode can rebind a prior player and room
+seat using a valid rotating ticket without storing its plaintext. See
+[session lease v1](docs/session-lease-v1.md) and [remaining gates](docs/architecture.md).
 
 
 ## Room Owner threading
@@ -103,9 +107,16 @@ command outcome and unpublished Outbox event, then changes the live state
 and sends ACK. Failed commits never fall back to memory. Without both env
 variables the localhost service runs in its original in-memory mode.
 
-SDK CI executes real WebSocket clients with an on-disk database and audits
-durable state from a separate TurboDB process. Reopening a nonempty room after
-process restart **fails closed**, because session credentials were not
-persisted; it never binds orphaned seats to new unauthenticated clients.
-Autonomous lease expiry, durable user identity, outbox MQTT publishing and
-complete process recovery remain blocked.
+SDK CI executes real WebSocket clients against an on-disk database, closes the
+server, restarts on the same datastore, and verifies that the *original*
+rotating bearer credential reclaims the original player ID and seat with a
+new Owner Epoch. A stale ticket is rejected; unknown clients get separate
+provisional identities. The DB retains **only SHA-256 of tickets**, never
+their plaintext. The server rejects missing session bindings on occupied seats.
+
+Expired detached sessions with **no seat** are reclaimed using a bounded
+ingress sweep; ID allocation stays monotonic. Expired seated sessions must
+be processed by an authoritative committed system command (not implemented).
+No external login, public WSS, autonomous lease timer, abnormal TCP terminal
+reconciliation, Flowie MQTT publisher or full gameplay recovery is claimed.
+See [durable lease protocol](docs/session-lease-v1.md).

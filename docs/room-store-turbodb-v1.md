@@ -22,8 +22,12 @@ The adapter initializes these tables transactionally on a fresh database:
   digest, exact returned response, epoch and sequence. Multiple players are
   allowed to use their own `req-1` identifiers without collisions.
 - `mg_outbox`: one event under each global sequence, initially unpublished.
-  Outbox payloads must already be sanitized by the game owner; this module
-  does not add MQTT topics, authenticate observers, or reveal private cards.
+  Outbox payloads must already be sanitized by the game owner.
+- `mg_identity_alloc`: durable monotonic high-watermark for all issued
+  provisional player IDs, including those whose leases were later removed.
+- `mg_session_leases`: player ID primary key, **32-byte SHA-256 bearer-ticket
+  digest only**, generation, attached/detached status and absolute lease
+  deadline. There is no plaintext bearer token or trusted login principal.
 
 The schema is **development version 1**. Do not run it against an unknown
 older schema: `CREATE TABLE IF NOT EXISTS` does not imply migration.
@@ -90,11 +94,16 @@ gameplay commit.
   when built with `MYGAMES_ENABLE_TURBODB=ON` and explicitly provided
   `MYGAMES_SQLITE_PLUGIN` and `MYGAMES_DB_PATH`. It stages room mutations,
   commits before ACK, and refuses to downgrade failed storage to memory.
-- Real WebSocket tests audit the persisted room, epoch, original command
-  response and unpublished Outbox in an independent TurboDB process after
-  the gateway stops; restarting while seats have lost their ephemeral login
-  identities is deliberately refused, not silently recovered.
-- Session tickets, authenticated identity, users, room game rules,
+- Real WebSocket tests audit Room Checkpoint, epoch, original command response
+  and Outbox, then restart the server and require proof of possession of the
+  previous 256-bit ticket. The original player/seat is restored and the
+  credential rotates; stale-ticket replay is rejected.
+- A seated room with a missing DB-backed lease fails closed. The daemon does
+  not grant old seats to new unauthenticated provisional connections.
+- Bounded ingress sweeps may remove expired **unseated** leases without
+  reusing player IDs. Expired seated seats still require a journalled system
+  transition; an independent scheduler is not yet implemented.
+- Externally authenticated identity, real user accounts, room game rules,
   process-lock/election, outbox MQTT publication, schema migrations,
   crash/power-loss fault simulation and cross-node recovery remain open
   milestones in Issue #3.

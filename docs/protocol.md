@@ -2,8 +2,8 @@
 
 Transport is a **loopback-only, unauthenticated** CHttp WebSocket at
 `ws://127.0.0.1:1780/ws`. This is not a production user login service.
-It provides an **ephemeral player identity and a recovery capability** within
-one process lifetime, not an independently verified account identity.
+It provides an **ephemeral player identity and a recovery capability** within one process lifetime in memory-only mode, or across process restarts
+in the opt-in local TurboDB mode. Neither is an independently verified login.
 
 ## New WebSocket session
 
@@ -17,8 +17,10 @@ keeps it **in memory only**, not localStorage/sessionStorage.
 
 ## Recovery after a graceful CLOSE
 
-Disconnecting retains a seated player's identity, seat and last 8 command
-replies for a **30-second monotonic grace**. On the next WS connection, the
+Disconnecting retains a seated player's identity and seat for a **30-second
+grace** (monotonic within a process, absolute realtime persisted in TurboDB mode).
+The last eight connection-local replies remain in memory; TurboDB mode also
+provides durable per-player command-result replay. On the next WS connection, the
 server sends a *new, provisional* `server.hello` (a fresh player and ticket).
 The client then immediately sends the *old* ticket:
 
@@ -74,8 +76,10 @@ recovery. Conflicting reuse of the same request_id is rejected.
 - Command bytes <=512. Flat strict JSON subset only; escaped strings, duplicate
   keys, unknown fields and nested data are rejected.
 - A resumed session is **not a user authentication mechanism**.
-- Session tickets and per-session idempotence records are **in-memory only**.
-  Server restart or crash loses all seats and recovery credentials.
+- In memory-only mode tickets and the eight-entry cache do not survive
+  restart. In TurboDB mode the backend persists only SHA-256 ticket digests,
+  a monotonic player ID allocator, generation and detached deadline, plus
+  exact durable per-player command results. The client owns plaintext.
 - Expiration is lazy in memory mode. With TurboDB enabled, seated-player
   expiry is held until a transactional system-command implementation exists;
   there is no autonomous timer and the fixed session table may fill.
@@ -97,4 +101,7 @@ mutations must commit Checkpoint, exact ACK bytes and an unpublished sanitized
 Outbox event before ACK is sent. Room snapshots expose the claimed durable
 owner epoch. Replays use per-player request ID + normalized SHA-256 command
 digest. Invalid commands and read-only snapshots do not enter the journal.
-A restart with leftover seats but no persisted identities fails closed.
+On restart the Owner Epoch is advanced and old process-bound leases receive a
+bounded recovery deadline. An occupied seat with **no corresponding hashed
+lease** fails closed. Clients presenting valid prior tickets reclaim their
+same player IDs and seats, and their tickets rotate; old tickets are refused.
