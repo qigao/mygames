@@ -69,16 +69,16 @@ recovery. Conflicting reuse of the same request_id is rejected.
 
 ## Bounds and limitations
 
-- Maximum: 32 network peers, 64 session records (including detached), 32 rooms,
-  three players per room; each room mutation runs on one CHttp Owner thread.
+- Maximum: 32 peers, 64 session records and 32 rooms with three seats each.
+  An independent single CFlow SerialExecutor worker owns all room mutations.
 - Command bytes <=512. Flat strict JSON subset only; escaped strings, duplicate
   keys, unknown fields and nested data are rejected.
 - A resumed session is **not a user authentication mechanism**.
 - Session tickets and per-session idempotence records are **in-memory only**.
   Server restart or crash loses all seats and recovery credentials.
-- Expiration is progressed **on subsequent gateway ingress**, not by an autonomous
-  timer. An idle, disconnected player may retain a seat until another event
-  triggers garbage collection.
+- Expiration is lazy in memory mode. With TurboDB enabled, seated-player
+  expiry is held until a transactional system-command implementation exists;
+  there is no autonomous timer and the fixed session table may fill.
 - Graceful WebSocket CLOSE recovery is regression-tested. Abrupt transport loss
   without a CLOSE callback requires a separate terminal-owner cleanup path.
 - In this prototype rooms cannot yet transition into a full playable game;
@@ -88,3 +88,13 @@ Production will require an external identity authority, authenticated WSS,
 durable seat/session snapshots, generation fencing across process restart,
 CFlow room-owner execution, autonomous lease deadlines, an outbox and Flowie
 post-commit MQTT publication.
+
+## Optional developer-only durable transactions
+
+With `MYGAMES_ENABLE_TURBODB=ON` at build time and **both** environment
+variables `MYGAMES_SQLITE_PLUGIN` and `MYGAMES_DB_PATH`, accepted room
+mutations must commit Checkpoint, exact ACK bytes and an unpublished sanitized
+Outbox event before ACK is sent. Room snapshots expose the claimed durable
+owner epoch. Replays use per-player request ID + normalized SHA-256 command
+digest. Invalid commands and read-only snapshots do not enter the journal.
+A restart with leftover seats but no persisted identities fails closed.

@@ -86,9 +86,14 @@ gameplay commit.
   owner epoch claim, stale owner rejection, and re-open of an on-disk DB.
 - SQLite SDK tests run only in the optional Linux installed-SDK CI job;
   Linux/Windows/macOS core-only C11 tests still do not require TurboDB.
-- This adapter is not yet wired into the live WebSocket Room Owner. Until
-  authoritative commands use the transaction **before** publishing ACK,
-  successful local WebSocket commands remain in-memory and non-durable.
+- The local CHttp/CFlow development gateway is now wired into this adapter
+  when built with `MYGAMES_ENABLE_TURBODB=ON` and explicitly provided
+  `MYGAMES_SQLITE_PLUGIN` and `MYGAMES_DB_PATH`. It stages room mutations,
+  commits before ACK, and refuses to downgrade failed storage to memory.
+- Real WebSocket tests audit the persisted room, epoch, original command
+  response and unpublished Outbox in an independent TurboDB process after
+  the gateway stops; restarting while seats have lost their ephemeral login
+  identities is deliberately refused, not silently recovered.
 - Session tickets, authenticated identity, users, room game rules,
   process-lock/election, outbox MQTT publication, schema migrations,
   crash/power-loss fault simulation and cross-node recovery remain open

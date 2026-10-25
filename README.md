@@ -12,8 +12,8 @@ A server-authoritative multiplayer game platform, initially for Dou Dizhu (æ–—åœ
 - **Cocos Creator 3.8.8:** serialized Lobby.scene (Canvas/Camera/Bootstrap), TypeScript runtime-rendered room/lobby UI, WebSocket and room presentation state.
 - **CI:** Linux/Windows/macOS core tests and Node 22 TypeScript protocol tests. SDK gateway is opt-in and separately qualified.
 
-**Do not expose or deploy as a public game service.** The gateway lacks external user login, durable reconnect, gameplay, storage,
-Flowie integration and KFCore/DouZero.
+**Do not expose or deploy as a public game service.** The gateway lacks authenticated user login, durable session recovery, gameplay,
+Flowie integration and KFCore/DouZero. The database-backed command path is opt-in.
 
 ## Core-only tests
 
@@ -73,8 +73,8 @@ A versioned, pure-C11 room checkpoint codec is now available in
 `games/doudizhu/include/mygames/room_checkpoint.h`. It validates before
 serializing and rejects corrupt or unsupported snapshots without modifying
 state. See [checkpoint v1 specification](docs/room-checkpoint-v1.md).
-This is **only a storage-neutral codec**: no TurboDB, durable journal,
-restart recovery or user authentication has been implemented yet.
+The codec itself is storage-neutral; optional TurboDB provides transactional
+room facts, command results and Outbox, but not authenticated session recovery.
 
 
 ## Optional TurboDB transactional store
@@ -88,6 +88,24 @@ real SQLite database after closing and reopening the ORM Runtime.
 
 Build with `MYGAMES_ENABLE_TURBODB=ON` and a compatible installed TurboDB
 SDK. [Transaction contract](docs/room-store-turbodb-v1.md).
-**Not yet connected to the CHttp game server**: existing networked lobby
-commands do not become durable merely by enabling this library. Authentication,
-process recovery, and Flowie publisher integration are subsequent gates.
+The CFlow Room Owner now uses this library when **both** env variables are set:
+
+    cmake -S . -B build/gateway -DMYGAMES_ENABLE_GATEWAY=ON \
+      -DMYGAMES_ENABLE_TURBODB=ON -DCMAKE_PREFIX_PATH=/path/to/installed/sdk
+    cmake --build build/gateway --target mygames_server
+
+    MYGAMES_SQLITE_PLUGIN=/absolute/path/to/turbodb_driver_sqlite.so \
+    MYGAMES_DB_PATH=/absolute/path/to/mygames.sqlite \
+      ./build/gateway/mygames_server
+
+When enabled, it stages mutations, atomically commits the Checkpoint, original
+command outcome and unpublished Outbox event, then changes the live state
+and sends ACK. Failed commits never fall back to memory. Without both env
+variables the localhost service runs in its original in-memory mode.
+
+SDK CI executes real WebSocket clients with an on-disk database and audits
+durable state from a separate TurboDB process. Reopening a nonempty room after
+process restart **fails closed**, because session credentials were not
+persisted; it never binds orphaned seats to new unauthenticated clients.
+Autonomous lease expiry, durable user identity, outbox MQTT publishing and
+complete process recovery remain blocked.

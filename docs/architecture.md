@@ -54,10 +54,9 @@ including reconnection, secret rotation and cross-socket duplicate requests.
 - **No real user authentication or authorization authority.** Loopback-only
   bearer recovery tickets are not an identity provider. Do not expose the
   dev gateway to the Internet.
-- **No durable room or session fact source.** The RoomDirectory, recovery
-  tokens and recent command results are lost on process restart. A typed,
-  versioned checkpoint/journal through an explicit TurboDB adapter is still
-  needed. Do not introduce ad-hoc native files.
+- The optional TurboDB mode does persist RoomDirectory checkpoints and committed
+  per-player command results, but does NOT persist login principals or session
+  tickets. After restart with seats present, the gateway refuses startup.
 - The current single CFlow serial worker owns *all* rooms. Future sharding
   must pin exactly one owner per `room_id`, fence `room_epoch`, and migrate
   ownership only at an explicit quiescent boundary.
@@ -65,8 +64,9 @@ including reconnection, secret rotation and cross-socket duplicate requests.
   callback still needs a transport-terminal notification contract.
 - CLOSE admission can be rejected under a saturated CFlow queue. Reserved
   close capacity and terminal reconciliation are separate fail-closed gates.
-- Expired session leases are collected on subsequent OPEN work only, not by a
-  continuously progressing timer. A quiet server can retain expired seats.
+- Memory-only mode collects expired sessions lazily on ingress, not using a
+  timer. Durable mode suppresses seated-player expiry until it can commit a
+  journalled system command; bounded session slots can eventually fill.
 - The TypeScript Lobby.scene has passed serialization-structure and syntax
   tests; Creator Editor import and real Web preview remain unqualified (#2).
 - No dealing, bidding, out-card legality, scoring, replay, Flowie MQTT outbox,
@@ -107,13 +107,23 @@ TurboDB transaction and command/event/outbox journal must be implemented
 and verified before advertising crash recovery. Details:
 [checkpoint v1](room-checkpoint-v1.md).
 
-## TurboDB transaction module (optional, isolated from the live gateway)
+## Optional committed Room Owner via TurboDB
 
-The `MyGames::Store` library loads the exact TurboDB SQLite Driver and
-transactionally writes a Room Checkpoint, per-player command result and
-unpublished event. It supports explicit owner-epoch compare-and-swap and
-validated recovery from disk. This is *implemented and SDK-tested as a
-standalone persistence boundary*, but it is **not yet the commit path used
-by the live CHttp Room Owner**. Do not report client room commands as durable
-until that integration is completed and tested end-to-end. See
-[TurboDB v1](room-store-turbodb-v1.md).
+When built with `MYGAMES_ENABLE_TURBODB=ON`, and exact SQLite plugin/database
+paths supplied through `MYGAMES_SQLITE_PLUGIN` and `MYGAMES_DB_PATH`,
+the CFlow Room Owner now looks up normalized per-player command outcomes,
+stages all room mutations in a separate copy, commits the Checkpoint +
+exact response + sanitized unpublished Outbox event, then swaps live state
+and sends ACK **only after successful TurboDB COMMIT**. Any ambiguous or
+failed commit stops mutation admission. A plain development gateway
+without these variables remains in-memory.
+
+Installed-SDK CI runs the *actual* durable WebSocket service with four
+clients, then closes it, independently reopens its SQLite datastore to
+verify state, command outcome, epoch and Outbox, and proves a restart with
+orphaned session credentials refuses startup. See
+[TurboDB store contract](room-store-turbodb-v1.md).
+
+This does not supply an identity authority, durable session recovery,
+autonomous lease expiry, a Flowie publisher, or full-process restoration
+of active gameplay. Those remain tracked in Issue #3.
