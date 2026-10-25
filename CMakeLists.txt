@@ -19,6 +19,20 @@ else()
   target_compile_options(mygames_room PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
 
+# The recovery admission core is pure C11; no network, database or
+# fallback implementation is linked into this policy target.
+add_library(mygames_recovery_gate STATIC
+  games/doudizhu/src/recovery_gate.c)
+add_library(MyGames::RecoveryGate ALIAS mygames_recovery_gate)
+target_compile_features(mygames_recovery_gate PUBLIC c_std_11)
+target_include_directories(mygames_recovery_gate PUBLIC games/doudizhu/include)
+if(MSVC)
+  target_compile_options(mygames_recovery_gate PRIVATE /W4 /WX)
+else()
+  target_compile_options(mygames_recovery_gate PRIVATE
+    -Wall -Wextra -Wpedantic -Werror)
+endif()
+
 if(MYGAMES_ENABLE_GATEWAY)
   find_package(Chttp CONFIG REQUIRED)
   add_executable(mygames_server apps/server/main.c)
@@ -122,6 +136,9 @@ if(BUILD_TESTING)
     target_compile_options(mygames_room_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
   endif()
   add_test(NAME mygames.room COMMAND mygames_room_test)
+  add_executable(mygames_recovery_gate_test tests/recovery_gate_test.c)
+  target_link_libraries(mygames_recovery_gate_test PRIVATE MyGames::RecoveryGate)
+  add_test(NAME mygames.recovery_gate COMMAND mygames_recovery_gate_test)
   add_executable(mygames_room_directory_test tests/room_directory_test.c)
   target_link_libraries(mygames_room_directory_test PRIVATE MyGames::Room)
   add_test(NAME mygames.room_directory COMMAND mygames_room_directory_test)
