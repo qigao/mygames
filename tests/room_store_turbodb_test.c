@@ -500,6 +500,53 @@ int main(int argc, char **argv) {
         store = NULL;
     }
 
+    /* Source reconciliation MUST use a real read-only backend connection.
+     * It can read committed delivery history but can never promote itself
+     * into a Room Owner or acknowledge published Outbox rows. */
+    {
+        mygames_room_store *reader = NULL;
+        mygames_room_directory verified;
+        uint64_t epoch_after = 0u;
+        unsigned char archived[MYGAMES_STORE_EVENT_MAX];
+        size_t archived_size = 0u;
+        check(mygames_room_store_open_readonly(argv[1], argv[2], &reader),
+              MYGAMES_STORE_OK);
+        assert(reader != NULL);
+        load(reader, &verified, 4u, 5u);
+        check(mygames_room_store_get_committed_event(
+                  reader, 5u, archived, sizeof(archived), &archived_size),
+              MYGAMES_STORE_OK);
+        assert(archived_size > 0u && archived_size <= sizeof(archived));
+        check(mygames_room_store_ack_event(reader, 4u, 5u),
+              MYGAMES_STORE_READ_ONLY);
+        check(mygames_room_store_claim_epoch(reader, 4u, &epoch_after),
+              MYGAMES_STORE_READ_ONLY);
+        check(mygames_room_store_get_committed_event(
+                  reader, 6u, archived, sizeof(archived), &archived_size),
+              MYGAMES_STORE_NOT_FOUND);
+        mygames_room_store_close(reader);
+        reader = NULL;
+        check(mygames_room_store_open_readonly(argv[1], argv[2], &reader),
+              MYGAMES_STORE_OK);
+        load(reader, &verified, 4u, 5u);
+        mygames_room_store_close(reader);
+    }
+    /* A read-only reader may NEVER create a missing source DB. */
+    {
+        char missing[1100];
+        mygames_room_store *reader = NULL;
+        FILE *created = NULL;
+        int n = snprintf(missing, sizeof(missing), "%s.missing-readonly", argv[2]);
+        assert(n > 0 && (size_t)n < sizeof(missing));
+        (void)remove(missing);
+        assert(mygames_room_store_open_readonly(argv[1], missing, &reader)
+               != MYGAMES_STORE_OK);
+        assert(reader == NULL);
+        created = fopen(missing, "rb");
+        assert(created == NULL);
+        if (created) fclose(created);
+    }
+
     corrupt_journal_with_turbodb(argv[1], argv[2]);
     /* State checkpoint is still byte-valid, but command/outbox sequence is
      * no longer consistent: fail closed without destroying persisted data. */
