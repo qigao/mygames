@@ -148,7 +148,7 @@ mygames_recovery_wire_status mygames_recovery_encode_page(
         page->checkpoint_sequence < grant->after_committed_seq ||
         page->count > grant->page_limit ||
         page->count > MYGAMES_STORE_ARCHIVE_PAGE_MAX ||
-        page->has_more != 0 && page->has_more != 1)
+        (page->has_more != 0 && page->has_more != 1))
         return MYGAMES_RECOVERY_WIRE_INVALID_PAGE;
     next = grant->after_committed_seq;
     /* Validate the WHOLE page before writing any response bytes. */
