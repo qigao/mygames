@@ -11,6 +11,7 @@ export interface ServerHello extends WireEnvelope {
     type: 'server.hello';
     capabilities: string[];
     player_id?: string;
+    resume_token?: string;
 }
 export interface ServerPong extends WireEnvelope { v: 1; type: 'server.pong' }
 export interface ServerError extends WireEnvelope {
@@ -42,8 +43,22 @@ export interface RoomSnapshot extends WireEnvelope {
     owner_id: string;
     seats: Array<{player_id: string; ready: boolean} | null>;
 }
+export interface SessionReady extends WireEnvelope {
+    v: 1;
+    type: 'session.ready';
+    player_id: string;
+    resume_token: string;
+    generation: number;
+    resumed: true;
+}
+export interface SessionError extends WireEnvelope {
+    v: 1;
+    type: 'session.error';
+    code: string;
+}
 export type ServerFrame =
-    ServerHello | ServerPong | ServerError | RoomAck | RoomError | RoomSnapshot;
+    ServerHello | ServerPong | ServerError | RoomAck | RoomError | RoomSnapshot |
+    SessionReady | SessionError;
 
 function record(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -55,6 +70,9 @@ function safeText(value: unknown, max = 48): value is string {
 }
 function safeNumber(value: unknown): value is number {
     return Number.isSafeInteger(value) && typeof value === 'number' && value >= 0;
+}
+export function validResumeToken(value: unknown): value is string {
+    return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
 }
 function safePlayer(value: unknown): value is string {
     return typeof value === 'string' && /^[1-9][0-9]*$/.test(value) &&
@@ -74,12 +92,22 @@ export function parseServerFrame(data: string): ServerFrame {
     case 'server.hello':
         if (!Array.isArray(value.capabilities) ||
             !value.capabilities.every((x: unknown) => typeof x === 'string' && x.length <= 32) ||
-            (value.player_id !== undefined && !safePlayer(value.player_id))) {
+            (value.player_id !== undefined && !safePlayer(value.player_id)) ||
+            (value.resume_token !== undefined && !validResumeToken(value.resume_token))) {
             throw new Error('Invalid server hello');
         }
         return value as unknown as ServerHello;
     case 'server.pong':
         return value as unknown as ServerPong;
+    case 'session.ready':
+        if (!safePlayer(value.player_id) ||
+            !validResumeToken(value.resume_token) ||
+            !safeNumber(value.generation) || value.generation < 2 ||
+            value.resumed !== true) throw new Error('Invalid session recovery');
+        return value as unknown as SessionReady;
+    case 'session.error':
+        if (!safeText(value.code)) throw new Error('Invalid session error');
+        return value as unknown as SessionError;
     case 'server.error':
         if (!safeText(value.code)) throw new Error('Invalid server error');
         return value as unknown as ServerError;
@@ -112,6 +140,10 @@ export function parseServerFrame(data: string): ServerFrame {
     default:
         throw new Error('Unknown server frame type');
     }
+}
+export function encodeResume(token: string): string {
+    if (!validResumeToken(token)) throw new Error('Invalid resume credential');
+    return JSON.stringify({v: PROTOCOL_VERSION, type: 'session.resume', resume_token: token});
 }
 export function encodePing(): string {
     return JSON.stringify({v: PROTOCOL_VERSION, type: 'client.ping'});
