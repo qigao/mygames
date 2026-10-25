@@ -1,0 +1,198 @@
+#include "mygames/room_store.h"
+
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
+#include <assert.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static void check(mygames_store_status got, mygames_store_status expected) {
+    if (got != expected) {
+        fprintf(stderr, "MyGames TurboDB status %d != expected %d\n",
+                (int)got, (int)expected);
+        abort();
+    }
+}
+
+static void load(mygames_room_store *store, mygames_room_directory *out,
+                 uint64_t wanted_epoch, uint64_t wanted_seq) {
+    uint64_t epoch = UINT64_C(999), seq = UINT64_C(999);
+    check(mygames_room_store_load(store, out, &epoch, &seq), MYGAMES_STORE_OK);
+    assert(epoch == wanted_epoch && seq == wanted_seq);
+}
+
+int main(int argc, char **argv) {
+    mygames_room_store *store = NULL;
+    mygames_room_directory rooms, loaded;
+    const mygames_room *room;
+    uint8_t digest_a[MYGAMES_STORE_COMMAND_DIGEST_BYTES];
+    uint8_t digest_b[MYGAMES_STORE_COMMAND_DIGEST_BYTES];
+    unsigned int seat = 100u;
+    uint64_t seq = 0u, claimed = 0u;
+    uint8_t reply[MYGAMES_STORE_RESULT_MAX];
+    uint8_t event[MYGAMES_STORE_EVENT_MAX];
+    size_t result_bytes = 0u;
+    size_t outbox_bytes = 0u;
+    static const char response_a[] = "{\"type\":\"room.ack\",\"revision\":3}";
+    static const char response_b[] = "{\"type\":\"room.ack\",\"revision\":4}";
+    static const char event_a[] = "{\"type\":\"room.ready\",\"room_id\":\"room-1\"}";
+    static const char event_b[] = "{\"type\":\"room.not_ready\",\"room_id\":\"room-1\"}";
+    char sidecar[1024];
+
+    if (argc != 3) {
+        fprintf(stderr, "usage: room_store_turbodb_test /absolute/plugin /test/file.db\n");
+        return 2;
+    }
+    (void)remove(argv[2]);
+    if (snprintf(sidecar, sizeof(sidecar), "%s-wal", argv[2]) < (int)sizeof(sidecar))
+        (void)remove(sidecar);
+    if (snprintf(sidecar, sizeof(sidecar), "%s-shm", argv[2]) < (int)sizeof(sidecar))
+        (void)remove(sidecar);
+
+    memset(digest_a, 0x33, sizeof(digest_a));
+    memset(digest_b, 0x77, sizeof(digest_b));
+
+    check(mygames_room_store_open(argv[1], argv[2], &store),
+          MYGAMES_STORE_OK);
+    assert(store != NULL);
+    load(store, &loaded, 1u, 0u);
+    assert(loaded.next_serial == 0u);
+    mygames_room_directory_init(&rooms);
+    check((mygames_store_status)mygames_room_directory_create(
+              &rooms, 100u, &room), MYGAMES_STORE_OK);
+    assert(!strcmp(room->id, "room-1"));
+    assert(mygames_room_directory_join(&rooms, room->id, 101u, &seat)
+           == MYGAMES_ROOM_OK);
+    assert(mygames_room_directory_ready(&rooms, 101u, true)
+           == MYGAMES_ROOM_OK);
+    check(mygames_room_store_commit(
+        store, &rooms, 1u, 0u, "req-1", digest_a,
+        response_a, sizeof(response_a) - 1u,
+        event_a, sizeof(event_a) - 1u, &seq), MYGAMES_STORE_OK);
+    assert(seq == 1u);
+    load(store, &loaded, 1u, 1u);
+    assert(mygames_room_directory_get_player(&loaded, 101u)->seats[1].ready);
+
+    /* Replay leaves facts unchanged but recovers its exact prior commit seq. */
+    seq = 555u;
+    check(mygames_room_store_commit(
+        store, &rooms, 1u, 0u, "req-1", digest_a,
+        response_a, sizeof(response_a) - 1u,
+        event_a, sizeof(event_a) - 1u, &seq), MYGAMES_STORE_REPLAY);
+    assert(seq == 1u);
+    check(mygames_room_store_commit(
+        store, &rooms, 1u, 1u, "req-1", digest_b,
+        response_a, sizeof(response_a) - 1u,
+        event_a, sizeof(event_a) - 1u, &seq),
+        MYGAMES_STORE_REQUEST_CONFLICT);
+    check(mygames_room_store_get_outcome(
+        store, "req-1", digest_b, reply, sizeof(reply), &result_bytes, &seq),
+        MYGAMES_STORE_REQUEST_CONFLICT);
+    check(mygames_room_store_get_outcome(
+        store, "req-1", digest_a, reply, 1u, &result_bytes, &seq),
+        MYGAMES_STORE_CAPACITY);
+    assert(result_bytes == sizeof(response_a) - 1u);
+    check(mygames_room_store_get_outcome(
+        store, "req-1", digest_a, reply, sizeof(reply), &result_bytes, &seq),
+        MYGAMES_STORE_OK);
+    assert(seq == 1u && result_bytes == sizeof(response_a) - 1u);
+    assert(!memcmp(reply, response_a, result_bytes));
+
+    check(mygames_room_store_next_event(
+        store, 0u, event, 1u, &outbox_bytes, &seq),
+        MYGAMES_STORE_CAPACITY);
+    assert(outbox_bytes == sizeof(event_a) - 1u);
+    check(mygames_room_store_next_event(
+        store, 0u, event, sizeof(event), &outbox_bytes, &seq),
+        MYGAMES_STORE_OK);
+    assert(seq == 1u && outbox_bytes == sizeof(event_a) - 1u);
+    assert(!memcmp(event, event_a, outbox_bytes));
+    check(mygames_room_store_ack_event(store, 1u, 1u), MYGAMES_STORE_OK);
+    check(mygames_room_store_ack_event(store, 1u, 1u),
+          MYGAMES_STORE_NOT_FOUND);
+    check(mygames_room_store_next_event(
+        store, 0u, event, sizeof(event), &outbox_bytes, &seq),
+        MYGAMES_STORE_NOT_FOUND);
+
+    assert(mygames_room_directory_ready(&rooms, 101u, false)
+           == MYGAMES_ROOM_OK);
+
+    /* Inject failure after updating the state row but before commands/outbox.
+     * A reopened store must still expose the previous snapshot and seq. */
+    mygames_room_store_fail_after_checkpoint_once(store);
+    check(mygames_room_store_commit(
+        store, &rooms, 1u, 1u, "req-2", digest_b,
+        response_b, sizeof(response_b) - 1u,
+        event_b, sizeof(event_b) - 1u, &seq),
+        MYGAMES_STORE_BACKEND_ERROR);
+    load(store, &loaded, 1u, 1u);
+    assert(mygames_room_directory_get_player(&loaded, 101u)->seats[1].ready);
+    check(mygames_room_store_get_outcome(
+        store, "req-2", digest_b, reply, sizeof(reply), &result_bytes, &seq),
+        MYGAMES_STORE_NOT_FOUND);
+
+    check(mygames_room_store_claim_epoch(store, 2u, &claimed),
+          MYGAMES_STORE_STALE_EPOCH);
+    check(mygames_room_store_claim_epoch(store, 1u, &claimed),
+          MYGAMES_STORE_OK);
+    assert(claimed == 2u);
+    load(store, &loaded, 2u, 1u);
+    check(mygames_room_store_commit(
+        store, &rooms, 1u, 1u, "req-2", digest_b,
+        response_b, sizeof(response_b) - 1u,
+        event_b, sizeof(event_b) - 1u, &seq),
+        MYGAMES_STORE_STALE_EPOCH);
+    mygames_room_store_close(store);
+    store = NULL;
+
+    /* Second runtime and SQLite connection recover the physical DB file,
+     * including the claimed owner epoch and durable command result. */
+    check(mygames_room_store_open(argv[1], argv[2], &store),
+          MYGAMES_STORE_OK);
+    load(store, &loaded, 2u, 1u);
+    check(mygames_room_store_commit(
+        store, &rooms, 2u, 1u, "req-2", digest_b,
+        response_b, sizeof(response_b) - 1u,
+        event_b, sizeof(event_b) - 1u, &seq),
+        MYGAMES_STORE_OK);
+    assert(seq == 2u);
+    check(mygames_room_store_next_event(
+        store, 0u, event, sizeof(event), &outbox_bytes, &seq),
+        MYGAMES_STORE_OK);
+    assert(seq == 2u && !memcmp(event, event_b, outbox_bytes));
+    mygames_room_store_close(store);
+    store = NULL;
+
+    check(mygames_room_store_open(argv[1], argv[2], &store),
+          MYGAMES_STORE_OK);
+    load(store, &loaded, 2u, 2u);
+    assert(!mygames_room_directory_get_player(&loaded, 101u)->seats[1].ready);
+    check(mygames_room_store_get_outcome(
+        store, "req-2", digest_b, reply, sizeof(reply), &result_bytes, &seq),
+        MYGAMES_STORE_OK);
+    assert(seq == 2u && result_bytes == sizeof(response_b) - 1u);
+    check(mygames_room_store_claim_epoch(store, 2u, &claimed),
+          MYGAMES_STORE_OK);
+    assert(claimed == 3u);
+    load(store, &loaded, 3u, 2u);
+    check(mygames_room_store_ack_event(store, 2u, 2u),
+          MYGAMES_STORE_STALE_EPOCH);
+    check(mygames_room_store_ack_event(store, 3u, 2u),
+          MYGAMES_STORE_OK);
+    check(mygames_room_store_next_event(
+        store, 0u, event, sizeof(event), &outbox_bytes, &seq),
+        MYGAMES_STORE_NOT_FOUND);
+    mygames_room_store_close(store);
+
+    /* Remove only the test's explicitly named DB, never native runtime data. */
+    (void)remove(argv[2]);
+    if (snprintf(sidecar, sizeof(sidecar), "%s-wal", argv[2]) < (int)sizeof(sidecar))
+        (void)remove(sidecar);
+    if (snprintf(sidecar, sizeof(sidecar), "%s-shm", argv[2]) < (int)sizeof(sidecar))
+        (void)remove(sidecar);
+    puts("mygames.turbodb_store: PASS");
+    return 0;
+}
