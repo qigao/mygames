@@ -29,8 +29,9 @@ def command(*argv: str) -> None:
 
 def generate_ca(root: Path, name: str) -> tuple[Path, Path]:
     cert, key = root / f"{name}.crt", root / f"{name}.key"
-    command("openssl", "req", "-x509", "-newkey", "rsa:2048",
-            "-sha256", "-nodes", "-days", "2",
+    command("openssl", "req", "-x509", "-newkey", "ec",
+            "-pkeyopt", "ec_paramgen_curve:prime256v1",
+            "-sha384", "-nodes", "-days", "2",
             "-subj", f"/CN={name}", "-keyout", str(key), "-out",
             str(cert), "-addext", "basicConstraints=critical,CA:TRUE",
             "-addext", "keyUsage=critical,keyCertSign,cRLSign")
@@ -52,12 +53,13 @@ def generate_leaf(root: Path, kind: str, ca_cert: Path,
            "extendedKeyUsage=clientAuth\n"),
         encoding="utf-8",
     )
-    command("openssl", "req", "-newkey", "rsa:2048",
-            "-sha256", "-nodes", "-keyout", str(key),
+    command("openssl", "req", "-newkey", "ec",
+            "-pkeyopt", "ec_paramgen_curve:prime256v1",
+            "-sha384", "-nodes", "-keyout", str(key),
             "-out", str(request), "-subj", f"/CN={kind}")
     command("openssl", "x509", "-req", "-in", str(request),
             "-CA", str(ca_cert), "-CAkey", str(ca_key),
-            "-CAcreateserial", "-sha256", "-days", "2",
+            "-CAcreateserial", "-sha384", "-days", "2",
             "-extfile", str(profile), "-out", str(cert))
     return cert, key
 
