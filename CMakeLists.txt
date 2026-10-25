@@ -55,6 +55,12 @@ if(MYGAMES_ENABLE_TURBODB)
   if(BUILD_TESTING)
     target_compile_definitions(mygames_room_store PRIVATE
       MYGAMES_STORE_FAULT_TESTING=1)
+    if(MYGAMES_ENABLE_GATEWAY)
+      add_executable(mygames_room_gateway_probe
+        tests/room_gateway_persist_probe.c)
+      target_link_libraries(mygames_room_gateway_probe PRIVATE
+        MyGames::Store Salts::Core)
+    endif()
     add_executable(mygames_turbodb_store_test
       tests/room_store_turbodb_test.c)
     target_compile_definitions(mygames_turbodb_store_test PRIVATE
