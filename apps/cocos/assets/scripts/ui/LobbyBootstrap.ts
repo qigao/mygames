@@ -59,13 +59,15 @@ export class LobbyBootstrap extends Component {
     }
 
     private onConnectionState(state: ConnectionState, reason?: string): void {
-        if (state === 'offline' || state === 'failed') {
+        if ((state === 'offline' || state === 'failed') &&
+            !this.socket?.canResume) {
             this.rooms.reset();
             this.playerId = null;
             this.renderRoom();
         }
         if (this.statusText) {
             const title = state === 'ready' ? '已连接 · 可创建房间' :
+                          state === 'restoring' ? '正在恢复原有房间身份…' :
                           state === 'handshaking' ? '连接建立，等待协议握手…' :
                           state === 'connecting' ? '正在连接本地服务器…' :
                           state === 'failed' ? '连接失败' : '尚未连接';
@@ -76,9 +78,16 @@ export class LobbyBootstrap extends Component {
     private onServerFrame(frame: ServerFrame): void {
         switch (frame.type) {
         case 'server.hello':
+        case 'session.ready':
             this.playerId = frame.player_id ?? null;
             if (this.identityText)
                 this.identityText.string = '开发会话 ID：' + (this.playerId ?? '未知');
+            this.renderRoom();
+            break;
+        case 'session.error':
+            this.rooms.reset();
+            this.renderRoom();
+            this.report('原房间恢复失败，已创建新的临时会话。');
             break;
         case 'room.ack':
             this.rooms.onAck(frame);

@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {encodePing, encodeRoomCommand, parseServerFrame, PROTOCOL_VERSION} from '../apps/cocos/assets/scripts/net/Protocol.ts';
+import {encodePing, encodeResume, encodeRoomCommand, parseServerFrame, PROTOCOL_VERSION} from '../apps/cocos/assets/scripts/net/Protocol.ts';
 import {RoomStore} from '../apps/cocos/assets/scripts/state/RoomStore.ts';
 
 const snapshot = (revision, epoch = 1) => ({
@@ -50,6 +50,39 @@ test('rejects malformed, stale type or structurally invalid frames', () => {
     JSON.stringify({...snapshot(2), revision: -1}),
     JSON.stringify({...snapshot(2), room_epoch: 0}),
   ]) assert.throws(() => parseServerFrame(bad), Error, bad);
+});
+
+test('validates opaque session lease recovery and rotated generation', () => {
+  const token = 'a'.repeat(64);
+  const rotated = 'b'.repeat(64);
+  assert.equal(encodeResume(token),
+    '{"v":1,"type":"session.resume","resume_token":"' + token + '"}');
+  assert.throws(() => encodeResume('short'));
+  assert.throws(() => encodeResume('G'.repeat(64)));
+  const hello = parseServerFrame(JSON.stringify({
+    v:1, type:'server.hello',
+    capabilities:['ping','rooms','resume'],
+    player_id:'7', resume_token:token
+  }));
+  assert.equal(hello.resume_token, token);
+  const ready = parseServerFrame(JSON.stringify({
+    v:1,type:'session.ready',player_id:'7',
+    generation:2, resume_token:rotated, resumed:true
+  }));
+  assert.equal(ready.generation, 2);
+  assert.equal(ready.resume_token, rotated);
+  assert.equal(parseServerFrame(
+    '{"v":1,"type":"session.error","code":"resume_rejected"}').code,
+    'resume_rejected');
+  for (const bad of [
+    {v:1,type:'server.hello',capabilities:['ping'],resume_token:'bad'},
+    {v:1,type:'session.ready',player_id:'7',generation:1,
+     resume_token:token,resumed:true},
+    {v:1,type:'session.ready',player_id:'7',generation:2,
+     resume_token:token,resumed:false},
+    {v:1,type:'session.ready',player_id:'7',generation:2,
+     resume_token:'ABC',resumed:true},
+  ]) assert.throws(() => parseServerFrame(JSON.stringify(bad)));
 });
 
 test('room presentation store rejects stale and unrelated snapshots', () => {
