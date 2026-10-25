@@ -196,6 +196,23 @@ int main(int argc, char **argv) {
         password = getenv("MYGAMES_TEST_CONSUMER_SECRET");
         client_id = "mygames-consumer-v1";
         expect_subscribe = true;
+    } else if (strcmp(mode, "subscriber-wildcard-denied") == 0 ||
+               strcmp(mode, "consumer-publish-denied") == 0) {
+        identity = "svc-consumer";
+        password = getenv("MYGAMES_TEST_CONSUMER_SECRET");
+        client_id = "mygames-consumer-v1";
+        expect_subscribe = strcmp(mode, "subscriber-wildcard-denied") == 0;
+        expect_publish = !expect_subscribe;
+    } else if (strcmp(mode, "publisher-other-topic-denied") == 0) {
+        identity = "svc-outbox";
+        password = getenv("MYGAMES_TEST_PUBLISHER_SECRET");
+        client_id = "mygames-outbox-v1";
+        expect_publish = true;
+    } else if (strcmp(mode, "player-wildcard-denied") == 0) {
+        identity = "player-browser";
+        password = getenv("MYGAMES_TEST_PLAYER_SECRET");
+        client_id = "mygames-player-v1";
+        expect_subscribe = true;
     } else if (strcmp(mode, "publisher-subscribe-denied") == 0) {
         identity = "svc-outbox";
         password = getenv("MYGAMES_TEST_PUBLISHER_SECRET");
@@ -272,8 +289,15 @@ int main(int argc, char **argv) {
         subscribe.size = sizeof(subscribe);
         subscribe.abi_version = FLOWIE_MQTT_PROTOCOL_ABI_V1;
         subscribe.version = FLOWIE_MQTT_VERSION_5;
-        subscription.filter = (flowie_mqtt_span_t){
-            (const uint8_t *)TOPIC, sizeof(TOPIC) - 1u};
+        {
+            const char *filter = TOPIC;
+            if (strcmp(mode, "subscriber-wildcard-denied") == 0)
+                filter = "mygames/internal/v1/#";
+            else if (strcmp(mode, "player-wildcard-denied") == 0)
+                filter = "mygames/#";
+            subscription.filter = (flowie_mqtt_span_t){
+                (const uint8_t *)filter, strlen(filter)};
+        }
         subscription.qos = 1u;
         subscribe.subscriptions = &subscription;
         subscribe.subscription_count = 1u;
@@ -293,8 +317,13 @@ int main(int argc, char **argv) {
     }
     if (expect_publish) {
         item.qos = 1u;
-        item.topic = (flowie_mqtt_span_t){
-            (const uint8_t *)TOPIC, sizeof(TOPIC) - 1u};
+        {
+            const char *topic = TOPIC;
+            if (strcmp(mode, "publisher-other-topic-denied") == 0)
+                topic = "mygames/internal/v1/room-events-extra";
+            item.topic = (flowie_mqtt_span_t){
+                (const uint8_t *)topic, strlen(topic)};
+        }
         item.payload = (flowie_mqtt_span_t){
             (const uint8_t *)payload, sizeof(payload) - 1u};
         items.size = sizeof(items);
