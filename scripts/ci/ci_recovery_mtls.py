@@ -195,6 +195,43 @@ def run(binary: Path, seed: Path, sqlite_driver: Path,
                           f"{type(exc).__name__}: {str(exc)[:250]}",
                           flush=True)
 
+            # OpenSSL's independent TLS record trace distinguishes
+            # middlebox-compat dummy CCS from other ClientHello variations.
+            # Print record TYPE/DIRECTION only, never certificate blobs,
+            # cryptographic material or full packet dumps.
+            openssl_trace_cmd = [
+                "openssl", "s_client", "-connect", f"127.0.0.1:{port}",
+                "-servername", "localhost", "-tls1_3",
+                "-groups", "P-256", "-alpn", "http/1.1",
+                "-CAfile", str(ca), "-verify_return_error",
+                "-verify_hostname", "localhost",
+                "-cert", str(client_cert), "-key", str(client_key),
+                "-msg",
+            ]
+            trace_text = ""
+            try:
+                traced = subprocess.run(
+                    openssl_trace_cmd,
+                    input=("GET " + prefix + "?after=0&limit=1 "
+                           "HTTP/1.1\\r\\nHost: localhost\\r\\n"
+                           "Connection: close\\r\\n\\r\\n"),
+                    capture_output=True, text=True, timeout=8,
+                    check=False)
+                trace_text = traced.stdout + "\\n" + traced.stderr
+            except subprocess.TimeoutExpired as exc:
+                partial_out = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+                partial_err = exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+                trace_text = partial_out + "\\n" + partial_err
+            record_lines = [
+                line.strip() for line in trace_text.splitlines()
+                if ("ChangeCipherSpec" in line or "ClientHello" in line
+                    or "ServerHello" in line or "Alert " in line)
+                and (line.lstrip().startswith(">>>") or
+                     line.lstrip().startswith("<<<"))
+            ]
+            print("mygames.recovery_tls13_record_trace: "
+                  + " | ".join(record_lines[:16]), flush=True)
+
             status, data = fetch(port, prefix + "?after=0&limit=1", good)
             check(status == 200, f"authorized first page: {status}")
             check(data["source_namespace"] == "trusted-source-v1",
