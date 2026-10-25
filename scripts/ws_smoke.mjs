@@ -7,6 +7,7 @@ assert.equal(response.status, 200);
 const health = await response.json();
 assert.equal(health.protocol, 1);
 assert.equal(health.mode, 'development');
+assert.equal(health.room_owner, 'cflow_serial');
 
 const ws = new WebSocket('ws://127.0.0.1:1780/ws');
 const start = Date.now();

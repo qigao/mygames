@@ -133,7 +133,7 @@ static int send_text(const chttp_server_websocket_session *session, const char *
 
 static int health(void *user, const chttp_server_request_view *request,
                   chttp_server_response *response) {
-    static const char body[] = "{\"status\":\"ok\",\"protocol\":1,\"mode\":\"development\"}";
+    static const char body[] = "{\"status\":\"ok\",\"protocol\":1,\"mode\":\"development\",\"room_owner\":\"cflow_serial\"}";
     (void)user;
     (void)request;
     return chttp_server_reply(response, 200u, "application/json", body, sizeof(body) - 1u);
