@@ -530,6 +530,16 @@ int main(int argc, char **argv) {
               MYGAMES_STORE_OK);
         load(reader, &verified, 4u, 5u);
         mygames_room_store_close(reader);
+        reader = NULL;
+        /* Even the publisher's pending flag cannot have been changed by
+         * this read-only handle. The writer may still observe seq5 pending. */
+        check(mygames_room_store_open(argv[1], argv[2], &reader),
+              MYGAMES_STORE_OK);
+        check(mygames_room_store_next_event(
+                  reader, 4u, archived, sizeof(archived),
+                  &archived_size, &epoch_after), MYGAMES_STORE_OK);
+        assert(epoch_after == 5u && archived_size > 0u);
+        mygames_room_store_close(reader);
     }
     /* A read-only reader may NEVER create a missing source DB. */
     {
@@ -551,6 +561,10 @@ int main(int argc, char **argv) {
     /* State checkpoint is still byte-valid, but command/outbox sequence is
      * no longer consistent: fail closed without destroying persisted data. */
     check(mygames_room_store_open(argv[1], argv[2], &store),
+          MYGAMES_STORE_CORRUPT);
+    assert(store == NULL);
+    /* Read-only recovery cannot silently accept or repair corrupt journal. */
+    check(mygames_room_store_open_readonly(argv[1], argv[2], &store),
           MYGAMES_STORE_CORRUPT);
     assert(store == NULL);
 
