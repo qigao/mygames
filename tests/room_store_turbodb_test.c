@@ -517,6 +517,39 @@ int main(int argc, char **argv) {
                   reader, 5u, archived, sizeof(archived), &archived_size),
               MYGAMES_STORE_OK);
         assert(archived_size > 0u && archived_size <= sizeof(archived));
+        {
+            mygames_store_archive_page page = {0};
+            check(mygames_room_store_read_archive_page(reader, 0u, 2u, &page),
+                  MYGAMES_STORE_OK);
+            assert(page.epoch == 4u && page.checkpoint_sequence == 5u);
+            assert(page.retained_from_sequence == 1u);
+            assert(page.count == 2u && page.has_more == 1);
+            assert(page.items[0].sequence == 1u && page.items[1].sequence == 2u);
+            assert(page.resume_after_sequence == 2u);
+
+            check(mygames_room_store_read_archive_page(reader, 4u, 1u, &page),
+                  MYGAMES_STORE_OK);
+            assert(page.count == 1u && !page.has_more);
+            assert(page.items[0].sequence == 5u);
+            assert(page.items[0].size == archived_size);
+            assert(memcmp(page.items[0].payload, archived, archived_size) == 0);
+            assert(page.resume_after_sequence == 5u);
+
+            check(mygames_room_store_read_archive_page(reader, 5u, 1u, &page),
+                  MYGAMES_STORE_OK);
+            assert(page.count == 0u && !page.has_more);
+            assert(page.resume_after_sequence == 5u);
+            check(mygames_room_store_read_archive_page(reader, 6u, 1u, &page),
+                  MYGAMES_STORE_STALE_SEQUENCE);
+            check(mygames_room_store_read_archive_page(reader, 0u, 0u, &page),
+                  MYGAMES_STORE_INVALID);
+            check(mygames_room_store_read_archive_page(
+                  reader, 0u, MYGAMES_STORE_ARCHIVE_PAGE_MAX + 1u, &page),
+                  MYGAMES_STORE_INVALID);
+            check(mygames_room_store_read_archive_page(reader,
+                  (uint64_t)INT64_MAX + 1u, 1u, &page),
+                  MYGAMES_STORE_INVALID);
+        }
         check(mygames_room_store_ack_event(reader, 4u, 5u),
               MYGAMES_STORE_READ_ONLY);
         check(mygames_room_store_claim_epoch(reader, 4u, &epoch_after),
@@ -539,6 +572,11 @@ int main(int argc, char **argv) {
                   reader, 4u, archived, sizeof(archived),
                   &archived_size, &epoch_after), MYGAMES_STORE_OK);
         assert(epoch_after == 5u && archived_size > 0u);
+        {
+            mygames_store_archive_page page = {0};
+            check(mygames_room_store_read_archive_page(reader, 0u, 1u, &page),
+                  MYGAMES_STORE_READ_ONLY);
+        }
         mygames_room_store_close(reader);
     }
     /* A read-only reader may NEVER create a missing source DB. */
