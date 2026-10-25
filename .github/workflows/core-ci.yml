@@ -120,4 +120,5 @@ jobs:
           python3 scripts/ci/ci_recovery_mtls.py \
             build/gateway/mygames_recovery_service \
             build/gateway/mygames_outbox_seed_test \
-            "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so"
+            "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so" \
+            build/gateway/mygames_recovery_native_client_test
