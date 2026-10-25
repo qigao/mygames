@@ -284,7 +284,16 @@ static mygames_store_status create_schema(mygames_room_store *s) {
         "primary key(player_id,request_id))",
         "create table if not exists mg_outbox ("
         "seq integer primary key, payload blob not null,"
-        "delivered integer not null default 0 check(delivered in (0,1)))"
+        "delivered integer not null default 0 check(delivered in (0,1)))",
+        "create table if not exists mg_identity_alloc ("
+        "id integer primary key check(id=1),"
+        "last_issued integer not null check(last_issued>=0))",
+        "create table if not exists mg_session_leases ("
+        "player_id integer primary key check(player_id>0),"
+        "ticket_sha256 blob not null unique check(length(ticket_sha256)=32),"
+        "generation integer not null check(generation>0),"
+        "attached integer not null check(attached in (0,1)),"
+        "expires_at_ms integer not null check(expires_at_ms>=0))"
     };
     orm_transaction_t *tx = NULL;
     mygames_store_status st = begin_transaction(s, &tx);
@@ -296,6 +305,21 @@ static mygames_store_status create_schema(mygames_room_store *s) {
         st = execute(s, tx, ddl[i], NULL, 0u, NULL);
         if (st != MYGAMES_STORE_OK) return rollback(s, tx, st);
     }
+    /* Preserve player ID uniqueness across process restarts, even if a
+     * provisional identity's lease has already been destroyed. */
+    st = execute(s, tx,
+        "insert or ignore into mg_identity_alloc(id,last_issued) "
+        "values(1,(select coalesce(max(player_id),0) from mg_commands))",
+        NULL, 0u, NULL);
+    if (st != MYGAMES_STORE_OK) return rollback(s, tx, st);
+    st = execute(s, tx,
+        "update mg_identity_alloc set last_issued=max("
+        "last_issued, "
+        "(select coalesce(max(player_id),0) from mg_commands),"
+        "(select coalesce(max(player_id),0) from mg_session_leases))"
+        " where id=1",
+        NULL, 0u, NULL);
+    if (st != MYGAMES_STORE_OK) return rollback(s, tx, st);
     st = head_read(s, tx, &head, &exists);
     if (st != MYGAMES_STORE_OK) return rollback(s, tx, st);
     if (!exists) {
@@ -446,7 +470,9 @@ mygames_store_status mygames_room_store_player_high_watermark(
     if (!store || !out_player) return MYGAMES_STORE_INVALID;
     if (!owner_valid(store)) return MYGAMES_STORE_QUARANTINED;
     status = backend_query(store, NULL,
-        "select coalesce(max(player_id),0) from mg_commands",
+        "select max(last_issued,"
+        "(select coalesce(max(player_id),0) from mg_commands)) "
+        "from mg_identity_alloc where id=1",
         NULL, 0u, &result);
     if (status != MYGAMES_STORE_OK) return status;
     orm_error_init(&error);
