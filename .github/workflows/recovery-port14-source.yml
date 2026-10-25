@@ -218,7 +218,8 @@ jobs:
             --target mygames_recovery_service mygames_recovery_native_client_test \
             mygames_outbox_seed_test mygames_event_reconcile_test \
             mygames_turbodb_store_test mygames_outbox_contract_test \
-            mygames_consumer_projection_test
+            mygames_consumer_projection_test mygames_recovery_gate_test \
+            mygames_recovery_wire_test
           ctest --test-dir build/recovery-port14 -C Release \
             -R '^(mygames[.](recovery_gate|recovery_wire|turbodb_store|outbox_contract|consumer_projection))$' \
             --output-on-failure --no-tests=error
