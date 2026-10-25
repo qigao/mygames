@@ -223,9 +223,54 @@ static bool write_error(char *out, size_t cap, const char *request_id,
  * Lazy expiry is progress on ingress, not an autonomous time-based timer. */
 static void collect_expired(dev_server_state *state) {
 #if defined(MYGAMES_WITH_TURBODB)
-    /* Never perform non-transactional room eviction in durable mode.
-     * Timed eviction needs a committed system command and remains a gate. */
-    if (state->store) return;
+    if (state->store) {
+        /* Bounded, ingress-progressed cleanup: do not delete a seated player.
+         * Seated expiry must be a committed system room command (next gate).
+         * This sweep never mutates the room checkpoint or command journal. */
+        const uint64_t now = cmeta_realtime_ms();
+        mygames_player_id after = 0u;
+        unsigned int checked = 0u;
+        if (!now || state->store_halted) return;
+        for (checked = 0u; checked < 16u; ++checked) {
+            mygames_player_id player = 0u;
+            uint64_t generation = 0u;
+            mygames_store_status status =
+                mygames_room_store_next_expired_session(
+                    state->store, now, after, &player, &generation);
+            size_t i;
+            if (status == MYGAMES_STORE_NOT_FOUND) break;
+            if (status != MYGAMES_STORE_OK) {
+                state->store_halted = true;
+                return;
+            }
+            after = player;
+            if (mygames_room_directory_get_player(&state->rooms, player))
+                continue; /* never orphan a seat by deleting its proof */
+            for (i = 0u; i < MYGAMES_SESSION_CAPACITY; ++i) {
+                const mygames_session_record *record =
+                    mygames_sessions_at(&state->sessions, i);
+                if (record && record->player == player && record->attached) {
+                    state->store_halted = true;
+                    return; /* persistent/memory authority contradiction */
+                }
+            }
+            status = mygames_room_store_delete_expired_unseated(
+                state->store, state->room_epoch, player, generation, now);
+            if (status != MYGAMES_STORE_OK) {
+                state->store_halted = true;
+                return;
+            }
+            for (i = 0u; i < MYGAMES_SESSION_CAPACITY; ++i) {
+                const mygames_session_record *record =
+                    mygames_sessions_at(&state->sessions, i);
+                if (record && record->player == player) {
+                    (void)mygames_sessions_discard(&state->sessions, i);
+                    clear_cache(state, i);
+                }
+            }
+        }
+        return;
+    }
 #endif
     mygames_player_id expired[MYGAMES_SESSION_CAPACITY] = {0};
     size_t i, n = mygames_sessions_collect_expired(
@@ -694,6 +739,15 @@ static void room_open_apply(dev_server_state *state,
         peer->session = *session;
         rc = send_text(session, hello);
         if (rc != SALTS_OK) {
+#if defined(MYGAMES_WITH_TURBODB)
+            if (state->store) {
+                const mygames_store_status cleanup =
+                    mygames_room_store_discard_unsent_session(
+                        state->store, state->room_epoch, identity->player,
+                        identity->generation);
+                if (cleanup != MYGAMES_STORE_OK) state->store_halted = true;
+            }
+#endif
             memset(peer, 0, sizeof(*peer));
             (void)mygames_sessions_discard(&state->sessions, issued);
         }
