@@ -47,8 +47,10 @@ int main(int argc, char **argv) {
         assert(sequence == 0u && rooms.next_serial == 0u);
         for (i = 0u; i < MYGAMES_ROOM_DIRECTORY_CAPACITY; ++i)
             assert(!rooms.entries[i].used);
+        /* Handshake-issued IDs are durable, even when the subsequent room
+         * command rolls back. No room state, command or outbox may survive. */
         assert(mygames_room_store_player_high_watermark(store, &player_max) ==
-               MYGAMES_STORE_OK && player_max == 0u);
+               MYGAMES_STORE_OK && player_max >= 1u);
         assert(mygames_room_store_next_event(
             store, 0u, event, sizeof(event), &event_len, &old_seq) ==
                MYGAMES_STORE_NOT_FOUND);

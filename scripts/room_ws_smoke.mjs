@@ -178,8 +178,10 @@ try {
     // persist bearer recovery secrets or the complete websocket transcript.
     if (process.env.MYGAMES_AUDIT_OUTPUT)
         writeFileSync(process.env.MYGAMES_AUDIT_OUTPUT,
-                      JSON.stringify({creator_player_id: a.player, room_id: id}),
-                      {encoding: 'utf8'});
+                      JSON.stringify({creator_player_id: a.player, room_id: id,
+                                     recover_player_id: b.player,
+                                     recover_ticket: resume.resume_token}),
+                      {encoding: 'utf8', mode: 0o600});
     console.log('MyGames CHttp room WebSocket integration: PASS');
 } finally {
     for (const c of clients) c.close();
