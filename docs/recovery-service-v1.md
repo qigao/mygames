@@ -1,10 +1,13 @@
 # M4 proposal: authenticated read-only recovery service (NOT IMPLEMENTED)
 
-Status: **design and staged local implementation**. PR #1 contains a
-local reconciliation CLI, a real TurboDB SQLite read-only archive handle, and
-a pure-C11 certificate-fingerprint admission/rate-policy core. It has **no
-authenticated HTTP recovery endpoint**, no deployed identity provisioning,
-no long-lived supervised consumer, and no production no-loss guarantee.
+Status: **draft code, not qualified for deployment**. PR #1 contains
+a local reconciler, verified TurboDB SQLite read-only source snapshots,
+a strict recovery wire encoder, bounded per-principal admission gate and an
+**experimental standalone loopback CHttp/CNet mTLS-only endpoint**. Linux
+installed SDK build and multi-platform core tests pass, but real HTTPS
+interoperability is **RED** (GmSSL TLS13 handshake failure and previously
+observed SIGSEGV). There is no approved deployed service identity/rotation,
+no independently supervised remote consumer, and no production no-loss claim.
 
 Related: [MyGames #4](https://github.com/qigao/mygames/issues/4),
 [Flowie #22](https://github.com/qigao/flowie/issues/22),
@@ -37,12 +40,43 @@ per-process token buckets. Each granted read has a generation-fenced terminal
 release so stale/double release cannot refund credits or free a newer grant.
 CMake runs deterministic admission tests on the Linux/Windows/macOS core jobs.
 
-**Critical:** No CHttp route calls this module yet. It does not verify TLS,
-supply an actual service certificate, provide distributed rate limits, persist
-consumer progress or grant database access. Until an authenticated CHttp/CNet
-endpoint has explicit exact-head tests, it is **not** a recovery service.
+**Critical:** The experimental CHttp handler now calls this module
+using CHttp's `peer_certificate_sha256` from the TLS request view. It never
+trusts a forwarded HTTP header and uses `CNET_TLS_CLIENT_AUTH_REQUIRED`,
+certificate CA verification and an explicit leaf fingerprint pin. However
+the real TLS13 handshake has **not** passed end-to-end. This is still
+loopback CI/local-only, with no service identity rotation, distributed rate
+limit or externally supervised cursor recovery. It is **not a production
+recovery service**.
 
-## Proposed M4 network API — contract only
+## Implementation and exact CI evidence (experimental)
+
+- `mygames_room_store_read_archive_page()` pins checkpoint/journal and
+  contiguous up-to-16 event bytes in a single readonly SQLite transaction.
+  A stale/future cursor, hole, corrupt archive, writable handle and oversized
+  request fail closed. No source mutation or ACK.
+- `MyGames::RecoveryWire` strictly parses the only recovery URL parameters
+  and serializes only canonically validated allowlisted events. Three-OS
+  unit tests cover unknown/duplicate/overflow/encoded query injections.
+- `mygames_recovery_service` starts a standalone CHttp server **only on
+  127.0.0.1 with mTLS REQUIRED**. Network Owner callbacks only authenticate
+  and admit a copied, bounded request; a dedicated bounded worker opens the
+  source READONLY and uses CHttp deferred terminal completion. It never
+  shares the Room gateway listener or writes a consumer cursor.
+- Local administrative reconciliation now uses snapshot page reads and applies
+  receipt/effect/cursor **per event**, allowing recovery at any partial-page
+  boundary. This is not remotely supervised recovery.
+- Source+wire tests and prior Flowie recovery remained green through
+  [Actions #40225970773](https://github.com/qigao/mygames/actions/runs/40225970773).
+  The overall CI is deliberately RED at the **real native mTLS step**:
+  standard OpenSSL TLS ClientHello once crashed GmSSL (`SIGSEGV -11`);
+  constrained P-256/ECDSA no longer crashes but native TLS13 rejects with
+  `unexpected_message` before CHttp handler entry. Track upstream
+  [Salts/CNet #1317](https://github.com/qigao/salts/issues/1317).
+
+Do not downgrade to plaintext or disable client verification to make CI green.
+
+## M4 network API contract (partially implemented, TLS gate RED)
 
 A **separate** recovery service reads a source database with the read-only
 handle. Do **not** add the endpoint to the loopback development room gateway
@@ -169,7 +203,7 @@ path alone entitles us to claim end-to-end exactly-once or production no-loss.
 ## Completion gates (all currently open except first source-reader slice)
 
 - [x] Source archive read uses a separate TurboDB SQLite READ_ONLY connection
-  and rejects attempted write / absent database in tests (pending exact-head CI).
+  and rejects attempted write / absent database in tests (qualified; new endpoint TLS is still RED).
 - [ ] Implement network CHttp service with mTLS, exact principal-to-namespace
   authorization and deployed credential lifecycle.
 - [ ] Implement paginated read snapshot, canonical validation, retention
