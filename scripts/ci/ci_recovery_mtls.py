@@ -182,6 +182,7 @@ def run(binary: Path, seed: Path, sqlite_driver: Path) -> None:
             print("mygames.recovery_mtls: PASS real TLS client auth, "
                   "untrusted/wrong principal denial, readonly archive pages")
         finally:
+            observed = sys.exc_info()[1]
             if proc.poll() is None and proc.stdin:
                 try:
                     proc.stdin.write("\n")
@@ -192,10 +193,16 @@ def run(binary: Path, seed: Path, sqlite_driver: Path) -> None:
                     proc.wait(timeout=5)
             else:
                 proc.wait(timeout=2)
+            detail = proc.stderr.read()[-4500:] if proc.stderr else ""
             if proc.returncode != 0:
-                detail = proc.stderr.read()[-3500:] if proc.stderr else ""
-                raise AssertionError(f"recovery service exited {proc.returncode}: "
-                                     f"{detail}")
+                raise AssertionError(
+                    f"recovery service exited {proc.returncode}: {detail}"
+                ) from observed
+            if observed is not None:
+                raise AssertionError(
+                    f"mTLS test failed: {type(observed).__name__}: {observed}; "
+                    f"recovery server diagnostics: {detail}"
+                ) from observed
 
 
 if __name__ == "__main__":
