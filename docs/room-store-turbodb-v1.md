@@ -100,9 +100,12 @@ gameplay commit.
   credential rotates; stale-ticket replay is rejected.
 - A seated room with a missing DB-backed lease fails closed. The daemon does
   not grant old seats to new unauthenticated provisional connections.
-- Bounded ingress sweeps may remove expired **unseated** leases without
-  reusing player IDs. Expired seated seats still require a journalled system
-  transition; an independent scheduler is not yet implemented.
+- A coalesced 125ms CFlow Tick now supplies autonomous expiry, including
+  when no new messages arrive. Detached, expired **unseated** leases are
+  transactionally deleted without ID reuse. Expired WAITING room members
+  are removed through the same atomic Checkpoint, hashed-lease,
+  system-command-journal and Outbox transaction; tests prove rollback on
+  injected faults and exact on-disk sequence/Outbox matching.
 - Externally authenticated identity, real user accounts, room game rules,
   process-lock/election, outbox MQTT publication, schema migrations,
   crash/power-loss fault simulation and cross-node recovery remain open

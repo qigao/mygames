@@ -114,9 +114,18 @@ new Owner Epoch. A stale ticket is rejected; unknown clients get separate
 provisional identities. The DB retains **only SHA-256 of tickets**, never
 their plaintext. The server rejects missing session bindings on occupied seats.
 
-Expired detached sessions with **no seat** are reclaimed using a bounded
-ingress sweep; ID allocation stays monotonic. Expired seated sessions must
-be processed by an authoritative committed system command (not implemented).
-No external login, public WSS, autonomous lease timer, abnormal TCP terminal
-reconciliation, Flowie MQTT publisher or full gameplay recovery is claimed.
+A 125ms producer submits coalesced Ticks to the CFlow Room Owner, so expiry
+continues even without new network messages. In durable mode, an expired
+WAITING player is removed by a **single TurboDB transaction** covering
+Checkpoint, retired hashed lease, an idempotent system-command outcome and an
+unpublished Outbox event. Expired unseated leases are also reclaimed without
+reusing player IDs.
+
+CHttp CLOSE callbacks use a bounded terminal reserve outside the ordinary
+CFlow mailbox; on FULL it remains possible to settle the terminal once the
+actor resumes. SDK tests deliberately saturate the normal queue and prove the
+old player can recover the same seat. These tests do not prove that CHttp
+always emits CLOSE on **abrupt TCP loss**; transport-terminal integration
+is a remaining gate. No external login, public WSS, Flowie MQTT publisher
+or full gameplay recovery is claimed.
 See [durable lease protocol](docs/session-lease-v1.md).

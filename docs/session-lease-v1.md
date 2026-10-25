@@ -55,14 +55,25 @@ browser refresh with memory-only token storage.
 
 ## Expiration / terminal qualification
 
-A bounded scan on new connections deletes detached, expired *unseated*
-leases transactionally, without reusing numeric IDs. Expired **seated**
-players remain in the authoritative room; their eventual removal must be
-a committed, idempotent *system room command* with an Outbox event. Such
-cleanup is not yet implemented. Also missing: autonomous timer progress
-when no connections arrive, abnormal TCP terminal notifications when no
-WebSocket CLOSE event is delivered, and reserved capacity for CLOSE
-events when the CFlow mailbox is saturated.
+The CFlow Owner now processes a coalesced Tick every ~125ms, even without
+new inbound messages. A separate Salts timer thread is a producer only;
+it cannot read or mutate room or database state. Detached expired
+*unseated* leases are deleted transactionally without ID reuse.
+
+For an expired member of a WAITING room, a system command stages the seat
+removal and in **one TurboDB transaction** verifies old membership and
+lease generation/expiry, commits the new Checkpoint, deletes the hashed
+ticket, persists the synthetic command result, and emits a sanitized
+unpublished Outbox entry. Only after confirmed COMMIT is the live Room
+Owner state changed and the remaining members notified. STARTING and
+future gameplay phases require their own timeout semantics.
+
+CLOSE callbacks record the captured session handle in a separate bounded
+terminal reserve. The CFlow worker reconciles it independent of ordinary
+mailbox capacity; the real SDK test forces normal admission FULL, and still
+recovers the previous identity after terminal processing. Missing CHttp
+CLOSE callbacks during abrupt TCP/TLS loss remain unqualified; dedicated
+transport-terminal delivery/reconciliation is still required.
 
 The remaining blockers are tracked in Issue #3, while actual Cocos
 Creator Editor/Web rendering remains Issue #2.

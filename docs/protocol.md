@@ -80,11 +80,14 @@ recovery. Conflicting reuse of the same request_id is rejected.
   restart. In TurboDB mode the backend persists only SHA-256 ticket digests,
   a monotonic player ID allocator, generation and detached deadline, plus
   exact durable per-player command results. The client owns plaintext.
-- Expiration is lazy in memory mode. With TurboDB enabled, seated-player
-  expiry is held until a transactional system-command implementation exists;
-  there is no autonomous timer and the fixed session table may fill.
-- Graceful WebSocket CLOSE recovery is regression-tested. Abrupt transport loss
-  without a CLOSE callback requires a separate terminal-owner cleanup path.
+- A separate timer producer schedules coalesced 125ms CFlow expiry checks,
+  including when there is no inbound traffic. Expired WAITING seat removals in
+  TurboDB mode commit Checkpoint + lease retirement + system command + Outbox
+  together. Advanced gameplay phases need their own policy.
+- A CLOSE callback is recorded in an independent bounded terminal reserve,
+  so a full ordinary Room Owner mailbox cannot silently drop it. The real
+  SDK deliberately saturates CFlow and verifies subsequent reconnect.
+  Abrupt transport loss without any CHttp CLOSE callback remains unqualified.
 - In this prototype rooms cannot yet transition into a full playable game;
   there are no private cards or persistent player profiles.
 

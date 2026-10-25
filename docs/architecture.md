@@ -63,8 +63,12 @@ including reconnection, secret rotation and cross-socket duplicate requests.
   ownership only at an explicit quiescent boundary.
 - A graceful WebSocket CLOSE is handled; abrupt socket failure without a CLOSE
   callback still needs a transport-terminal notification contract.
-- CLOSE admission can be rejected under a saturated CFlow queue. Reserved
-  close capacity and terminal reconciliation are separate fail-closed gates.
+- WebSocket CLOSE no longer joins the ordinary CFlow mailbox; a bounded,
+  mutex-protected terminal reserve is reconciled by the CFlow worker. The
+  installed SDK test intentionally forces normal queue FULL and verifies
+  the old player can resume after the worker unblocks. However an abrupt
+  TCP/TLS disappearance that never produces a CHttp CLOSE callback remains
+  an unresolved transport-terminal integration gate.
 - Expiration is still ingress-driven, not scheduled autonomously. Durable
   mode now transactionally deletes expired **unseated** leases in bounded
   sweeps. Seated-player expiry is withheld pending a committed system
@@ -128,8 +132,8 @@ and rejects old-token replay. See
 [TurboDB store contract](room-store-turbodb-v1.md).
 
 This implements **development-only bearer-based restart reattachment**, but
-not an external identity authority, automatic seated expiry, abnormal
-transport-terminal recovery, a Flowie publisher, or completed gameplay. Those remain tracked in Issue #3.
+not an external identity authority, transport-terminal detection without
+a CLOSE callback, a Flowie publisher, or completed gameplay. Those remain tracked in Issue #3.
 
 ## Persistent bearer session lease v1
 
@@ -140,3 +144,28 @@ The owner epoch CAS also detaches old-process leases within an absolute UTC
 recovery grace. A reconnecting client must rotate its ticket in the same
 TurboDB transaction that removes its provisional session. This is a local
 development capability, not externally verified user authentication.
+
+## M1b lifecycle hardening: autonomous Tick and protected terminal channel
+
+A Salts platform thread sleeps for 125ms between attempts to nonblockingly
+post a coalesced Tick descriptor into CFlow. This producer **never touches
+RoomDirectory, SessionRegistry or TurboDB**. The unique CFlow worker
+processes due expirations: for a detached expired WAITING room member, it
+stages a seat removal and calls `mygames_room_store_expire_seated`. The SQL
+transaction validates the old room membership and lease generation/deadline,
+then atomically commits the new Checkpoint, deletes the ticket hash, and
+inserts the synthetic system-command outcome and sanitized Outbox entry.
+Only after committed success does the Actor swap the live snapshot.
+
+CLOSE callbacks write a bounded generation-checked record independently of
+the ordinary CFlow queue, without waiting on mailbox capacity. The worker
+reconciles these records before and after every accepted task, and the Tick
+also progresses them during idle periods; orderly shutdown performs a final
+CFlow flush after stopping CHttp producers. A test-only 4-slot normal
+mailbox and injected worker pause prove normal FULL does not drop CLOSE.
+
+[Exact SDK gate #40214636174](https://github.com/qigao/mygames/actions/runs/40214636174)
+passed Linux/Windows/macOS core checks, the real no-ingress expiry/Outbox
+case, the mailbox-FULL CLOSE/reconnect case, and existing persisted
+restart/fault-injection tests. CHttp abrupt-socket terminal notification,
+TLS/public login and full-game policy still remain open.
