@@ -13,6 +13,7 @@ struct mygames_room_store {
     orm_runtime_t *runtime;
     orm_connection_t *connection;
     bool quarantined;
+    bool read_only;
 #ifdef MYGAMES_STORE_FAULT_TESTING
     bool fail_after_checkpoint;
     bool fail_after_command;
@@ -114,7 +115,11 @@ static mygames_store_status begin_transaction(
     mygames_room_store *s, orm_transaction_t **out) {
     orm_error_t error;
     orm_status_t rc;
+    if (!s || !out) return MYGAMES_STORE_INVALID;
     *out = NULL;
+    /* Fail before touching any SQL. SQLite open_mode=read_only provides the
+     * independently enforced backend boundary for this connection. */
+    if (s->read_only) return MYGAMES_STORE_READ_ONLY;
     orm_error_init(&error);
     rc = orm_transaction_begin(s->connection, ORM_ISOLATION_SERIALIZABLE,
                                out, &error);
@@ -369,14 +374,14 @@ static mygames_store_status prepare_sqlite(mygames_room_store *s) {
                    NULL, 0u, NULL);
 }
 
-mygames_store_status mygames_room_store_open(
+static mygames_store_status room_store_open_internal(
     const char *sqlite_plugin_absolute_path, const char *database_path,
-    mygames_room_store **out_store) {
+    bool read_only, mygames_room_store **out_store) {
     mygames_room_store *s;
     orm_runtime_config_t runtime_config;
     orm_driver_load_config_t load = {0};
     orm_config_t connection_config;
-    orm_option_t option;
+    orm_option_t options[2];
     orm_error_t error;
     orm_status_t rc;
     mygames_store_status st;
@@ -387,6 +392,7 @@ mygames_store_status mygames_room_store_open(
     *out_store = NULL;
     s = (mygames_room_store *)calloc(1u, sizeof(*s));
     if (!s) return MYGAMES_STORE_BACKEND_ERROR;
+    s->read_only = read_only;
     orm_runtime_config_init(&runtime_config);
     orm_error_init(&error);
     rc = orm_runtime_create(&runtime_config, &s->runtime, &error);
@@ -398,23 +404,46 @@ mygames_store_status mygames_room_store_open(
     rc = orm_runtime_load_driver(s->runtime, &load, &error);
     if (rc != ORM_STATUS_OK) { st = error_from_orm(s, rc, &error); goto fail; }
     orm_config(&connection_config);
-    option.keyword = orm_view("filename");
-    option.value = orm_view(database_path);
+    options[0].keyword = orm_view("filename");
+    options[0].value = orm_view(database_path);
+    options[1].keyword = orm_view("open_mode");
+    options[1].value = orm_view("read_only");
     connection_config.driver = orm_view("sqlite");
-    connection_config.options = &option;
-    connection_config.option_count = 1u;
+    connection_config.options = options;
+    connection_config.option_count = read_only ? 2u : 1u;
     rc = orm_runtime_connect(s->runtime, &connection_config,
                              &s->connection, &error);
     if (rc != ORM_STATUS_OK) { st = error_from_orm(s, rc, &error); goto fail; }
-    st = prepare_sqlite(s);
-    if (st != MYGAMES_STORE_OK) goto fail;
-    st = create_schema(s);
+    if (read_only) {
+        mygames_room_directory verified;
+        uint64_t epoch = 0u, sequence = 0u;
+        /* Only SELECT; never initialize, repair, or PRAGMA-mutate source.
+         * Journal contiguity and checkpoint integrity are mandatory. */
+        st = mygames_room_store_load(s, &verified, &epoch, &sequence);
+    } else {
+        st = prepare_sqlite(s);
+        if (st == MYGAMES_STORE_OK) st = create_schema(s);
+    }
     if (st != MYGAMES_STORE_OK) goto fail;
     *out_store = s;
     return MYGAMES_STORE_OK;
 fail:
     mygames_room_store_close(s);
     return st;
+}
+
+mygames_store_status mygames_room_store_open(
+    const char *sqlite_plugin_absolute_path, const char *database_path,
+    mygames_room_store **out_store) {
+    return room_store_open_internal(
+        sqlite_plugin_absolute_path, database_path, false, out_store);
+}
+
+mygames_store_status mygames_room_store_open_readonly(
+    const char *sqlite_plugin_absolute_path, const char *database_path,
+    mygames_room_store **out_store) {
+    return room_store_open_internal(
+        sqlite_plugin_absolute_path, database_path, true, out_store);
 }
 
 void mygames_room_store_close(mygames_room_store *store) {
