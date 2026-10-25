@@ -593,6 +593,78 @@ static chttp_server_config development_config(void) {
     return config;
 }
 
+#if defined(MYGAMES_WITH_TURBODB)
+static bool prepare_room_store(dev_server_state *state) {
+    const char *driver = getenv("MYGAMES_SQLITE_PLUGIN");
+    const char *database = getenv("MYGAMES_DB_PATH");
+    mygames_room_directory recovered;
+    mygames_player_id highest = 0u;
+    uint64_t epoch = 0u, sequence = 0u, claimed = 0u;
+    mygames_store_status status;
+    unsigned int i;
+    if ((!driver || !driver[0]) && (!database || !database[0]))
+        return true; /* explicit memory-only development mode */
+    if (!driver || !driver[0] || !database || !database[0]) {
+        fprintf(stderr, "MYGAMES_SQLITE_PLUGIN and MYGAMES_DB_PATH must both be set\n");
+        return false;
+    }
+    status = mygames_room_store_open(driver, database, &state->store);
+    if (status != MYGAMES_STORE_OK) {
+        fprintf(stderr, "TurboDB store open rejected: %d\n", (int)status);
+        return false;
+    }
+    status = mygames_room_store_load(state->store, &recovered, &epoch, &sequence);
+    if (status != MYGAMES_STORE_OK) {
+        fprintf(stderr, "TurboDB checkpoint rejected: %d\n", (int)status);
+        return false;
+    }
+    /* Tickets and principal associations are not persisted. Never silently
+     * reassign an orphaned seat to an unauthenticated new socket identity. */
+    for (i = 0u; i < MYGAMES_ROOM_DIRECTORY_CAPACITY; ++i) {
+        if (recovered.entries[i].used) {
+            fprintf(stderr, "Durable lobby contains orphaned seats; refusing "
+                            "unauthenticated recovery\n");
+            return false;
+        }
+    }
+    status = mygames_room_store_player_high_watermark(state->store, &highest);
+    if (status != MYGAMES_STORE_OK || highest >= (uint64_t)INT64_MAX - 1u) {
+        fprintf(stderr, "Durable player high-watermark invalid: %d\n", (int)status);
+        return false;
+    }
+    status = mygames_room_store_claim_epoch(state->store, epoch, &claimed);
+    if (status != MYGAMES_STORE_OK) {
+        fprintf(stderr, "Durable owner epoch claim rejected: %d\n", (int)status);
+        return false;
+    }
+    state->rooms = recovered;
+    state->room_epoch = claimed;
+    state->durable_sequence = sequence;
+    state->sessions.next_player = highest;
+    return true;
+}
+#else
+static bool prepare_room_store(dev_server_state *state) {
+    (void)state;
+    if (getenv("MYGAMES_SQLITE_PLUGIN") || getenv("MYGAMES_DB_PATH")) {
+        fprintf(stderr, "TurboDB store requested but build is not enabled\n");
+        return false;
+    }
+    return true;
+}
+#endif
+
+static void release_room_store(dev_server_state *state) {
+#if defined(MYGAMES_WITH_TURBODB)
+    if (state->store) {
+        mygames_room_store_close(state->store);
+        state->store = NULL;
+    }
+#else
+    (void)state;
+#endif
+}
+
 /* Stop socket admission before draining CFlow and before freeing server impl. */
 int main(void) {
     chttp_server server = {0};
@@ -605,13 +677,19 @@ int main(void) {
     mygames_sessions_init(&state.sessions);
     state.room_epoch = 1u;
     atomic_init(&state.accepting, true);
+    if (!prepare_room_store(&state)) {
+        release_room_store(&state);
+        return 1;
+    }
     if (!cflow_executor_serial_init_with_capacity(
             &state.room_executor, MYGAMES_OWNER_QUEUE_CAPACITY)) {
         fprintf(stderr, "CFlow SerialExecutor init failed\n");
+        release_room_store(&state);
         return 1;
     }
     if (!cflow_executor_as_control(&state.room_executor, &state.room_control)) {
         cflow_executor_destroy(&state.room_executor);
+        release_room_store(&state);
         return 1;
     }
     rc = chttp_server_init(&server, &config);
@@ -621,6 +699,7 @@ int main(void) {
                                                 CFLOW_EXECUTOR_SHUTDOWN_DRAIN);
         (void)cflow_executor_control_wait_idle(&state.room_control);
         cflow_executor_destroy(&state.room_executor);
+        release_room_store(&state);
         return 1;
     }
     owner.owner_count = 1u; /* CHttp transport Owner, not the Room Owner */
@@ -658,5 +737,6 @@ int main(void) {
     }
     cflow_executor_destroy(&state.room_executor);
     final_rc = chttp_server_destroy(&server);
+    release_room_store(&state);
     return (rc == SALTS_OK && final_rc == SALTS_OK) ? 0 : 1;
 }
