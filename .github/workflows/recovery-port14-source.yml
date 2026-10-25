@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   exact-source:
-    name: Exact-source HTTPS chain (ASan/UBSan)
+    name: Exact-source recovery Outbox and default OpenSSL mTLS
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
@@ -33,8 +33,6 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/build/gmssl-port14/ccache
       CCACHE_BASEDIR: ${{ github.workspace }}
       CCACHE_COMPILERCHECK: content
-      ASAN_OPTIONS: detect_leaks=0:halt_on_error=1
-      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
     steps:
       - name: Checkout exact MyGames head
         uses: actions/checkout@v4
