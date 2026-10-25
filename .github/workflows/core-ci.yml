@@ -61,9 +61,13 @@ jobs:
         shell: bash
         run: |
           cmake -S . -B build/gateway -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_TESTING=OFF -DMYGAMES_ENABLE_GATEWAY=ON \
+            -DBUILD_TESTING=ON -DMYGAMES_ENABLE_GATEWAY=ON \
             -DCMAKE_PREFIX_PATH="$SDK_PREFIX_PATH"
-      - name: Build CHttp room gateway
-        run: cmake --build build/gateway --target mygames_server --parallel 2
+      - name: Build CHttp gateway and CFlow Owner conformance
+        run: cmake --build build/gateway --target mygames_server mygames_cflow_owner_test --parallel 2
+      - name: Verify worker isolation, bounded queue and shutdown drain
+        run: ctest --test-dir build/gateway -C Release --output-on-failure -R '^mygames\.cflow_owner
+        run: python3 scripts/ci/ci_gateway_smoke.py build/gateway/mygames_server
+
       - name: HTTP/WS real four-client test
         run: python3 scripts/ci/ci_gateway_smoke.py build/gateway/mygames_server
