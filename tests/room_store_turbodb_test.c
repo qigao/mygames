@@ -371,6 +371,47 @@ int main(int argc, char **argv) {
         check(mygames_room_store_player_high_watermark(store, &next_player),
               MYGAMES_STORE_OK);
         assert(next_player == 104u);
+        {
+            uint8_t abandoned_hash[MYGAMES_STORE_TICKET_HASH_BYTES];
+            uint8_t expired_hash[MYGAMES_STORE_TICKET_HASH_BYTES];
+            mygames_player_id next_expired = 0u;
+            uint64_t expired_generation = 0u;
+            memset(abandoned_hash, 0xa5, sizeof(abandoned_hash));
+            memset(expired_hash, 0xc5, sizeof(expired_hash));
+            check(mygames_room_store_issue_session(
+                      store, 4u, abandoned_hash, &next_player),
+                  MYGAMES_STORE_OK);
+            assert(next_player == 105u);
+            check(mygames_room_store_discard_unsent_session(
+                      store, 4u, next_player, 1u), MYGAMES_STORE_OK);
+            check(mygames_room_store_has_session(store, next_player),
+                  MYGAMES_STORE_NOT_FOUND);
+            check(mygames_room_store_issue_session(
+                      store, 4u, expired_hash, &next_player),
+                  MYGAMES_STORE_OK);
+            assert(next_player == 106u); /* discarded ID is never reused */
+            check(mygames_room_store_detach_session(
+                      store, 4u, next_player, 1u, 72000u),
+                  MYGAMES_STORE_OK);
+            check(mygames_room_store_next_expired_session(
+                      store, 71999u, 104u, &next_expired,
+                      &expired_generation), MYGAMES_STORE_NOT_FOUND);
+            check(mygames_room_store_next_expired_session(
+                      store, 72000u, 104u, &next_expired,
+                      &expired_generation), MYGAMES_STORE_OK);
+            assert(next_expired == next_player && expired_generation == 1u);
+            check(mygames_room_store_delete_expired_unseated(
+                      store, 4u, next_expired, 2u, 72000u),
+                  MYGAMES_STORE_NOT_FOUND);
+            check(mygames_room_store_delete_expired_unseated(
+                      store, 4u, next_expired, expired_generation, 72000u),
+                  MYGAMES_STORE_OK);
+            check(mygames_room_store_has_session(store, next_player),
+                  MYGAMES_STORE_NOT_FOUND);
+            check(mygames_room_store_player_high_watermark(
+                      store, &next_player), MYGAMES_STORE_OK);
+            assert(next_player == 106u);
+        }
         mygames_room_store_close(store);
         store = NULL;
     }
