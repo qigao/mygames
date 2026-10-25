@@ -765,6 +765,11 @@ static bool prepare_room_store(dev_server_state *state) {
     state->room_epoch = claimed;
     state->durable_sequence = sequence;
     state->sessions.next_player = highest;
+#if defined(MYGAMES_GATEWAY_STORE_FAULT_TESTING)
+    if (getenv("MYGAMES_TEST_FAIL_AFTER_CHECKPOINT_ONCE")) {
+        mygames_room_store_fail_after_checkpoint_once(state->store);
+    }
+#endif
     return true;
 }
 #else

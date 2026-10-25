@@ -41,6 +41,12 @@ if(MYGAMES_ENABLE_TURBODB)
       MYGAMES_WITH_TURBODB=1)
     target_link_libraries(mygames_server PRIVATE
       MyGames::Store Salts::Core)
+    if(BUILD_TESTING)
+      # Fault injection exists only in an explicitly test-qualified build.
+      target_compile_definitions(mygames_server PRIVATE
+        MYGAMES_STORE_FAULT_TESTING=1
+        MYGAMES_GATEWAY_STORE_FAULT_TESTING=1)
+    endif()
   endif()
   target_compile_features(mygames_room_store PUBLIC c_std_11)
   target_include_directories(mygames_room_store PUBLIC
