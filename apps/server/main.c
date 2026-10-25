@@ -120,6 +120,37 @@ static client_peer *find_peer(dev_server_state *state,
     return NULL;
 }
 
+/* CNet/CHttp terminal callback never waits for a full room mailbox. At
+ * most the active network slots plus queued OPEN work can hold terminal
+ * identities; under an impossible saturation, freeze new admissions rather
+ * than pretending the CLOSE has been applied. */
+static bool record_terminal(dev_server_state *state,
+                            const chttp_server_websocket_session *session) {
+    size_t i, available = MYGAMES_TERMINAL_CAPACITY;
+    bool recorded = false;
+    cmeta_mutex_lock(&state->terminal_lock);
+    for (i = 0u; i < MYGAMES_TERMINAL_CAPACITY; ++i) {
+        terminal_record *record = &state->pending_terminal[i];
+        if (record->used && session_equal(&record->session, session)) {
+            recorded = true;
+            break; /* duplicate notification is idempotent */
+        }
+        if (!record->used && available == MYGAMES_TERMINAL_CAPACITY)
+            available = i;
+    }
+    if (!recorded && available < MYGAMES_TERMINAL_CAPACITY) {
+        terminal_record *record = &state->pending_terminal[available];
+        record->used = true;
+        record->session = *session;
+        record->recorded_ms = cmeta_monotonic_ms();
+        recorded = true;
+    }
+    cmeta_mutex_unlock(&state->terminal_lock);
+    if (!recorded)
+        atomic_store_explicit(&state->accepting, false, memory_order_release);
+    return recorded;
+}
+
 static response_cache *cached_request(dev_server_state *state, size_t slot,
                                       const char *request_id) {
     unsigned int i;
@@ -895,14 +926,64 @@ static void room_event_apply(dev_server_state *state,
         ws_handle_command(state, peer, session, payload, length);
     }
 }
+/* The CFlow worker is the ONLY caller. A terminal can arrive before its
+ * queued OPEN executes; retain that generation until the matching OPEN has
+ * been seen or the entry safely expires. */
+static void room_reconcile_terminals(dev_server_state *state) {
+    size_t i;
+    for (i = 0u; i < MYGAMES_TERMINAL_CAPACITY; ++i) {
+        chttp_server_websocket_session terminal = {0};
+        bool deliver = false;
+        cmeta_mutex_lock(&state->terminal_lock);
+        {
+            terminal_record *record = &state->pending_terminal[i];
+            if (record->used) {
+                const uint64_t now = cmeta_monotonic_ms();
+                if (find_peer(state, &record->session)) {
+                    terminal = record->session;
+                    memset(record, 0, sizeof(*record));
+                    deliver = true;
+                } else if (now >= record->recorded_ms &&
+                           now - record->recorded_ms > 15000u) {
+                    /* No corresponding accepted OPEN: no room identity can
+                     * exist for this generation on the owner. */
+                    memset(record, 0, sizeof(*record));
+                }
+            }
+        }
+        cmeta_mutex_unlock(&state->terminal_lock);
+        if (deliver)
+            room_event_apply(state, &terminal, ROOM_TASK_CLOSE, NULL, 0u);
+    }
+}
 static void room_task_run(void *user) {
     room_task *task = (room_task *)user;
+    const uint64_t now = cmeta_monotonic_ms();
+    dev_server_state *state;
     if (!task || !task->state) return;
-    if (task->kind == ROOM_TASK_OPEN) room_open_apply(task->state, &task->session);
-    else room_event_apply(task->state, &task->session, task->kind,
-                          task->payload, task->size);
+    state = task->state;
+    room_reconcile_terminals(state);
+    if (task->kind == ROOM_TASK_OPEN)
+        room_open_apply(state, &task->session);
+    else if (task->kind != ROOM_TASK_TICK)
+        room_event_apply(state, &task->session, task->kind,
+                         task->payload, task->size);
+    room_reconcile_terminals(state);
+    if (task->kind == ROOM_TASK_TICK ||
+        (now >= state->last_sweep_ms &&
+         now - state->last_sweep_ms >= MYGAMES_TIMER_INTERVAL_MS)) {
+        state->last_sweep_ms = now;
+        collect_expired(state);
+    }
+    if (task->kind == ROOM_TASK_TICK)
+        atomic_store_explicit(&state->tick_queued, false, memory_order_release);
 }
-static void room_task_cancel(void *user) { (void)user; }
+static void room_task_cancel(void *user) {
+    room_task *task = (room_task *)user;
+    if (task && task->kind == ROOM_TASK_TICK && task->state)
+        atomic_store_explicit(&task->state->tick_queued, false,
+                              memory_order_release);
+}
 static void room_task_finalize(void *user) { free(user); }
 
 /* Exact nonblocking admission: on success CFlow owns the descriptor and the
@@ -913,14 +994,15 @@ static cflow_admission_status room_submit(
     cflow_executor_task descriptor;
     cflow_admission_status admission;
     room_task *task;
-    if (!state || !session || (!payload && length) ||
+    if (!state || (kind != ROOM_TASK_TICK && !session) ||
+        (!payload && length) ||
         length > MYGAMES_WS_MAX_INPUT_BYTES) return CFLOW_ADMISSION_INVALID_ARGUMENT;
     if (!atomic_load_explicit(&state->accepting, memory_order_acquire))
         return CFLOW_ADMISSION_CLOSED;
     task = (room_task *)calloc(1u, sizeof(*task));
     if (!task) return CFLOW_ADMISSION_ALLOCATION_FAILED;
     task->state = state;
-    task->session = *session;
+    if (session) task->session = *session;
     task->kind = kind;
     task->size = length;
     if (length) memcpy(task->payload, payload, length);
@@ -931,6 +1013,28 @@ static cflow_admission_status room_submit(
     if (admission != CFLOW_ADMISSION_ACCEPTED) free(task);
     return admission;
 }
+/* A dedicated low-cost timer is a producer only: it NEVER opens the Room
+ * Directory or TurboDB. Tick posting is bounded/nonblocking and coalesced.
+ * Every accepted owner task also checks due work, so a full queue does not
+ * indefinitely starve the periodic sweep while the worker is progressing. */
+static void room_timer_thread(void *user) {
+    dev_server_state *state = (dev_server_state *)user;
+    while (!atomic_load_explicit(&state->timer_stop, memory_order_acquire)) {
+        cflow_admission_status status;
+        cmeta_sleep_ms(MYGAMES_TIMER_INTERVAL_MS);
+        if (atomic_load_explicit(&state->timer_stop, memory_order_acquire) ||
+            !atomic_load_explicit(&state->accepting, memory_order_acquire))
+            break;
+        if (atomic_exchange_explicit(&state->tick_queued, true,
+                                     memory_order_acq_rel))
+            continue;
+        status = room_submit(state, NULL, ROOM_TASK_TICK, NULL, 0u);
+        if (status != CFLOW_ADMISSION_ACCEPTED)
+            atomic_store_explicit(&state->tick_queued, false,
+                                  memory_order_release);
+    }
+}
+
 static int ws_open(void *user, chttp_websocket *socket,
                    const chttp_server_request_view *request,
                    chttp_server_response *response) {
@@ -953,17 +1057,19 @@ static void ws_event(void *user, chttp_websocket *socket,
     cflow_admission_status admitted;
     if (!state || !event) return;
     if (chttp_server_websocket_session_capture(socket, &session) != SALTS_OK) return;
-    if (event->kind == CHTTP_WEBSOCKET_EVENT_CLOSE) kind = ROOM_TASK_CLOSE;
-    else if (event->kind != CHTTP_WEBSOCKET_EVENT_MESSAGE) return;
+    if (event->kind == CHTTP_WEBSOCKET_EVENT_CLOSE) {
+        if (!record_terminal(state, &session))
+            fprintf(stderr, "terminal record exhausted: rejecting admissions\n");
+        return;
+    }
+    if (event->kind != CHTTP_WEBSOCKET_EVENT_MESSAGE) return;
     else if (event->message_type == CHTTP_WEBSOCKET_MESSAGE_TEXT)
         kind = ROOM_TASK_MESSAGE;
     else kind = ROOM_TASK_BINARY;
     admitted = room_submit(state, &session, kind, event->data, event->size);
-    if (admitted != CFLOW_ADMISSION_ACCEPTED && kind != ROOM_TASK_CLOSE) {
+    if (admitted != CFLOW_ADMISSION_ACCEPTED) {
         static const char reason[] = "room_queue_full";
         (void)chttp_websocket_close(socket, 1013u, reason, sizeof(reason) - 1u);
-    } else if (admitted != CFLOW_ADMISSION_ACCEPTED) {
-        fprintf(stderr, "room CLOSE task rejected: %d\n", (int)admitted);
     }
 }
 
