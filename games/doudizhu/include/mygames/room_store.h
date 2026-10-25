@@ -154,6 +154,27 @@ mygames_store_status mygames_room_store_commit(
     const void *event_payload, size_t event_bytes,
     uint64_t *out_committed_sequence);
 
+/* One authoritative, journalled timeout command for an expired WAITING
+ * room participant. Atomically removes the detached hashed lease, applies
+ * the already-validated post-removal room snapshot and stores an exact system
+ * outcome + unpublished Outbox event. Never delete a seated lease separately.
+ *
+ * The DB verifies the lease's player/generation/expiry and the previous
+ * persisted snapshot actually contains this member. The resulting snapshot
+ * must no longer contain the member. COMMIT_UNKNOWN quarantines the owner.
+ */
+mygames_store_status mygames_room_store_expire_seated(
+    mygames_room_store *store,
+    const mygames_room_directory *post_expiry_rooms,
+    uint64_t expected_epoch, uint64_t expected_sequence,
+    mygames_player_id expired_player, uint64_t lease_generation,
+    uint64_t now_realtime_ms,
+    const char *system_request_id,
+    const uint8_t command_digest[MYGAMES_STORE_COMMAND_DIGEST_BYTES],
+    const void *outcome, size_t outcome_bytes,
+    const void *sanitized_event, size_t event_bytes,
+    uint64_t *out_committed_sequence);
+
 /* Read one previously committed outcome without executing game logic. */
 mygames_store_status mygames_room_store_get_outcome(
     mygames_room_store *store, mygames_player_id player_id,
