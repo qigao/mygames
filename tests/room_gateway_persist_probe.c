@@ -24,20 +24,38 @@ int main(int argc, char **argv) {
     static const char canonical[] = "v1|1||0";
     char *end = NULL;
     unsigned long long creator_id = 0u;
+    const int expect_empty = argc == 4 &&
+                             strcmp(argv[3], "--expect-empty") == 0;
     if (argc != 4) {
         fprintf(stderr, "usage: gateway_probe /absolute/sqlite-driver /database /creator-id\n");
         return 2;
     }
-    errno = 0;
-    creator_id = strtoull(argv[3], &end, 10);
-    if (errno != 0 || !end || *end || creator_id == 0u ||
-        creator_id > (unsigned long long)INT64_MAX) return 2;
+    if (!expect_empty) {
+        errno = 0;
+        creator_id = strtoull(argv[3], &end, 10);
+        if (errno != 0 || !end || *end || creator_id == 0u ||
+            creator_id > (unsigned long long)INT64_MAX) return 2;
+    }
     assert(mygames_room_store_open(argv[1], argv[2], &store) ==
            MYGAMES_STORE_OK);
     assert(store != NULL);
     assert(mygames_room_store_load(store, &rooms, &epoch, &sequence) ==
            MYGAMES_STORE_OK);
     assert(epoch == 2u);
+    if (expect_empty) {
+        unsigned int i;
+        assert(sequence == 0u && rooms.next_serial == 0u);
+        for (i = 0u; i < MYGAMES_ROOM_DIRECTORY_CAPACITY; ++i)
+            assert(!rooms.entries[i].used);
+        assert(mygames_room_store_player_high_watermark(store, &player_max) ==
+               MYGAMES_STORE_OK && player_max == 0u);
+        assert(mygames_room_store_next_event(
+            store, 0u, event, sizeof(event), &event_len, &old_seq) ==
+               MYGAMES_STORE_NOT_FOUND);
+        mygames_room_store_close(store);
+        puts("mygames.gateway_fault_probe: PASS (no state, no ACK, no event)");
+        return 0;
+    }
     assert(sequence >= 7u);
     room = mygames_room_directory_get(&rooms, "room-1");
     assert(room != NULL);
