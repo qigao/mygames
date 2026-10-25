@@ -224,6 +224,52 @@ static mygames_store_status verify_head(const persisted_head *head,
     if (out) *out = temporary;
     return MYGAMES_STORE_OK;
 }
+/* On re-open, fail closed if a checkpoint advanced without its durable
+ * command/outbox counterparts, even when the binary checksum looks valid.
+ * Per-sequence uniqueness is enforced by the SQLite schema itself. */
+static mygames_store_status validate_journal(
+    mygames_room_store *store, orm_transaction_t *tx, uint64_t seq) {
+    static const char sql[] =
+        "select (select count(*) from mg_commands),"
+        "(select count(*) from mg_outbox),"
+        "(select coalesce(min(seq),0) from mg_commands),"
+        "(select coalesce(max(seq),0) from mg_commands),"
+        "(select coalesce(min(seq),0) from mg_outbox),"
+        "(select coalesce(max(seq),0) from mg_outbox)";
+    orm_result_t *result = NULL;
+    orm_error_t error;
+    int64_t value[6] = {0};
+    unsigned int col;
+    uint64_t rows = 0u;
+    orm_status_t rc;
+    mygames_store_status st = backend_query(store, tx, sql, NULL, 0u, &result);
+    if (st != MYGAMES_STORE_OK) return st;
+    orm_error_init(&error);
+    rc = orm_result_row_count(result, &rows, &error);
+    if (rc != ORM_STATUS_OK) {
+        st = error_from_orm(store, rc, &error);
+        goto done;
+    }
+    if (rows != 1u) { st = MYGAMES_STORE_CORRUPT; goto done; }
+    for (col = 0u; col < 6u; ++col) {
+        rc = orm_result_get_int64(result, 0u, col, &value[col], &error);
+        if (rc != ORM_STATUS_OK) {
+            st = error_from_orm(store, rc, &error);
+            goto done;
+        }
+        if (value[col] < 0) { st = MYGAMES_STORE_CORRUPT; goto done; }
+    }
+    if ((uint64_t)value[0] != seq || (uint64_t)value[1] != seq ||
+        (uint64_t)value[3] != seq || (uint64_t)value[5] != seq ||
+        (seq == 0u && (value[2] != 0 || value[4] != 0)) ||
+        (seq != 0u && (value[2] != 1 || value[4] != 1))) {
+        st = MYGAMES_STORE_CORRUPT;
+    }
+done:
+    orm_result_destroy(result);
+    return st;
+}
+
 static mygames_store_status create_schema(mygames_room_store *s) {
     static const char *ddl[] = {
         "create table if not exists mg_room_state ("
@@ -234,7 +280,7 @@ static mygames_store_status create_schema(mygames_room_store *s) {
         "create table if not exists mg_commands ("
         "player_id integer not null check(player_id>0),"
         "request_id text not null, fingerprint blob not null,"
-        "response blob not null, epoch integer not null, seq integer not null,"
+        "response blob not null, epoch integer not null, seq integer not null unique,"
         "primary key(player_id,request_id))",
         "create table if not exists mg_outbox ("
         "seq integer primary key, payload blob not null,"
@@ -268,7 +314,11 @@ static mygames_store_status create_schema(mygames_room_store *s) {
         st = execute(s, tx,
             "insert into mg_room_state(id,epoch,seq,image) values(1,?1,?2,?3)",
             args, 3u, NULL);
-    } else st = verify_head(&head, NULL);
+    } else {
+        st = verify_head(&head, NULL);
+        if (st == MYGAMES_STORE_OK)
+            st = validate_journal(s, tx, head.seq);
+    }
     if (st != MYGAMES_STORE_OK) return rollback(s, tx, st);
     return commit_transaction(s, tx);
 }
@@ -376,6 +426,8 @@ mygames_store_status mygames_room_store_load(
     if (st != MYGAMES_STORE_OK) return st;
     if (!exists) return MYGAMES_STORE_UNINITIALIZED;
     st = verify_head(&head, &decoded);
+    if (st != MYGAMES_STORE_OK) return st;
+    st = validate_journal(store, NULL, head.seq);
     if (st != MYGAMES_STORE_OK) return st;
     *out_rooms = decoded;
     *out_epoch = head.epoch;
