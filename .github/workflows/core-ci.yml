@@ -79,7 +79,6 @@ jobs:
             build/gateway/mygames_outbox_publisher \
             build/gateway/mygames_outbox_seed_test \
             build/gateway/mygames_outbox_audit_test \
-            build/gateway/mygames_flowie_consumer_projection_audit \
             "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so"
       - name: Durable subscriber receipt, projection and rollback qualification
         run: ctest --test-dir build/gateway -C Release --output-on-failure -R 'mygames[.]consumer_projection'
@@ -91,6 +90,7 @@ jobs:
             build/gateway/mygames_outbox_publisher \
             build/gateway/mygames_outbox_seed_test \
             build/gateway/mygames_outbox_audit_test \
+            build/gateway/mygames_flowie_consumer_projection_audit \
             "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so"
       - name: HTTP/WS real four-client test
         run: python3 scripts/ci/ci_gateway_smoke.py build/gateway/mygames_server
