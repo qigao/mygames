@@ -198,6 +198,12 @@ jobs:
           test -f "$salts/lib/cmake/Salts/SaltsConfig.cmake"
           test -f "$utils/lib/cmake/SaltsUtils/SaltsUtilsConfig.cmake"
           test -f "$chttp/lib/cmake/Chttp/ChttpConfig.cmake"
+          # ChttpConfig.cmake explicitly find_dependency(GmSSL). Reuse the
+          # EXACT static provider already resolved by the newly built CHttp,
+          # rather than finding a different GmSSL in a generic host prefix.
+          gmssl_dir="$(sed -n 's/^GmSSL_DIR:PATH=//p' build/gmssl-port14/build-chttp/CMakeCache.txt)"
+          test -n "$gmssl_dir"
+          test -f "$gmssl_dir/GmSSLConfig.cmake"
           {
             echo "SALTS_ROOT=$salts"
             echo "SALTS_UTILS_ROOT=$utils"
@@ -211,7 +217,8 @@ jobs:
           cmake -S . -B build/recovery-port14 -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_TESTING=ON -DMYGAMES_ENABLE_GATEWAY=ON \
             -DMYGAMES_ENABLE_TURBODB=ON -DMYGAMES_ENABLE_FLOWIE=ON \
-            -DCMAKE_PREFIX_PATH="$chttp;$salts;$utils;$TURBODB_ROOT;$FLOWIE_ROOT"
+            -DCMAKE_PREFIX_PATH="$chttp;$salts;$utils;$TURBODB_ROOT;$FLOWIE_ROOT" \
+            -DGmSSL_DIR="$gmssl_dir"
           cmake --build build/recovery-port14 --parallel 2 \
             --target mygames_recovery_service mygames_recovery_native_client_test \
             mygames_outbox_seed_test mygames_event_reconcile_test \
