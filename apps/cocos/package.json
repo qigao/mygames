@@ -1,0 +1,9 @@
+{
+  "name": "mygames-cocos",
+  "version": "0.1.0",
+  "private": true,
+  "creator": {
+    "version": "3.8.8"
+  },
+  "description": "MyGames Cocos Creator 2D client source scaffold"
+}
