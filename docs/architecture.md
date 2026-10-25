@@ -95,3 +95,14 @@ must be validated by the current Room Owner.
   multi-owner sharding and reconciliation.
 
 The PR remains Draft until its safety and product qualifications are explicit.
+
+## M1b2: room checkpoint codec (storage adapter pending)
+
+The C11 `mygames_room_checkpoint_encode/decode` boundary now supports a
+canonical little-endian, versioned, bounded room-data representation with
+explicit caller-provided `room_epoch`, deterministic encoding and fail-closed
+decode. The codec is pure in-memory logic, covered by Linux/Windows/macOS
+CTest; it does **not** mean any room or session is persisted. An actual
+TurboDB transaction and command/event/outbox journal must be implemented
+and verified before advertising crash recovery. Details:
+[checkpoint v1](room-checkpoint-v1.md).

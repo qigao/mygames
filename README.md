@@ -66,3 +66,12 @@ now verifies CFlow worker isolation, capacity and cancellation/finalize
 contracts. See [architecture](docs/architecture.md).
 
 This is not yet multi-node durable CFlow sharding or authenticated gameplay.
+
+## Recoverable room data contract
+
+A versioned, pure-C11 room checkpoint codec is now available in
+`games/doudizhu/include/mygames/room_checkpoint.h`. It validates before
+serializing and rejects corrupt or unsupported snapshots without modifying
+state. See [checkpoint v1 specification](docs/room-checkpoint-v1.md).
+This is **only a storage-neutral codec**: no TurboDB, durable journal,
+restart recovery or user authentication has been implemented yet.
