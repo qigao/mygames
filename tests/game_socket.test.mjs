@@ -135,3 +135,27 @@ test('invalid server ticket fails closed without granting room access', () => {
     assert.throws(() => client.requestSnapshot(), /Not connected/);
     client.disconnect();
 });
+
+test('reconnect to incompatible server discards old room identity', () => {
+    const frames = [];
+    const client = new GameSocket(() => {}, (frame) => frames.push(frame));
+    client.connect('ws://127.0.0.1:1780/ws');
+    let socket = FakeWebSocket.instances.at(-1);
+    socket.open();
+    socket.receive(hello(50, token('a')));
+    // Calling connect again while connected must be a no-op.
+    const count = FakeWebSocket.instances.length;
+    client.connect('ws://127.0.0.1:1780/ws');
+    assert.equal(FakeWebSocket.instances.length, count);
+    socket.disconnect();
+    client.connect('ws://127.0.0.1:1780/ws');
+    socket = FakeWebSocket.instances.at(-1);
+    socket.open();
+    socket.receive({v: 1, type: 'server.hello',
+        capabilities: ['ping','rooms'],player_id: '51'});
+    assert.equal(client.state, 'ready');
+    assert.equal(client.canResume, false);
+    assert.equal(client.currentPlayerId, '51');
+    assert.equal(frames.at(-2).code, 'resume_unavailable');
+    client.disconnect();
+});

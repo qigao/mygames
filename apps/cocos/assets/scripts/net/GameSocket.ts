@@ -29,6 +29,10 @@ export class GameSocket {
     get currentPlayerId(): string | null { return this.playerId; }
 
     connect(url: string): void {
+        // An accidental Connect click must not replace a healthy connection,
+        // which could cause an active-lease rejection during takeover.
+        if (this.socket && this.status !== 'offline' && this.status !== 'failed')
+            return;
         // Replacing the WebSocket does NOT discard a previously received ticket.
         // Explicit disconnect() is the only local credential-forgetting path.
         this.closeTransport();
@@ -111,9 +115,15 @@ export class GameSocket {
                 this.socket!.send(encodeResume(this.resumeTicket));
                 return;
             }
+            const hadPreviousLease = this.resumeTicket !== null;
             this.resumeTicket = frame.resume_token ?? null;
             this.playerId = frame.player_id ?? null;
             this.transition('ready');
+            if (hadPreviousLease) {
+                // Connected to an older/unsupported server: never keep a room
+                // view associated with the previous process/identity.
+                this.onFrame({v: 1, type: 'session.error', code: 'resume_unavailable'});
+            }
             this.onFrame(frame);
             return;
         }
