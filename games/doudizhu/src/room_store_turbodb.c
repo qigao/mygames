@@ -423,3 +423,284 @@ mygames_store_status mygames_room_store_claim_epoch(
     if (st == MYGAMES_STORE_OK) *out_claimed_epoch = expected_epoch + 1u;
     return st;
 }
+
+
+typedef struct recorded_outcome {
+    bool found;
+    uint64_t sequence;
+    uint8_t fingerprint[MYGAMES_STORE_COMMAND_DIGEST_BYTES];
+    uint8_t response[MYGAMES_STORE_RESULT_MAX];
+    size_t response_size;
+} recorded_outcome;
+
+static mygames_store_status find_outcome(
+    mygames_room_store *store, orm_transaction_t *tx,
+    const char *request_id, recorded_outcome *out) {
+    orm_value_t key = orm_text(request_id);
+    orm_result_t *result = NULL;
+    orm_error_t error;
+    orm_blob_t fingerprint = {0}, response = {0};
+    orm_status_t rc;
+    int64_t sequence = 0;
+    uint64_t rows = 0u;
+    mygames_store_status status = backend_query(store, tx,
+        "select fingerprint,response,seq from mg_commands where request_id=?1",
+        &key, 1u, &result);
+    if (status != MYGAMES_STORE_OK) return status;
+    orm_error_init(&error);
+    rc = orm_result_row_count(result, &rows, &error);
+    if (rc != ORM_STATUS_OK) {
+        status = error_from_orm(store, rc, &error);
+        goto done;
+    }
+    if (rows == 0u) {
+        out->found = false;
+        goto done;
+    }
+    if (rows != 1u) { status = MYGAMES_STORE_CORRUPT; goto done; }
+    rc = orm_result_get_blob(result, 0u, 0u, &fingerprint, &error);
+    if (rc == ORM_STATUS_OK)
+        rc = orm_result_get_blob(result, 0u, 1u, &response, &error);
+    if (rc == ORM_STATUS_OK)
+        rc = orm_result_get_int64(result, 0u, 2u, &sequence, &error);
+    if (rc != ORM_STATUS_OK) {
+        status = error_from_orm(store, rc, &error);
+        goto done;
+    }
+    if (!fingerprint.data ||
+        fingerprint.size != MYGAMES_STORE_COMMAND_DIGEST_BYTES ||
+        response.size > MYGAMES_STORE_RESULT_MAX ||
+        (response.size && !response.data) || sequence <= 0) {
+        status = MYGAMES_STORE_CORRUPT;
+        goto done;
+    }
+    memcpy(out->fingerprint, fingerprint.data, fingerprint.size);
+    if (response.size) memcpy(out->response, response.data, response.size);
+    out->response_size = response.size;
+    out->sequence = (uint64_t)sequence;
+    out->found = true;
+done:
+    orm_result_destroy(result);
+    return status;
+}
+
+mygames_store_status mygames_room_store_get_outcome(
+    mygames_room_store *store, const char *request_id,
+    const uint8_t command_digest[MYGAMES_STORE_COMMAND_DIGEST_BYTES],
+    void *result, size_t result_capacity, size_t *out_result_size,
+    uint64_t *out_sequence) {
+    recorded_outcome existing = {0};
+    mygames_store_status status;
+    if (!store || !request_valid(request_id) ||
+        !bounded_digest(command_digest) || !out_result_size || !out_sequence ||
+        (!result && result_capacity)) return MYGAMES_STORE_INVALID;
+    if (!owner_valid(store)) return MYGAMES_STORE_QUARANTINED;
+    status = find_outcome(store, NULL, request_id, &existing);
+    if (status != MYGAMES_STORE_OK) return status;
+    if (!existing.found) return MYGAMES_STORE_NOT_FOUND;
+    if (memcmp(existing.fingerprint, command_digest,
+               MYGAMES_STORE_COMMAND_DIGEST_BYTES) != 0)
+        return MYGAMES_STORE_REQUEST_CONFLICT;
+    if (result_capacity < existing.response_size) {
+        *out_result_size = existing.response_size;
+        return MYGAMES_STORE_CAPACITY;
+    }
+    if (existing.response_size && !result) return MYGAMES_STORE_INVALID;
+    if (existing.response_size)
+        memcpy(result, existing.response, existing.response_size);
+    *out_result_size = existing.response_size;
+    *out_sequence = existing.sequence;
+    return MYGAMES_STORE_OK;
+}
+
+mygames_store_status mygames_room_store_commit(
+    mygames_room_store *store, const mygames_room_directory *post_command_rooms,
+    uint64_t expected_epoch, uint64_t expected_sequence,
+    const char *request_id,
+    const uint8_t command_digest[MYGAMES_STORE_COMMAND_DIGEST_BYTES],
+    const void *response, size_t response_bytes,
+    const void *event_payload, size_t event_bytes,
+    uint64_t *out_committed_sequence) {
+    orm_transaction_t *tx = NULL;
+    persisted_head head = {0};
+    recorded_outcome prior = {0};
+    uint8_t image[MYGAMES_CHECKPOINT_MAX_BYTES];
+    size_t image_size = 0u;
+    orm_value_t args[6];
+    mygames_store_status status;
+    uint64_t affected = 0u;
+    uint64_t next_seq;
+    bool exists = false;
+    if (!store || !post_command_rooms || !out_committed_sequence ||
+        !request_valid(request_id) || !bounded_digest(command_digest) ||
+        (!response && response_bytes) || response_bytes > MYGAMES_STORE_RESULT_MAX ||
+        (!event_payload && event_bytes) || event_bytes == 0u ||
+        event_bytes > MYGAMES_STORE_EVENT_MAX ||
+        expected_epoch == 0u || expected_epoch > (uint64_t)INT64_MAX ||
+        expected_sequence >= (uint64_t)INT64_MAX)
+        return MYGAMES_STORE_INVALID;
+    if (!owner_valid(store)) return MYGAMES_STORE_QUARANTINED;
+    if (mygames_room_checkpoint_encode(
+            post_command_rooms, expected_epoch, image, sizeof(image), &image_size)
+        != MYGAMES_CHECKPOINT_OK) return MYGAMES_STORE_INVALID;
+    status = begin_transaction(store, &tx);
+    if (status != MYGAMES_STORE_OK) return status;
+    status = head_read(store, tx, &head, &exists);
+    if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
+    if (!exists) return rollback(store, tx, MYGAMES_STORE_UNINITIALIZED);
+    status = verify_head(&head, NULL);
+    if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
+    if (head.epoch != expected_epoch)
+        return rollback(store, tx, MYGAMES_STORE_STALE_EPOCH);
+    status = find_outcome(store, tx, request_id, &prior);
+    if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
+    if (prior.found) {
+        const bool same_digest = memcmp(prior.fingerprint, command_digest,
+                                      MYGAMES_STORE_COMMAND_DIGEST_BYTES) == 0;
+        const bool same_response = prior.response_size == response_bytes &&
+            (response_bytes == 0u || memcmp(prior.response, response, response_bytes) == 0);
+        status = same_digest && same_response ?
+                 MYGAMES_STORE_REPLAY : MYGAMES_STORE_REQUEST_CONFLICT;
+        status = rollback(store, tx, status);
+        if (status == MYGAMES_STORE_REPLAY)
+            *out_committed_sequence = prior.sequence;
+        return status;
+    }
+    if (head.seq != expected_sequence)
+        return rollback(store, tx, MYGAMES_STORE_STALE_SEQUENCE);
+    next_seq = head.seq + 1u;
+    args[0] = orm_i64((int64_t)next_seq);
+    args[1] = orm_blob(image, image_size);
+    args[2] = orm_i64((int64_t)expected_epoch);
+    args[3] = orm_i64((int64_t)expected_sequence);
+    status = execute(store, tx,
+        "update mg_room_state set seq=?1,image=?2 "
+        "where id=1 and epoch=?3 and seq=?4",
+        args, 4u, &affected);
+    if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
+    if (affected != 1u)
+        return rollback(store, tx, MYGAMES_STORE_STALE_SEQUENCE);
+
+#ifdef MYGAMES_STORE_FAULT_TESTING
+    if (store->fail_after_checkpoint) {
+        store->fail_after_checkpoint = false;
+        return rollback(store, tx, MYGAMES_STORE_BACKEND_ERROR);
+    }
+#endif
+
+    args[0] = orm_text(request_id);
+    args[1] = orm_blob(command_digest, MYGAMES_STORE_COMMAND_DIGEST_BYTES);
+    args[2] = orm_blob(response, response_bytes);
+    args[3] = orm_i64((int64_t)expected_epoch);
+    args[4] = orm_i64((int64_t)next_seq);
+    status = execute(store, tx,
+        "insert into mg_commands(request_id,fingerprint,response,epoch,seq) "
+        "values(?1,?2,?3,?4,?5)",
+        args, 5u, &affected);
+    if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
+    if (affected != 1u) return rollback(store, tx, MYGAMES_STORE_CORRUPT);
+
+    args[0] = orm_i64((int64_t)next_seq);
+    args[1] = orm_blob(event_payload, event_bytes);
+    status = execute(store, tx,
+        "insert into mg_outbox(seq,payload,delivered) values(?1,?2,0)",
+        args, 2u, &affected);
+    if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
+    if (affected != 1u) return rollback(store, tx, MYGAMES_STORE_CORRUPT);
+
+    status = commit_transaction(store, tx);
+    if (status == MYGAMES_STORE_OK) *out_committed_sequence = next_seq;
+    return status;
+}
+
+mygames_store_status mygames_room_store_next_event(
+    mygames_room_store *store, uint64_t after_sequence,
+    void *payload, size_t capacity, size_t *out_size, uint64_t *out_sequence) {
+    orm_result_t *result = NULL;
+    orm_error_t error;
+    orm_value_t arg;
+    orm_blob_t value = {0};
+    orm_status_t rc;
+    int64_t sequence = 0;
+    uint64_t count = 0u;
+    mygames_store_status status;
+    if (!store || !out_size || !out_sequence ||
+        (!payload && capacity) || after_sequence > (uint64_t)INT64_MAX)
+        return MYGAMES_STORE_INVALID;
+    if (!owner_valid(store)) return MYGAMES_STORE_QUARANTINED;
+    arg = orm_i64((int64_t)after_sequence);
+    status = backend_query(store, NULL,
+        "select seq,payload from mg_outbox "
+        "where delivered=0 and seq>?1 order by seq asc limit 1",
+        &arg, 1u, &result);
+    if (status != MYGAMES_STORE_OK) return status;
+    orm_error_init(&error);
+    rc = orm_result_row_count(result, &count, &error);
+    if (rc != ORM_STATUS_OK) {
+        status = error_from_orm(store, rc, &error);
+        goto done;
+    }
+    if (count == 0u) { status = MYGAMES_STORE_NOT_FOUND; goto done; }
+    if (count != 1u) { status = MYGAMES_STORE_CORRUPT; goto done; }
+    rc = orm_result_get_int64(result, 0u, 0u, &sequence, &error);
+    if (rc == ORM_STATUS_OK)
+        rc = orm_result_get_blob(result, 0u, 1u, &value, &error);
+    if (rc != ORM_STATUS_OK) {
+        status = error_from_orm(store, rc, &error);
+        goto done;
+    }
+    if (sequence <= 0 || value.size == 0u ||
+        value.size > MYGAMES_STORE_EVENT_MAX || !value.data) {
+        status = MYGAMES_STORE_CORRUPT;
+        goto done;
+    }
+    if (capacity < value.size) {
+        *out_size = value.size;
+        status = MYGAMES_STORE_CAPACITY;
+        goto done;
+    }
+    if (!payload) { status = MYGAMES_STORE_INVALID; goto done; }
+    memcpy(payload, value.data, value.size);
+    *out_size = value.size;
+    *out_sequence = (uint64_t)sequence;
+done:
+    orm_result_destroy(result);
+    return status;
+}
+
+mygames_store_status mygames_room_store_ack_event(
+    mygames_room_store *store, uint64_t epoch, uint64_t sequence) {
+    persisted_head head = {0};
+    orm_transaction_t *tx = NULL;
+    orm_value_t arg;
+    mygames_store_status status;
+    uint64_t affected = 0u;
+    bool exists = false;
+    if (!store || epoch == 0u || epoch > (uint64_t)INT64_MAX ||
+        sequence == 0u || sequence > (uint64_t)INT64_MAX)
+        return MYGAMES_STORE_INVALID;
+    if (!owner_valid(store)) return MYGAMES_STORE_QUARANTINED;
+    status = begin_transaction(store, &tx);
+    if (status != MYGAMES_STORE_OK) return status;
+    status = head_read(store, tx, &head, &exists);
+    if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
+    if (!exists) return rollback(store, tx, MYGAMES_STORE_UNINITIALIZED);
+    if (head.epoch != epoch)
+        return rollback(store, tx, MYGAMES_STORE_STALE_EPOCH);
+    if (sequence > head.seq)
+        return rollback(store, tx, MYGAMES_STORE_STALE_SEQUENCE);
+    arg = orm_i64((int64_t)sequence);
+    status = execute(store, tx,
+        "update mg_outbox set delivered=1 where seq=?1 and delivered=0",
+        &arg, 1u, &affected);
+    if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
+    if (affected != 1u)
+        return rollback(store, tx, MYGAMES_STORE_NOT_FOUND);
+    return commit_transaction(store, tx);
+}
+
+#ifdef MYGAMES_STORE_FAULT_TESTING
+void mygames_room_store_fail_after_checkpoint_once(mygames_room_store *store) {
+    if (store) store->fail_after_checkpoint = true;
+}
+#endif
