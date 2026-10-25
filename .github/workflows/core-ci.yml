@@ -47,6 +47,14 @@ jobs:
       - name: Download pinned SDKs using curl and SHA256 (no mono)
         shell: bash
         run: bash scripts/ci/restore-native-sdks.sh "$RUNNER_TEMP/mygames-sdk"
+      - name: Cache pinned GmSSL native static SDK
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/mygames-gmssl/installed/x64-linux
+          key: mygames-gmssl-3.2.0-port12-linux-x64-v1
+      - name: Restore exact GmSSL port 12 (source build, no mono)
+        shell: bash
+        run: bash scripts/ci/restore-gmssl.sh "$RUNNER_TEMP/mygames-gmssl"
       - name: Configure exact CHttp/CNet installed SDK consumer
         shell: bash
         run: |
