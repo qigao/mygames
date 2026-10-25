@@ -140,8 +140,41 @@ static void test_serial_bounded_admission_and_shutdown(void) {
     free(f);
 }
 
+static void test_cancel_pending_terminal_ownership(void) {
+    fixture *f = (fixture *)calloc(1u, sizeof(*f));
+    uint64_t started;
+    assert(f != NULL);
+    mygames_room_directory_init(&f->rooms);
+    atomic_init(&f->allow_first_finish, false);
+    atomic_init(&f->first_started, false);
+    atomic_init(&f->running, 0u);
+    atomic_init(&f->peak_running, 0u);
+    atomic_init(&f->completed, 0u);
+    atomic_init(&f->finalized, 0u);
+    atomic_init(&f->cancelled, 0u);
+    assert(cflow_executor_serial_init_with_capacity(&f->executor, 4u));
+    assert(cflow_executor_as_control(&f->executor, &f->control));
+    assert(post(f, 1u) == CFLOW_ADMISSION_ACCEPTED);
+    started = cmeta_monotonic_ms();
+    while (!atomic_load(&f->first_started) &&
+           cmeta_monotonic_ms() - started < 3000u) cmeta_sleep_ms(1u);
+    assert(atomic_load(&f->first_started));
+    assert(post(f, 2u) == CFLOW_ADMISSION_ACCEPTED);
+    assert(cflow_executor_control_shutdown(
+        &f->control, CFLOW_EXECUTOR_SHUTDOWN_CANCEL_PENDING));
+    atomic_store(&f->allow_first_finish, true);
+    assert(cflow_executor_control_wait_idle(&f->control) == CFLOW_EXECUTOR_WAIT_IDLE);
+    assert(atomic_load(&f->completed) == 1u);
+    assert(atomic_load(&f->cancelled) == 1u);
+    assert(atomic_load(&f->finalized) == 2u);
+    assert(atomic_load(&f->running) == 0u);
+    cflow_executor_destroy(&f->executor);
+    free(f);
+}
+
 int main(void) {
     test_serial_bounded_admission_and_shutdown();
+    test_cancel_pending_terminal_ownership();
     puts("mygames.cflow_owner: PASS");
     return 0;
 }
