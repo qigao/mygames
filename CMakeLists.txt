@@ -235,6 +235,17 @@ if(MYGAMES_ENABLE_FLOWIE)
     target_link_libraries(mygames_event_reconcile_test PRIVATE
       MyGames::Store MyGames::ConsumerProjection MyGames::Outbox
       Salts::Core Orm::C)
+    add_executable(mygames_recovery_native_client_test
+      tests/recovery_native_client.c)
+    target_compile_features(mygames_recovery_native_client_test PRIVATE c_std_11)
+    target_link_libraries(mygames_recovery_native_client_test PRIVATE
+      CHttp::Client Salts::Platform)
+    if(MSVC)
+      target_compile_options(mygames_recovery_native_client_test PRIVATE /W4 /WX)
+    else()
+      target_compile_options(mygames_recovery_native_client_test PRIVATE
+        -Wall -Wextra -Wpedantic -Werror)
+    endif()
     add_executable(mygames_flowie_broker_test tests/flowie_local_broker.c)
     target_link_libraries(mygames_flowie_broker_test PRIVATE
       Flowie::Flowie Salts::Core)
