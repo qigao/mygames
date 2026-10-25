@@ -193,6 +193,21 @@ if(MYGAMES_ENABLE_FLOWIE)
     target_compile_options(mygames_outbox PRIVATE -Wall -Wextra -Wpedantic -Werror)
     target_compile_options(mygames_outbox_publisher PRIVATE -Wall -Wextra -Wpedantic -Werror)
   endif()
+  # Independent, opt-in **loopback mTLS-only** recovery endpoint.
+  # Never linked into the unauthenticated development Room gateway.
+  if(MYGAMES_ENABLE_GATEWAY)
+    add_executable(mygames_recovery_service apps/consumer/recovery_service.c)
+    target_compile_features(mygames_recovery_service PRIVATE c_std_11)
+    target_link_libraries(mygames_recovery_service PRIVATE
+      MyGames::RecoveryGate MyGames::RecoveryWire MyGames::Outbox
+      MyGames::Store CHttp::Server Salts::Core Salts::Platform Orm::C)
+    if(MSVC)
+      target_compile_options(mygames_recovery_service PRIVATE /W4 /WX)
+    else()
+      target_compile_options(mygames_recovery_service PRIVATE
+        -Wall -Wextra -Wpedantic -Werror)
+    endif()
+  endif()
   if(BUILD_TESTING)
     target_compile_definitions(mygames_outbox_publisher PRIVATE MYGAMES_OUTBOX_TEST_FAULTS=1)
     add_executable(mygames_outbox_contract_test tests/outbox_contract_test.c)
