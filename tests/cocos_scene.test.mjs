@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {test} from 'node:test';
 
-const ROOT = new URL('../../apps/cocos/assets/', import.meta.url);
+const ROOT = new URL('../apps/cocos/assets/', import.meta.url);
 const read = (path) => JSON.parse(readFileSync(new URL(path, ROOT), 'utf8'));
 
 function compressedUuid(uuid) {
@@ -71,7 +71,7 @@ test('scene __id__ references resolve and roots are consistently owned', () => {
 });
 
 test('project targets Creator 3.8 and a 2D runtime scene', () => {
-    const packageJson = JSON.parse(readFileSync(new URL('../../apps/cocos/package.json', import.meta.url),'utf8'));
+    const packageJson = JSON.parse(readFileSync(new URL('../apps/cocos/package.json', import.meta.url),'utf8'));
     assert.equal(packageJson.type, '2d');
     assert.equal(packageJson.creator.version, '3.8.8');
 });
