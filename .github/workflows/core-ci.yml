@@ -1,0 +1,26 @@
+name: Core C11
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  room:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure C11 core (without external SDK)
+        run: cmake -S . -B build -DBUILD_TESTING=ON -DMYGAMES_ENABLE_GATEWAY=OFF
+      - name: Build
+        run: cmake --build build --config Debug --parallel 2
+      - name: Test
+        run: ctest --test-dir build -C Debug --output-on-failure

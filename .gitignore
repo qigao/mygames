@@ -1,0 +1,19 @@
+# Build and tools
+build/
+cmake-build-*/
+CMakeUserPresets.json
+.vscode/
+.idea/
+*.swp
+*.log
+.DS_Store
+Thumbs.db
+
+# Cocos generated state (commit real assets/.meta after Editor import)
+apps/cocos/library/
+apps/cocos/local/
+apps/cocos/temp/
+apps/cocos/build/
+apps/cocos/profiles/
+apps/cocos/node_modules/
+apps/cocos/.cache/

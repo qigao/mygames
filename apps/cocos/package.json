@@ -2,8 +2,9 @@
   "name": "mygames-cocos",
   "version": "0.1.0",
   "private": true,
+  "uuid": "e57db705-76b2-44c1-b0fd-49ec34d9fcd8",
   "creator": {
     "version": "3.8.8"
   },
-  "description": "MyGames Cocos Creator 2D client source scaffold"
+  "description": "MyGames Cocos Creator 3.8.8 / TypeScript frontend"
 }

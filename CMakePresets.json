@@ -1,0 +1,44 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "core-debug",
+      "displayName": "Standalone C11 room tests",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/core-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "MYGAMES_ENABLE_GATEWAY": "OFF",
+        "BUILD_TESTING": "ON"
+      }
+    },
+    {
+      "name": "gateway-debug",
+      "displayName": "CHttp/CNet dev gateway (SDK required)",
+      "inherits": "core-debug",
+      "binaryDir": "${sourceDir}/build/gateway-debug",
+      "cacheVariables": {
+        "MYGAMES_ENABLE_GATEWAY": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "core-debug",
+      "configurePreset": "core-debug"
+    },
+    {
+      "name": "gateway-debug",
+      "configurePreset": "gateway-debug"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "core-debug",
+      "configurePreset": "core-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}
