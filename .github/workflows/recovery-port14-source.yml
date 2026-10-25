@@ -1,0 +1,260 @@
+name: MyGames recovery port14 exact-source mTLS
+
+'on':
+  pull_request:
+    branches: [master]
+    paths:
+      - ".github/workflows/recovery-port14-source.yml"
+      - "scripts/ci/**"
+      - "apps/consumer/**"
+      - "games/doudizhu/**"
+      - "CMakeLists.txt"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: mygames-recovery-port14-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  exact-source:
+    name: Exact-source HTTPS chain (ASan/UBSan)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      EXPECTED_MYGAMES: ${{ github.event.pull_request.head.sha || github.sha }}
+      EXPECTED_CHTTP_SOURCE: 3fd2b9d770dd9cd3a272fc4a4aa9efdb10750c53
+      EXPECTED_SALTS: ee5a49f09e9f2719c4d3683f53f3060ea7655000
+      EXPECTED_UTILS: fbb5f3ee19589836ced0f3b98414e71e6dcc1388
+      EXPECTED_GMSSL_REGISTRY: 59693dfdb4e6830df838edf9da109f855fd2ea24
+      CCACHE_DIR: ${{ github.workspace }}/build/gmssl-port14/ccache
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_COMPILERCHECK: content
+      ASAN_OPTIONS: detect_leaks=0:halt_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+    steps:
+      - name: Checkout exact MyGames head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.EXPECTED_MYGAMES }}
+          persist-credentials: false
+      - name: Checkout exact CHttp port14 source
+        uses: actions/checkout@v4
+        with:
+          repository: qigao/chttp
+          ref: ${{ env.EXPECTED_CHTTP_SOURCE }}
+          path: build/gmssl-port14/sources/chttp
+          persist-credentials: false
+      - name: Checkout exact Salts source
+        uses: actions/checkout@v4
+        with:
+          repository: qigao/salts
+          ref: ${{ env.EXPECTED_SALTS }}
+          path: build/gmssl-port14/sources/salts
+          persist-credentials: false
+      - name: Checkout exact SaltsUtils source
+        uses: actions/checkout@v4
+        with:
+          repository: qigao/salts-utils
+          ref: ${{ env.EXPECTED_UTILS }}
+          path: build/gmssl-port14/sources/salts-utils
+          persist-credentials: false
+      - name: Checkout exact GmSSL port14 registry source
+        uses: actions/checkout@v4
+        with:
+          repository: qigao/vcpkg-cache
+          ref: ${{ env.EXPECTED_GMSSL_REGISTRY }}
+          path: build/gmssl-port14/sources/vcpkg-cache
+          persist-credentials: false
+      - name: Use exact shared vcpkg dependency graph
+        uses: ./build/gmssl-port14/sources/vcpkg-cache/.github/actions/setup-vcpkg-cache
+        with:
+          mode: read
+      - name: Restore re2c host generator
+        uses: qigao/vcpkg-cache/.github/actions/setup-re2c-tools@master
+      - name: Prepare native host tools
+        uses: ./build/gmssl-port14/sources/salts/.github/actions/setup-build-host
+      - name: Prepare exact candidate graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ccache ninja-build pkg-config
+          test "$(git rev-parse HEAD)" = "$EXPECTED_MYGAMES"
+          test "$(git -C build/gmssl-port14/sources/chttp rev-parse HEAD)" = "$EXPECTED_CHTTP_SOURCE"
+          test "$(git -C build/gmssl-port14/sources/salts rev-parse HEAD)" = "$EXPECTED_SALTS"
+          test "$(git -C build/gmssl-port14/sources/salts-utils rev-parse HEAD)" = "$EXPECTED_UTILS"
+          python3 - "$EXPECTED_GMSSL_REGISTRY" \
+            build/gmssl-port14/sources/salts-utils/vcpkg-configuration.json \
+            build/gmssl-port14/sources/chttp/vcpkg-configuration.json \
+            vcpkg-configuration.json <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          sha, *names = sys.argv[1:]
+          for name in names:
+              path = Path(name)
+              data = json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else {}
+              registries = list(data.get("registries", []))
+              matches = [r for r in registries if "gmssl" in r.get("packages", [])]
+              if len(matches) > 1:
+                  raise SystemExit(f"multiple gmssl registries in {path}")
+              if matches:
+                  matches[0].update(reference=sha, baseline=sha)
+              else:
+                  registries.append({
+                      "kind": "git",
+                      "repository": "https://github.com/qigao/vcpkg-cache",
+                      "reference": sha,
+                      "baseline": sha,
+                      "packages": ["gmssl"],
+                  })
+              data["registries"] = registries
+              path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+          PY
+          {
+            printf 'mygames_source=%s\n' "$EXPECTED_MYGAMES"
+            printf 'chttp_source=%s\n' "$EXPECTED_CHTTP_SOURCE"
+            printf 'salts_source=%s\n' "$EXPECTED_SALTS"
+            printf 'saltsutils_source=%s\n' "$EXPECTED_UTILS"
+            printf 'gmssl_registry=%s\n' "$EXPECTED_GMSSL_REGISTRY"
+          } | tee build/gmssl-port14/provenance.txt
+
+      - name: Build and install exact Salts
+        shell: bash
+        working-directory: build/gmssl-port14/sources/salts
+        run: |
+          set -euo pipefail
+          unset VCPKG_OVERLAY_PORTS
+          export PROJECT_ROOT="$GITHUB_WORKSPACE"
+          cmake --preset linux-release-ci \
+            -DBUILD_TESTS=ON -DBUILD_BENCHMARKS=OFF -DBUILD_EXAMPLES=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build --preset linux-release-ci --parallel 2
+          ctest --preset linux-release-ci -R '^cnet_.*test$' \
+            --no-tests=error --timeout 180 --output-on-failure
+          cmake --build --preset install-linux-release-ci --parallel 2
+          mkdir -p "$RUNNER_TEMP/mygames-port14-sdk/salts"
+          cp -a stage/sdk/linux-x64 "$RUNNER_TEMP/mygames-port14-sdk/salts/release"
+
+      - name: Build and install exact SaltsUtils
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SALTS_ROOT="$RUNNER_TEMP/mygames-port14-sdk/salts/release"
+          export QIGAO_SDK_RID=linux-x64
+          export QIGAO_TARGET_TRIPLET=x64-linux
+          export PROJECT_ROOT="$GITHUB_WORKSPACE"
+          export QIGAO_VCPKG_TOOLCHAIN_FILE="$VCPKG_CACHE_REPOSITORY_ROOT/cmake/QigaoVcpkgToolchain.cmake"
+          quickjs_overlay="$RUNNER_TEMP/mygames-port14-quickjs-only"
+          mkdir -p "$quickjs_overlay"
+          cp -a "$VCPKG_CACHE_REPOSITORY_ROOT/ports/quickjs-ng" "$quickjs_overlay/quickjs-ng"
+          export VCPKG_OVERLAY_PORTS="$quickjs_overlay"
+          src="$GITHUB_WORKSPACE/build/gmssl-port14/sources/salts-utils"
+          root="$RUNNER_TEMP/mygames-port14-sdk/salts-utils/release"
+          cmake --preset ci-linux-release-user -S "$src" \
+            -DBUILD_TESTS=OFF -DBUILD_BENCHMARKS=OFF -DBUILD_EXAMPLES=OFF \
+            -DCMAKE_INSTALL_PREFIX="$root" \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build "$src/build/ci-linux-release" --parallel 2
+          cmake --install "$src/build/ci-linux-release" --prefix "$root"
+          test -f "$root/lib/cmake/SaltsUtils/SaltsUtilsConfig.cmake"
+
+      - name: Build and install exact CHttp with port14 Salts
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SALTS_ROOT="$RUNNER_TEMP/mygames-port14-sdk/salts/release"
+          export SALTS_UTILS_ROOT="$RUNNER_TEMP/mygames-port14-sdk/salts-utils/release"
+          export LD_LIBRARY_PATH="$SALTS_UTILS_ROOT/lib:$SALTS_ROOT/lib"
+          export QIGAO_SDK_RID=linux-x64
+          export QIGAO_TARGET_TRIPLET=x64-linux
+          export PROJECT_ROOT="$GITHUB_WORKSPACE"
+          export QIGAO_VCPKG_TOOLCHAIN_FILE="$VCPKG_CACHE_REPOSITORY_ROOT/cmake/QigaoVcpkgToolchain.cmake"
+          unset VCPKG_OVERLAY_PORTS
+          source="$GITHUB_WORKSPACE/build/gmssl-port14/sources/chttp"
+          output="$GITHUB_WORKSPACE/build/gmssl-port14/build-chttp"
+          install="$RUNNER_TEMP/mygames-port14-sdk/chttp/release"
+          cmake --preset ci-linux-release-user -S "$source" -B "$output" \
+            -DCMAKE_INSTALL_PREFIX="$install" \
+            -DBUILD_TESTS=OFF -DBUILD_BENCHMARKS=OFF -DBUILD_EXAMPLES=OFF \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build "$output" --parallel 2
+          cmake --install "$output" --prefix "$install"
+          test -f "$install/lib/cmake/Chttp/ChttpConfig.cmake"
+
+      - name: Restore only pinned TurboDB and Flowie runtime SDKs
+        shell: bash
+        run: bash scripts/ci/restore-recovery-only-sdks.sh "$RUNNER_TEMP/mygames-port14-sdk/runtimes"
+
+      - name: Build MyGames and ensure one coherent native SDK graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          salts="$RUNNER_TEMP/mygames-port14-sdk/salts/release"
+          utils="$RUNNER_TEMP/mygames-port14-sdk/salts-utils/release"
+          chttp="$RUNNER_TEMP/mygames-port14-sdk/chttp/release"
+          test -f "$salts/lib/cmake/Salts/SaltsConfig.cmake"
+          test -f "$utils/lib/cmake/SaltsUtils/SaltsUtilsConfig.cmake"
+          test -f "$chttp/lib/cmake/Chttp/ChttpConfig.cmake"
+          {
+            echo "SALTS_ROOT=$salts"
+            echo "SALTS_UTILS_ROOT=$utils"
+            echo "CHTTP_ROOT=$chttp"
+            echo "HTTP_SERVICES_ROOT=$chttp"
+            printf 'SDK_PREFIX_PATH=%s;%s;%s;%s;%s\n' \
+              "$chttp" "$salts" "$utils" "$TURBODB_ROOT" "$FLOWIE_ROOT"
+            echo "LD_LIBRARY_PATH=$chttp/lib:$salts/lib:$utils/lib:$TURBODB_ROOT/lib:$FLOWIE_ROOT/lib:$chttp/bin:$salts/bin:$utils/bin"
+          } >> "$GITHUB_ENV"
+          export LD_LIBRARY_PATH="$chttp/lib:$salts/lib:$utils/lib:$TURBODB_ROOT/lib:$FLOWIE_ROOT/lib:$chttp/bin:$salts/bin:$utils/bin"
+          cmake -S . -B build/recovery-port14 -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=ON -DMYGAMES_ENABLE_GATEWAY=ON \
+            -DMYGAMES_ENABLE_TURBODB=ON -DMYGAMES_ENABLE_FLOWIE=ON \
+            -DCMAKE_PREFIX_PATH="$chttp;$salts;$utils;$TURBODB_ROOT;$FLOWIE_ROOT"
+          cmake --build build/recovery-port14 --parallel 2 \
+            --target mygames_recovery_service mygames_recovery_native_client_test \
+            mygames_outbox_seed_test mygames_event_reconcile_test \
+            mygames_turbodb_store_test mygames_outbox_contract_test \
+            mygames_consumer_projection_test
+          ctest --test-dir build/recovery-port14 -C Release \
+            -R '^(mygames[.](recovery_gate|recovery_wire|turbodb_store|outbox_contract|consumer_projection))$' \
+            --output-on-failure --no-tests=error
+          ldd build/recovery-port14/mygames_recovery_service \
+            | tee build/gmssl-port14/mygames-recovery-ldd.txt
+          grep -F "$chttp/lib" build/gmssl-port14/mygames-recovery-ldd.txt
+          grep -F "$salts/lib" build/gmssl-port14/mygames-recovery-ldd.txt
+
+      - name: Independent default OpenSSL HRR+CCS authenticated Outbox recovery
+        shell: bash
+        env:
+          MYGAMES_RECOVERY_REQUIRE_DEFAULT_HRR: '1'
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/ci_recovery_mtls.py \
+            build/recovery-port14/mygames_recovery_service \
+            build/recovery-port14/mygames_outbox_seed_test \
+            "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so" \
+            build/recovery-port14/mygames_recovery_native_client_test
+
+      - name: Preserve source-only recovery qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mygames-recovery-port14-source-abi
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            build/gmssl-port14/provenance.txt
+            build/gmssl-port14/mygames-recovery-ldd.txt
+            build/recovery-port14/Testing/Temporary/LastTest.log
+
+      - name: Require exact MyGames HEAD and clean tracked source
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_MYGAMES"
+          test -z "$(git status --porcelain --untracked-files=no)"
