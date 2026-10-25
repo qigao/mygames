@@ -1,7 +1,7 @@
 # MyGames wire contract v1 — development room and resumable leases
 
 Transport is a **loopback-only, unauthenticated** CHttp WebSocket at
-\`ws://127.0.0.1:1780/ws\`. This is not a production user login service.
+`ws://127.0.0.1:1780/ws`. This is not a production user login service.
 It provides an **ephemeral player identity and a recovery capability** within
 one process lifetime, not an independently verified account identity.
 
@@ -19,7 +19,7 @@ keeps it **in memory only**, not localStorage/sessionStorage.
 
 Disconnecting retains a seated player's identity, seat and last 8 command
 replies for a **30-second monotonic grace**. On the next WS connection, the
-server sends a *new, provisional* \`server.hello\` (a fresh player and ticket).
+server sends a *new, provisional* `server.hello` (a fresh player and ticket).
 The client then immediately sends the *old* ticket:
 
     {"v":1,"type":"session.resume","resume_token":"<prior 64-hex ticket>"}
@@ -29,7 +29,7 @@ the old ticket and publishes a rotated credential:
 
     {"v":1,"type":"session.ready","player_id":"1","generation":2,"resume_token":"<new 64-hex ticket>","resumed":true}
 
-If the recovered player remains in a room, a current \`room.snapshot\`
+If the recovered player remains in a room, a current `room.snapshot`
 follows. Successful recovery **cannot silently merge identities**: the fresh
 provisional session is destroyed, and old connections cannot mutate the new
 generation.
@@ -46,7 +46,7 @@ or takeover from an already active connection.
 
 ## Room commands
 
-All room commands have \`v=1\` and a 1..48-character ASCII \`request_id\`.
+All room commands have `v=1` and a 1..48-character ASCII `request_id`.
 
     {"v":1,"type":"client.ping"}
     {"v":1,"type":"room.create","request_id":"req-1"}

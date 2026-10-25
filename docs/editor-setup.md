@@ -39,7 +39,7 @@ Editor or build a production Web/native package. Those are separate pending gate
 
 ## Resume smoke (dev-only)
 
-After joining the waiting room, close the WebSocket connection and press Connect
+After joining the waiting room, click **模拟断线 · 保留身份** and then press Connect
 again in the **same running Cocos scene instance**. The client retains its
 recovery capability in memory, sends `session.resume`, and should restore the
 original player ID and room snapshot. Restarting the Cocos page destroys that

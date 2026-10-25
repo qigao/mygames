@@ -93,6 +93,11 @@ export class GameSocket {
     leaveRoom(): string { return this.requestRoom('room.leave'); }
     requestSnapshot(): string { return this.requestRoom('room.snapshot.get'); }
 
+    /** Simulated transient network disconnect. Retains the in-memory ticket. */
+    suspend(): void {
+        if (this.socket?.readyState === WebSocket.OPEN) this.socket.close();
+    }
+
     /** User-initiated logout: drops local recovery capability. */
     disconnect(): void {
         this.closeTransport();

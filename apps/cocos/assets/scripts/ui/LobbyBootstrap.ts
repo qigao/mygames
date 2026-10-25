@@ -226,6 +226,8 @@ export class LobbyBootstrap extends Component {
                     () => this.execute((s) => s.requestSnapshot()));
         this.button(root, 'leave', '退出房间', -318, -193, 148, 43,
                     () => this.execute((s) => s.leaveRoom()));
+        this.button(root, 'suspend', '模拟断线 · 保留身份', -406, -246, 325, 41,
+                    () => this.socket?.suspend());
 
         this.panel(root, 'table', 238, -31, 780, 515, COLORS.felt, COLORS.border, 24);
         this.roomTitle = this.text(root, 'room-title', '尚未进入房间', 238, 179, 690,

@@ -124,6 +124,21 @@ test('expired or refused credential resets to provisional fresh player', () => {
     client.disconnect();
 });
 
+test('transient suspend retains ticket but explicit disconnect clears it', () => {
+    const client = new GameSocket(() => {}, () => {});
+    client.connect('ws://127.0.0.1:1780/ws');
+    const socket = FakeWebSocket.instances.at(-1);
+    socket.open();
+    socket.receive(hello(40, token('d')));
+    client.suspend();
+    assert.equal(client.canResume, true);
+    socket.disconnect();
+    assert.equal(client.state, 'offline');
+    assert.equal(client.canResume, true);
+    client.disconnect();
+    assert.equal(client.canResume, false);
+});
+
 test('invalid server ticket fails closed without granting room access', () => {
     const client = new GameSocket(() => {}, () => {});
     client.connect('ws://127.0.0.1:1780/ws');
