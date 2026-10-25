@@ -168,6 +168,11 @@ if(MYGAMES_ENABLE_FLOWIE)
     target_link_libraries(mygames_outbox_contract_test PRIVATE MyGames::Outbox)
     target_compile_features(mygames_outbox_contract_test PRIVATE c_std_11)
     add_test(NAME mygames.outbox_contract COMMAND mygames_outbox_contract_test)
+    add_executable(mygames_flowie_consumer_projection_audit
+      tests/flowie_consumer_projection_audit.c)
+    target_link_libraries(mygames_flowie_consumer_projection_audit PRIVATE
+      MyGames::ConsumerProjection Orm::C)
+    target_compile_features(mygames_flowie_consumer_projection_audit PRIVATE c_std_11)
     add_executable(mygames_flowie_acl_client_test tests/flowie_acl_client.c)
     target_link_libraries(mygames_flowie_acl_client_test PRIVATE
       Flowie::Client MyGames::ConsumerProjection MyGames::Outbox Salts::Core Orm::C)
