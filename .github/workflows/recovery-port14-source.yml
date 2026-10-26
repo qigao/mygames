@@ -218,6 +218,10 @@ jobs:
           export SALTS_ROOT="$salts"
           export SALTS_UTILS_ROOT="$utils"
           export CHTTP_ROOT="$chttp"
+          # FlowieConfig.cmake imports all four peer profiles in this shell.
+          # Writing to GITHUB_ENV only affects subsequent steps.
+          export HTTP_SERVICES_ROOT="$chttp"
+          export TURBODB_ROOT FLOWIE_ROOT
           export LD_LIBRARY_PATH="$chttp/lib:$salts/lib:$utils/lib:$TURBODB_ROOT/lib:$FLOWIE_ROOT/lib:$chttp/bin:$salts/bin:$utils/bin"
           cmake -S . -B build/recovery-port14 -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_TESTING=ON -DMYGAMES_ENABLE_GATEWAY=ON \
