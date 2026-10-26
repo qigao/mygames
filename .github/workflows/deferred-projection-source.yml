@@ -44,7 +44,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ninja-build pkg-config re2c bison flex unzip curl
           mkdir -p build/deferred
-          printf 'mygames=%s\nflowie=%s\nbroker_session=live-process-only\n' \
+          printf 'mygames=%s\nflowie=%s\nbroker_test_1=live_process\nbroker_test_2=independent_disk_sqlite_process_restart\n' \
             "$(git rev-parse HEAD)" "$EXPECTED_FLOWIE" > build/deferred/provenance.txt
       - name: Restore coherent published Salts, CHttp, TurboDB and pinned port12 provider
         shell: bash
