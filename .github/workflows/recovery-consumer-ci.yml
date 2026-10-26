@@ -1,14 +1,13 @@
 name: M4.3 recovery cursor and wire qualification
 
-on:
+'on':
   push:
     branches:
       - feature/recovery-consumer-durable-cursor
   pull_request:
     paths:
-      - "games/doudizhu/include/mygames/recovery_wire.h"
-      - "games/doudizhu/src/recovery_decode.c"
-      - "games/doudizhu/src/recovery_wire.c"
+      - "games/doudizhu/**"
+      - "tests/recovery_consumer_test.c"
       - "tests/recovery_decode_test.c"
       - "CMakeLists.txt"
       - ".github/workflows/recovery-consumer-ci.yml"
@@ -22,55 +21,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Uses the coherent published 2.3.0-rc.16/4.3.0-rc.11/CHttp,
-  # TurboDB 2.3.6 and Flowie 1.0.4 graph only for the real local ledger.
-  # This job does NOT accept old GmSSL for production HTTPS. It tests the
-  # consumer commit/rollback contract, with no network or source DB access.
-  persisted-ledger:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 35
-    steps:
-      - name: Checkout exact consumer qualification HEAD
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
-      - name: Restore exact published SDK inputs using curl and SHA256
-        shell: bash
-        run: bash scripts/ci/restore-native-sdks.sh "$RUNNER_TEMP/mygames-consumer-sdk"
-      - name: Restore GmSSL matching the published runtime ABI
-        shell: bash
-        run: bash scripts/ci/restore-gmssl.sh "$RUNNER_TEMP/mygames-consumer-gmssl"
-      - name: Configure ledger-only C11 integration
-        shell: bash
-        run: |
-          set -euo pipefail
-          cmake -S . -B build/consumer-ledger -DCMAKE_BUILD_TYPE=Debug \
-            -DBUILD_TESTING=ON -DMYGAMES_ENABLE_GATEWAY=OFF \
-            -DMYGAMES_ENABLE_TURBODB=ON -DMYGAMES_ENABLE_FLOWIE=ON \
-            -DCMAKE_PREFIX_PATH="$SDK_PREFIX_PATH"
-      - name: Build bounded durable consumer and actual TurboDB fault test
-        run: cmake --build build/consumer-ledger --parallel 2 --target mygames_recovery_consumer_test
-      - name: Verify partial commit, restart, rollback and cursor fencing
-        run: ctest --test-dir build/consumer-ledger -C Debug --output-on-failure --no-tests=error -R 'mygames[.]recovery_consumer
-      fail-fast: false
-      matrix:
-        runner: [ubuntu-24.04, macos-15, windows-2025]
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - name: Checkout exact qualification HEAD
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
-      - name: Configure pure C11 decoder without application SDK
-        run: cmake -S . -B build/m43 -DBUILD_TESTING=ON -DMYGAMES_ENABLE_GATEWAY=OFF -DMYGAMES_ENABLE_TURBODB=OFF -DMYGAMES_ENABLE_FLOWIE=OFF
-      - name: Build C11 contract tests
-        run: cmake --build build/m43 --config Debug --parallel 2 --target mygames_recovery_gate_test mygames_recovery_wire_test mygames_recovery_decode_test
-      - name: Verify strict wire and durable cursor page boundaries
-        run: ctest --test-dir build/m43 -C Debug --output-on-failure --no-tests=error -R 'mygames[.](recovery_gate|recovery_wire|recovery_decode)$'
-
-
   strict-page:
     strategy:
       fail-fast: false
@@ -87,5 +37,33 @@ jobs:
         run: cmake -S . -B build/m43 -DBUILD_TESTING=ON -DMYGAMES_ENABLE_GATEWAY=OFF -DMYGAMES_ENABLE_TURBODB=OFF -DMYGAMES_ENABLE_FLOWIE=OFF
       - name: Build C11 contract tests
         run: cmake --build build/m43 --config Debug --parallel 2 --target mygames_recovery_gate_test mygames_recovery_wire_test mygames_recovery_decode_test
-      - name: Verify strict wire and durable cursor page boundaries
-        run: ctest --test-dir build/m43 -C Debug --output-on-failure --no-tests=error -R 'mygames[.](recovery_gate|recovery_wire|recovery_decode)$'
+      - name: Verify strict wire and cursor page boundaries
+        run: ctest --test-dir build/m43 -C Debug --output-on-failure --no-tests=error -R 'mygames[.](recovery_gate|recovery_wire|recovery_decode)'
+
+  persisted-ledger:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact consumer qualification HEAD
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Restore exact published SDK inputs with curl and SHA256
+        shell: bash
+        run: bash scripts/ci/restore-native-sdks.sh "$RUNNER_TEMP/mygames-consumer-sdk"
+      - name: Restore matching GmSSL published runtime ABI
+        shell: bash
+        run: bash scripts/ci/restore-gmssl.sh "$RUNNER_TEMP/mygames-consumer-gmssl"
+      - name: Configure local ledger-only C11 integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build/consumer-ledger -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_TESTING=ON -DMYGAMES_ENABLE_GATEWAY=OFF \
+            -DMYGAMES_ENABLE_TURBODB=ON -DMYGAMES_ENABLE_FLOWIE=ON \
+            -DCMAKE_PREFIX_PATH="$SDK_PREFIX_PATH"
+      - name: Build bounded transactional consumer and TurboDB fault test
+        run: cmake --build build/consumer-ledger --parallel 2 --target mygames_recovery_consumer_test
+      - name: Verify partial commits, restart, rollback and cursor fencing
+        run: ctest --test-dir build/consumer-ledger -C Debug --output-on-failure --no-tests=error -R 'mygames[.]recovery_consumer'
