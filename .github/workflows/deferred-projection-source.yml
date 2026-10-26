@@ -113,6 +113,8 @@ jobs:
             -R '^mygames[.](consumer_owner|consumer_projection)$'
       - name: Verify two SIGKILL windows and one Broker publish without synthetic replay
         shell: bash
+        env:
+          MYGAMES_DEFERRED_EVIDENCE_DIR: build/deferred/evidence
         run: |
           set -euo pipefail
           python3 scripts/ci/ci_flowie_deferred_projection.py \
@@ -133,4 +135,5 @@ jobs:
           path: |
             build/deferred/provenance.txt
             build/deferred/consumer-ldd.txt
+            build/deferred/evidence/
             build/deferred/mygames-build/Testing/Temporary/LastTest.log
