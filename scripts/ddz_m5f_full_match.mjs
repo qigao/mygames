@@ -175,6 +175,10 @@ async function first(){
   assert.equal(finished.turn_seat,3);
   assert.equal(finished.turn_id,String(turn));
   assert.deepEqual(finished.remaining,[0,17,17]);
+  assert.deepEqual(finished.score,{
+    base:3,bombs:0,spring:'landlord',multiplier:2,unit:6,
+    delta:[12,-6,-6]
+  },'20 real single-card leads with no farmer play must be a landlord spring');
 
   a.send('game.hand.get','m5f-finished-landlord',{game_id:gameId});
   assert.equal((await a.receive(priv('m5f-finished-landlord'))).cards_hex,
@@ -209,6 +213,10 @@ async function restarted(){
     assert.equal(result.automatic.phase,'finished');
     assert.equal(result.automatic.winner_seat,0);
     assert.equal(result.automatic.turn_id,saved.winner_turn);
+    assert.deepEqual(result.automatic.score,{
+      base:3,bombs:0,spring:'landlord',multiplier:2,unit:6,
+      delta:[12,-6,-6]
+    });
   }
   const [a,b,c]=members;
   a.send('game.play','m5f-play-19',{game_id:saved.game_id,
@@ -239,6 +247,7 @@ async function restarted(){
   assert.equal(bidding.phase,'bidding');
   publicOnly(bidding);
   assert.ok(!Object.hasOwn(bidding,'revealed_kitty_hex'));
+  assert.ok(!Object.hasOwn(bidding,'score'));
   for(let i=0;i<3;i++){
     const id='m5f-rematch-hand-'+i;
     members[i].send('game.hand.get',id,{game_id:rematch.game_id});
@@ -258,6 +267,7 @@ async function restarted(){
   const awarded=await b.receive(pub('m5f-rematch-awarded'));
   publicOnly(awarded);
   assert.equal(awarded.phase,'playing');
+  assert.ok(!Object.hasOwn(awarded,'score'));
   assert.equal(awarded.landlord_seat,2);
   assert.deepEqual(awarded.remaining,[17,17,20]);
   assert.equal(count(awarded.revealed_kitty_hex),3);
