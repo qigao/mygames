@@ -4,6 +4,8 @@
 
 #include <salts/error_codes.h>
 #include <salts/thread.h>
+#include <salts/clock.h>
+#include <stdatomic.h>
 #ifdef NDEBUG
 #undef NDEBUG
 #endif
@@ -122,6 +124,57 @@ static void close_from_other_thread(void *arg) {
     closing_thread *ctx = (closing_thread *)arg;
     ctx->outcome = mygames_consumer_owner_begin_close(ctx->owner);
 }
+#ifdef MYGAMES_CONSUMER_OWNER_TESTING
+/* Barrier is deliberately reached AFTER the Owner published SLOT_TAKEN,
+ * but BEFORE it touches the borrowed projection for the real COMMIT.
+ * Independent worker races cancel/close against that exact state, then
+ * releases the Owner thread. No timing-dependent CI scheduling assertion. */
+typedef struct taken_close_race {
+    mygames_consumer_owner *owner;
+    mygames_owner_ticket ticket;
+    atomic_int stage; /* 0=before TAKEN, 1=held, 2=worker finished */
+    mygames_owner_result cancel_result;
+    mygames_owner_result close_result;
+    mygames_owner_result admission_result;
+} taken_close_race;
+
+static void test_taken_barrier(void *arg) {
+    taken_close_race *race = (taken_close_race *)arg;
+    unsigned int i;
+    assert(race);
+    atomic_store_explicit(&race->stage, 1, memory_order_release);
+    for (i = 0u; i < 5000u; ++i) {
+        if (atomic_load_explicit(&race->stage, memory_order_acquire) == 2)
+            return;
+        cmeta_sleep_ms(1u);
+    }
+    assert(!"TAKEN test worker did not release Owner before deadline");
+}
+
+static void close_during_taken(void *arg) {
+    taken_close_race *race = (taken_close_race *)arg;
+    mygames_owner_ticket denied = {0};
+    unsigned int i;
+    char payload[MYGAMES_STORE_EVENT_MAX];
+    assert(race);
+    for (i = 0u; i < 5000u; ++i) {
+        if (atomic_load_explicit(&race->stage, memory_order_acquire) == 1)
+            break;
+        cmeta_sleep_ms(1u);
+    }
+    assert(i < 5000u);
+    race->cancel_result = mygames_consumer_owner_cancel(
+        race->owner, race->ticket);
+    race->close_result = mygames_consumer_owner_begin_close(race->owner);
+    canonical(payload, sizeof(payload), 21u, 1u);
+    race->admission_result = mygames_consumer_owner_admit_mqtt(
+        race->owner, MYGAMES_OUTBOX_MQTT_TOPIC,
+        payload, strlen(payload), 1u, 21u, &denied);
+    assert(denied.generation == 0u);
+    atomic_store_explicit(&race->stage, 2, memory_order_release);
+}
+#endif
+
 static mygames_consumer_owner *open_owner(
     mygames_consumer_projection *ledger) {
     mygames_consumer_owner *owner = NULL;
@@ -293,13 +346,39 @@ int main(int argc, char **argv) {
     assert_cursor(ledger, 19u);
 
     owner = open_owner(ledger);
+#ifdef MYGAMES_CONSUMER_OWNER_TESTING
+    {
+        taken_close_race race = {0};
+        race.owner = owner;
+        race.ticket = mqtt(owner, 20u, 1u);
+        atomic_init(&race.stage, 0);
+        assert(mygames_consumer_owner_test_set_taken_hook(
+                   owner, test_taken_barrier, &race) == MYGAMES_OWNER_OK);
+        assert(cmeta_thread_create(
+                   &threads[0], close_during_taken, &race) == SALTS_OK);
+        /* Actual TurboDB receipt/effect/cursor COMMIT must finish AFTER
+         * close and cancel observed a TAKEN event. No owner UAF allowed. */
+        pump_is(owner, MYGAMES_OWNER_APPLIED, 20u);
+        assert(cmeta_thread_join(&threads[0]) == SALTS_OK);
+        cmeta_thread_destroy(&threads[0]);
+        assert(race.cancel_result == MYGAMES_OWNER_BUSY);
+        assert(race.close_result == MYGAMES_OWNER_BUSY);
+        assert(race.admission_result == MYGAMES_OWNER_CLOSED);
+        assert(atomic_load_explicit(&race.stage, memory_order_acquire) == 2);
+        assert_cursor(ledger, 20u);
+        pump_is(owner, MYGAMES_OWNER_CLOSED, UINT64_MAX);
+        assert(mygames_consumer_owner_destroy(owner) == MYGAMES_OWNER_OK);
+    }
+#else
     (void)mqtt(owner, 20u, 1u);
     pump_is(owner, MYGAMES_OWNER_APPLIED, 20u);
     assert_cursor(ledger, 20u);
     assert(mygames_consumer_owner_destroy(owner) == MYGAMES_OWNER_OK);
+#endif
     mygames_consumer_projection_close(ledger);
     erase_test_db(argv[2]);
     puts("mygames.consumer_owner: PASS capacity, concurrent ingress, "
-         "gap/replay/conflict, cancellation, close and TurboDB rollback");
+         "gap/replay/conflict, cancel+close overlapping TAKEN COMMIT, "
+         "thread fencing and TurboDB rollback");
     return 0;
 }
