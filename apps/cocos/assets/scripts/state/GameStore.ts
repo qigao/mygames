@@ -82,9 +82,24 @@ export class GameStore {
         // before the fresh snapshot query, and cannot restore old cards.
         if (this.lastAckValue) {
             const ack = this.lastAckValue;
-            if (BigInt(next.room_epoch) < BigInt(ack.room_epoch) ||
-                (next.room_epoch === ack.room_epoch &&
-                 BigInt(next.game_id) < BigInt(ack.game_id))) return false;
+            const nextEpoch = BigInt(next.room_epoch);
+            const ackEpoch = BigInt(ack.room_epoch);
+            if (nextEpoch < ackEpoch) return false;
+            if (nextEpoch === ackEpoch) {
+                const nextGame = BigInt(next.game_id);
+                const ackGame = BigInt(ack.game_id);
+                if (nextGame < ackGame) return false;
+                if (nextGame === ackGame) {
+                    const phase = next.phase === 'bidding' ? 1 :
+                        next.phase === 'redeal_required' ? 2 :
+                        next.phase === 'playing' ? 3 : 4;
+                    if (phase < ack.phase) return false;
+                    const nextTurn = 'turn_id' in next ?
+                        next.turn_id : next.bid_turn_id;
+                    if (phase === ack.phase &&
+                        BigInt(nextTurn) < BigInt(ack.turn_id)) return false;
+                }
+            }
         }
         const current = this.currentView;
         if (current) {
@@ -95,7 +110,7 @@ export class GameStore {
                 const nextGame = BigInt(next.game_id);
                 const oldGame = BigInt(current.game_id);
                 if (nextGame < oldGame) return false;
-                if (nextGame === oldGame && this.hydratedValue) {
+                if (nextGame === oldGame) {
                     const rank = (x: GameSnapshot) =>
                         x.phase === 'bidding' ? 1 : x.phase === 'redeal_required' ?
                             2 : x.phase === 'playing' ? 3 : 4;
@@ -105,7 +120,9 @@ export class GameStore {
                             next.turn_id : next.bid_turn_id;
                         const p = 'turn_id' in current ?
                             current.turn_id : current.bid_turn_id;
-                        if (BigInt(n) <= BigInt(p)) return false;
+                        if (BigInt(n) < BigInt(p) ||
+                            (BigInt(n) === BigInt(p) && this.hydratedValue))
+                            return false;
                     }
                 }
             }
