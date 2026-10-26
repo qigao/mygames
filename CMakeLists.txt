@@ -186,6 +186,38 @@ if(MYGAMES_ENABLE_FLOWIE)
   target_compile_features(mygames_outbox PUBLIC c_std_11)
   target_include_directories(mygames_outbox PUBLIC games/doudizhu/include)
   target_link_libraries(mygames_outbox PUBLIC MyGames::Store)
+
+  # Optional M4.3 consumer-OWNER step: accepts only already-authenticated
+  # bounded HTTP page bytes. It cannot open a source archive, send PUBACK,
+  # or make another worker concurrently own the ledger.
+  add_library(mygames_recovery_consumer STATIC
+    games/doudizhu/src/recovery_consumer.c)
+  add_library(MyGames::RecoveryConsumer ALIAS mygames_recovery_consumer)
+  target_compile_features(mygames_recovery_consumer PUBLIC c_std_11)
+  target_include_directories(mygames_recovery_consumer PUBLIC
+    games/doudizhu/include)
+  target_link_libraries(mygames_recovery_consumer
+    PUBLIC MyGames::ConsumerProjection MyGames::RecoveryWire
+    PRIVATE MyGames::Outbox Salts::Core)
+  if(MSVC)
+    target_compile_options(mygames_recovery_consumer PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_recovery_consumer PRIVATE
+      -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  if(BUILD_TESTING)
+    add_executable(mygames_recovery_consumer_test
+      tests/recovery_consumer_test.c)
+    target_compile_definitions(mygames_recovery_consumer_test PRIVATE
+      MYGAMES_CONSUMER_FAULT_TESTING=1)
+    target_link_libraries(mygames_recovery_consumer_test PRIVATE
+      MyGames::RecoveryConsumer MyGames::Outbox Orm::C)
+    add_test(NAME mygames.recovery_consumer
+      COMMAND mygames_recovery_consumer_test
+        "${TurboDB_DRIVER_DIR}/turbodb_driver_sqlite${CMAKE_SHARED_MODULE_SUFFIX}"
+        "${CMAKE_CURRENT_BINARY_DIR}/mygames-recovery-consumer-ci.sqlite")
+  endif()
+
   add_executable(mygames_outbox_publisher apps/publisher/main.c)
   target_compile_features(mygames_outbox_publisher PRIVATE c_std_11)
   target_link_libraries(mygames_outbox_publisher PRIVATE
