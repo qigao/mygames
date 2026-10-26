@@ -55,6 +55,9 @@ static void roundtrip(const mygames_ddz_match *source) {
     REQUIRE(mygames_ddz_checkpoint_decode(encoded, bytes, &restored) ==
             MYGAMES_DDZ_CHECKPOINT_OK);
     REQUIRE(mygames_ddz_match_validate(&restored) == MYGAMES_DDZ_MATCH_OK);
+    REQUIRE(restored.scoring.bombs_rockets == source->scoring.bombs_rockets);
+    REQUIRE(restored.scoring.landlord_nonpass == source->scoring.landlord_nonpass);
+    REQUIRE(restored.scoring.farmers_nonpass == source->scoring.farmers_nonpass);
     REQUIRE(mygames_ddz_checkpoint_encode(&restored, reencoded,
                                           sizeof(reencoded), &reread) ==
             MYGAMES_DDZ_CHECKPOINT_OK);
@@ -92,6 +95,12 @@ static void roundtrip(const mygames_ddz_match *source) {
     memcpy(contaminated, encoded, sizeof(contaminated));
     contaminated[MYGAMES_DDZ_CHECKPOINT_V2_BYTES - 1u] = 1u;
     rewrite_checksum(contaminated);
+    REQUIRE(mygames_ddz_checkpoint_decode(contaminated, sizeof(contaminated),
+        &candidate) == MYGAMES_DDZ_CHECKPOINT_CORRUPT);
+    /* Rechecksums cannot conceal impossible scoring history. The baseline
+     * has 0 or 1 admitted cards; it cannot carry 10 bomb/rocket events. */
+    memcpy(contaminated, encoded, sizeof(contaminated));
+    contaminated[216u] = 10u; rewrite_checksum(contaminated);
     REQUIRE(mygames_ddz_checkpoint_decode(contaminated, sizeof(contaminated),
         &candidate) == MYGAMES_DDZ_CHECKPOINT_CORRUPT);
     memcpy(contaminated, encoded, sizeof(contaminated));
