@@ -135,6 +135,32 @@ static void terminal_job(recovery_job *job) {
     atomic_store_explicit(&job->in_use, false, memory_order_release);
 }
 
+#ifdef MYGAMES_RECOVERY_TEST_TRACE
+/* Deterministic fault qualification ONLY. A genuine mTLS request is held
+ * before the READONLY snapshot response until the harness has observed
+ * a real Flowie QoS1 callback and released this per-run file. No new
+ * production listener behavior, relaxed authentication or infinite wait.
+ * The filename is an isolated test fixture, NEVER an access-control input. */
+static bool test_wait_for_mqtt_release(void) {
+    const char *path = getenv("MYGAMES_RECOVERY_TEST_HOLD_FILE");
+    uint64_t start;
+    if (!path || !path[0]) return true;
+    if (strlen(path) > 500u) return false;
+    puts("MYGAMES_RECOVERY_TEST_HTTP_HELD");
+    fflush(stdout);
+    start = cmeta_monotonic_ms();
+    while (cmeta_monotonic_ms() - start < 4000u) {
+        FILE *release = fopen(path, "rb");
+        if (release != NULL) {
+            fclose(release);
+            return true;
+        }
+        cmeta_sleep_ms(10u);
+    }
+    return false; /* fail closed, never retry/admit silently */
+}
+#endif
+
 static void recovery_worker(void *user) {
     recovery_job *job = (recovery_job *)user;
     mygames_store_archive_page page = {0};
@@ -155,6 +181,14 @@ static void recovery_worker(void *user) {
     }
 
     {
+#ifdef MYGAMES_RECOVERY_TEST_TRACE
+        if (!test_wait_for_mqtt_release()) {
+            /* No source read/settlement if the harness fails to release.
+             * Subsequent generic 503 response is bounded and read-only. */
+            status_code = 503u;
+        } else
+#endif
+        {
         const mygames_store_status st = mygames_room_store_open_readonly(
             job->app->sqlite_driver, job->app->source_database, &source);
         if (st == MYGAMES_STORE_OK) {
@@ -171,6 +205,7 @@ static void recovery_worker(void *user) {
                          body, sizeof(body), &bytes) ==
                          MYGAMES_RECOVERY_WIRE_OK)
                 status_code = 200u;
+        }
         }
     }
     mygames_room_store_close(source);
