@@ -356,6 +356,10 @@ if(MYGAMES_ENABLE_FLOWIE)
       add_executable(mygames_flowie_deferred_consumer_test
         tests/flowie_deferred_consumer.c)
       target_compile_features(mygames_flowie_deferred_consumer_test PRIVATE c_std_11)
+      # Compile only this test fixture with the existing receipt-insert
+      # rollback hook. No installed/production ConsumerProjection ABI change.
+      target_compile_definitions(mygames_flowie_deferred_consumer_test PRIVATE
+        MYGAMES_CONSUMER_FAULT_TESTING=1)
       target_link_libraries(mygames_flowie_deferred_consumer_test PRIVATE
         Flowie::Client MyGames::ConsumerOwner MyGames::ConsumerProjection
         MyGames::Outbox Salts::Core Salts::Platform Orm::C)
