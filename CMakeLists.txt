@@ -254,6 +254,8 @@ if(MYGAMES_ENABLE_FLOWIE)
     add_executable(mygames_recovery_remote_consumer_test
       apps/consumer/recovery_remote_consumer.c)
     target_compile_features(mygames_recovery_remote_consumer_test PRIVATE c_std_11)
+    target_compile_definitions(mygames_recovery_remote_consumer_test PRIVATE
+      MYGAMES_RECOVERY_FAULT_TESTING=1)
     target_link_libraries(mygames_recovery_remote_consumer_test PRIVATE
       MyGames::RecoveryConsumer MyGames::Outbox CHttp::Client
       Salts::Platform Orm::C)
