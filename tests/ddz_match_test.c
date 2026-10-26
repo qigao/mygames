@@ -351,10 +351,16 @@ static void test_real_bomb_and_rocket_only_after_legal_play(void) {
     unsigned int i, own = 0u, other = 0u;
     const uint64_t four = rank_cards(0u, 4u);
     const uint64_t rocket = (UINT64_C(1) << 52u) | (UINT64_C(1) << 53u);
-    for (i = 0u; i < MYGAMES_DDZ_CARDS && own < 20u; ++i) {
-        if ((selected & (UINT64_C(1) << i)) == 0u) {
-            selected |= UINT64_C(1) << i;
+    {   /* Account for preselected four-of-kind + two jokers; 'own'
+         * counts deck extraction below, NOT this selection loop. */
+        unsigned int chosen = count_cards(selected);
+        for (i = 0u; i < MYGAMES_DDZ_CARDS && chosen < 20u; ++i) {
+            if ((selected & (UINT64_C(1) << i)) == 0u) {
+                selected |= UINT64_C(1) << i;
+                ++chosen;
+            }
         }
+        REQUIRE(chosen == 20u);
     }
     REQUIRE(count_cards(selected) == 20u);
     for (i = 0u; i < MYGAMES_DDZ_CARDS; ++i) {
