@@ -163,6 +163,7 @@ int main(int argc, char **argv) {
     const bool second = argc == 5 && strcmp(argv[1], "after-commit-before-ack") == 0;
     const bool third = argc == 5 && strcmp(argv[1], "replay-and-ack") == 0;
     const bool fourth = argc == 5 && strcmp(argv[1], "post-ack-no-redelivery") == 0;
+    const bool rollback_fault = argc == 5 && strcmp(argv[1], "rollback-before-cursor") == 0;
     mygames_consumer_projection *projection = NULL;
     mygames_consumer_owner *owner = NULL;
     flowie_mqtt_client_t *client = NULL;
@@ -179,7 +180,8 @@ int main(int argc, char **argv) {
     mygames_owner_result committed;
     int rc = 1;
     int connect_enqueue = -1;
-    if ((!first && !second && !third && !fourth) || !password || !*password ||
+    if ((!first && !second && !third && !fourth && !rollback_fault) ||
+        !password || !*password ||
         !argv[2][0] || !argv[3][0] || !argv[4][0])
         return 2;
     mode = argv[1];
@@ -294,6 +296,25 @@ int main(int argc, char **argv) {
                 goto cleanup;
             marker("MYGAMES_DEFERRED_BEFORE_COMMIT");
             for (;;) cmeta_sleep_ms(100u); /* killed by CI, never settles */
+        }
+        if (rollback_fault) {
+            /* Test-only true TurboDB failure AFTER receipt INSERT but
+             * BEFORE cursor+effect UPDATE. No native PUBACK is submitted,
+             * and the Broker's original QoS1 must remain unretired. */
+#ifdef MYGAMES_CONSUMER_FAULT_TESTING
+            mygames_consumer_projection_fail_after_receipt_once(projection);
+#else
+            goto cleanup;
+#endif
+            committed = mygames_consumer_owner_pump_one(owner, &cursor);
+            if (committed != MYGAMES_OWNER_QUARANTINED ||
+                mygames_consumer_projection_snapshot(
+                    projection, namespace_id, CONSUMER_ID,
+                    &cursor, &effects) != MYGAMES_CONSUMER_APPLIED ||
+                cursor != 0u || effects != 0u)
+                goto cleanup;
+            marker("MYGAMES_DEFERRED_ROLLBACK_NO_ACK");
+            for (;;) cmeta_sleep_ms(100u); /* SIGKILL by supervised CI */
         }
         committed = mygames_consumer_owner_pump_one(owner, &cursor);
         if (committed != (second ? MYGAMES_OWNER_APPLIED : MYGAMES_OWNER_REPLAY) ||
