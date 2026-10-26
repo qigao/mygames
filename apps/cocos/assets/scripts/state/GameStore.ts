@@ -77,6 +77,15 @@ export class GameStore {
      * the UI backwards after a newer confirmed turn or recovered Owner. */
     applySnapshot(next: GameSnapshot): boolean {
         if (!this.roomIdValue || next.room_id !== this.roomIdValue) return false;
+        // An already committed Game ACK is also a monotonic public floor.
+        // An older unsolicited snapshot may arrive after that ACK but
+        // before the fresh snapshot query, and cannot restore old cards.
+        if (this.lastAckValue) {
+            const ack = this.lastAckValue;
+            if (BigInt(next.room_epoch) < BigInt(ack.room_epoch) ||
+                (next.room_epoch === ack.room_epoch &&
+                 BigInt(next.game_id) < BigInt(ack.game_id))) return false;
+        }
         const current = this.currentView;
         if (current) {
             const nextEpoch = BigInt(next.room_epoch);
