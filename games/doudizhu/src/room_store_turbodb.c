@@ -1,4 +1,5 @@
 #include "mygames/room_store.h"
+#include "mygames/ddz_match_checkpoint.h"
 
 #include <orm.h>
 #include <orm_runtime.h>
@@ -298,7 +299,13 @@ static mygames_store_status create_schema(mygames_room_store *s) {
         "ticket_sha256 blob not null unique check(length(ticket_sha256)=32),"
         "generation integer not null check(generation>0),"
         "attached integer not null check(attached in (0,1)),"
-        "expires_at_ms integer not null check(expires_at_ms>=0))"
+        "expires_at_ms integer not null check(expires_at_ms>=0))",
+        "create table if not exists mg_game_state ("
+        "room_id text primary key,"
+        "epoch integer not null check(epoch>0),"
+        "game_id integer not null check(game_id>0),"
+        "seq integer not null check(seq>0),"
+        "private_image blob not null check(length(private_image)=216))"
     };
     orm_transaction_t *tx = NULL;
     mygames_store_status st = begin_transaction(s, &tx);
@@ -841,6 +848,206 @@ mygames_store_status mygames_room_store_player_high_watermark(
     else *out_player = (mygames_player_id)maximum;
     orm_result_destroy(result);
     return status;
+}
+
+/* M5c: private game image is versioned C11 bytes, never a native C
+ * struct or SQLite file opened by the application. All access stays on the
+ * unique ORM Room Owner; SQL credentials are NOT client-visible. */
+typedef struct stored_private_game {
+    bool found;
+    uint64_t epoch;
+    uint64_t game_id;
+    uint64_t sequence;
+    uint8_t image[MYGAMES_DDZ_CHECKPOINT_V1_BYTES];
+    mygames_ddz_match match;
+} stored_private_game;
+
+static bool game_room_id_valid(const char *name) {
+    size_t i;
+    if (!name) return false;
+    for (i = 0u; i < MYGAMES_ROOM_ID_CAPACITY; ++i) {
+        const unsigned char ch = (unsigned char)name[i];
+        if (!ch) return i != 0u;
+        if (!((ch >= 'a' && ch <= 'z') ||
+              (ch >= 'A' && ch <= 'Z') ||
+              (ch >= '0' && ch <= '9') || ch == '-' || ch == '_'))
+            return false;
+    }
+    return false;
+}
+
+static bool game_matches_room(const mygames_ddz_match *match,
+                              const mygames_room *room) {
+    size_t i;
+    if (!match || !room || room->phase != MYGAMES_ROOM_STARTING ||
+        room->players != MYGAMES_DDZ_SEATS) return false;
+    for (i = 0u; i < MYGAMES_DDZ_SEATS; ++i)
+        if (!room->seats[i].player || !room->seats[i].ready ||
+            room->seats[i].player != match->players[i])
+            return false;
+    return true;
+}
+
+static mygames_store_status private_game_read(
+    mygames_room_store *store, orm_transaction_t *tx,
+    const char *room_id, stored_private_game *out) {
+    const char *sql =
+        "select epoch,game_id,seq,private_image "
+        "from mg_game_state where room_id=?1";
+    orm_value_t arg;
+    orm_result_t *result = NULL;
+    orm_error_t error;
+    orm_blob_t blob = {0};
+    orm_status_t rc;
+    mygames_store_status st;
+    stored_private_game game = {0};
+    uint64_t count = 0u;
+    int64_t epoch = 0, game_id = 0, sequence = 0;
+    if (!store || !game_room_id_valid(room_id) || !out)
+        return MYGAMES_STORE_INVALID;
+    arg = orm_text(room_id);
+    st = backend_query(store, tx, sql, &arg, 1u, &result);
+    if (st != MYGAMES_STORE_OK) return st;
+    orm_error_init(&error);
+    rc = orm_result_row_count(result, &count, &error);
+    if (rc != ORM_STATUS_OK) {
+        st = error_from_orm(store, rc, &error);
+        goto done;
+    }
+    if (count == 0u) goto done;
+    if (count != 1u) { st = MYGAMES_STORE_CORRUPT; goto done; }
+    rc = orm_result_get_int64(result, 0u, 0u, &epoch, &error);
+    if (rc == ORM_STATUS_OK)
+        rc = orm_result_get_int64(result, 0u, 1u, &game_id, &error);
+    if (rc == ORM_STATUS_OK)
+        rc = orm_result_get_int64(result, 0u, 2u, &sequence, &error);
+    if (rc == ORM_STATUS_OK)
+        rc = orm_result_get_blob(result, 0u, 3u, &blob, &error);
+    if (rc != ORM_STATUS_OK) {
+        st = error_from_orm(store, rc, &error);
+        goto done;
+    }
+    if (epoch <= 0 || game_id <= 0 || sequence <= 0 || !blob.data ||
+        blob.size != sizeof(game.image)) {
+        st = MYGAMES_STORE_CORRUPT;
+        goto done;
+    }
+    memcpy(game.image, blob.data, sizeof(game.image));
+    if (mygames_ddz_checkpoint_decode(game.image, sizeof(game.image),
+                                     &game.match) != MYGAMES_DDZ_CHECKPOINT_OK ||
+        game.match.room_epoch != (uint64_t)epoch ||
+        game.match.game_id != (uint64_t)game_id) {
+        st = MYGAMES_STORE_CORRUPT;
+        goto done;
+    }
+    game.epoch = (uint64_t)epoch;
+    game.game_id = (uint64_t)game_id;
+    game.sequence = (uint64_t)sequence;
+    game.found = true;
+done:
+    orm_result_destroy(result);
+    if (st == MYGAMES_STORE_OK) *out = game;
+    return st;
+}
+
+/* Claiming a new Room Owner Epoch fences EVERY durable game in the same
+ * transaction, alongside the public room checkpoint and leases. Do not
+ * revive stale game epochs after restart or let a partial migration commit.
+ * At most 32 private game images exist in this bounded process. */
+static mygames_store_status rebind_private_games(
+    mygames_room_store *store, orm_transaction_t *tx,
+    const mygames_room_directory *rooms, uint64_t old_epoch) {
+    struct game_rebind {
+        char room_id[MYGAMES_ROOM_ID_CAPACITY];
+        uint8_t image[MYGAMES_DDZ_CHECKPOINT_V1_BYTES];
+        uint64_t sequence;
+    } games[MYGAMES_ROOM_DIRECTORY_CAPACITY] = {{0}};
+    orm_result_t *result = NULL;
+    orm_error_t error;
+    orm_status_t rc;
+    mygames_store_status st;
+    uint64_t count = 0u;
+    size_t i;
+    st = backend_query(store, tx,
+        "select room_id,epoch,game_id,seq,private_image "
+        "from mg_game_state order by room_id", NULL, 0u, &result);
+    if (st != MYGAMES_STORE_OK) return st;
+    orm_error_init(&error);
+    rc = orm_result_row_count(result, &count, &error);
+    if (rc != ORM_STATUS_OK) {
+        st = error_from_orm(store, rc, &error);
+        goto done;
+    }
+    if (count > MYGAMES_ROOM_DIRECTORY_CAPACITY) {
+        st = MYGAMES_STORE_CORRUPT;
+        goto done;
+    }
+    for (i = 0u; i < (size_t)count; ++i) {
+        orm_string_view_t name = {0};
+        orm_blob_t blob = {0};
+        int64_t epoch = 0, id = 0, sequence = 0;
+        mygames_ddz_match game = {0};
+        size_t output = 0u;
+        rc = orm_result_get_text(result, i, 0u, &name, &error);
+        if (rc == ORM_STATUS_OK)
+            rc = orm_result_get_int64(result, i, 1u, &epoch, &error);
+        if (rc == ORM_STATUS_OK)
+            rc = orm_result_get_int64(result, i, 2u, &id, &error);
+        if (rc == ORM_STATUS_OK)
+            rc = orm_result_get_int64(result, i, 3u, &sequence, &error);
+        if (rc == ORM_STATUS_OK)
+            rc = orm_result_get_blob(result, i, 4u, &blob, &error);
+        if (rc != ORM_STATUS_OK) {
+            st = error_from_orm(store, rc, &error);
+            goto done;
+        }
+        if (!name.data || name.len == 0u ||
+            name.len >= MYGAMES_ROOM_ID_CAPACITY ||
+            !blob.data || blob.size != MYGAMES_DDZ_CHECKPOINT_V1_BYTES ||
+            epoch <= 0 || (uint64_t)epoch != old_epoch ||
+            id <= 0 || sequence <= 0) {
+            st = MYGAMES_STORE_CORRUPT;
+            goto done;
+        }
+        memcpy(games[i].room_id, name.data, name.len);
+        games[i].room_id[name.len] = '\0';
+        if (!game_room_id_valid(games[i].room_id) ||
+            mygames_ddz_checkpoint_decode(blob.data, blob.size, &game) !=
+                MYGAMES_DDZ_CHECKPOINT_OK ||
+            game.room_epoch != old_epoch || game.game_id != (uint64_t)id ||
+            !game_matches_room(&game,
+                mygames_room_directory_get(rooms, games[i].room_id))) {
+            st = MYGAMES_STORE_CORRUPT;
+            goto done;
+        }
+        game.room_epoch = old_epoch + 1u;
+        if (mygames_ddz_checkpoint_encode(&game, games[i].image,
+                sizeof(games[i].image), &output) != MYGAMES_DDZ_CHECKPOINT_OK ||
+            output != sizeof(games[i].image)) {
+            st = MYGAMES_STORE_CORRUPT;
+            goto done;
+        }
+        games[i].sequence = (uint64_t)sequence;
+    }
+done:
+    orm_result_destroy(result);
+    if (st != MYGAMES_STORE_OK) return st;
+    for (i = 0u; i < (size_t)count; ++i) {
+        orm_value_t args[5];
+        uint64_t affected = 0u;
+        args[0] = orm_i64((int64_t)(old_epoch + 1u));
+        args[1] = orm_blob(games[i].image, sizeof(games[i].image));
+        args[2] = orm_text(games[i].room_id);
+        args[3] = orm_i64((int64_t)old_epoch);
+        args[4] = orm_i64((int64_t)games[i].sequence);
+        st = execute(store, tx,
+            "update mg_game_state set epoch=?1,private_image=?2 "
+            "where room_id=?3 and epoch=?4 and seq=?5",
+            args, 5u, &affected);
+        if (st != MYGAMES_STORE_OK) return st;
+        if (affected != 1u) return MYGAMES_STORE_STALE_EPOCH;
+    }
+    return MYGAMES_STORE_OK;
 }
 
 static mygames_store_status claim_epoch_internal(
