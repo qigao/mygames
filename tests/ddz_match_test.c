@@ -117,6 +117,12 @@ static void test_secure_deal_and_bid_privacy(void) {
     REQUIRE(next.bid_count == 1u && next.bid_turn_id == 2u &&
             next.highest_bid == 1u && next.highest_seat == 0u &&
             event.next_bid_seat == 1u && event.revealed_kitty == 0u);
+    {   /* A restored state cannot invent a landlord who has never bid. */
+        mygames_ddz_match corrupt = next;
+        corrupt.highest_seat = 2u;
+        REQUIRE(mygames_ddz_match_validate(&corrupt) ==
+                MYGAMES_DDZ_MATCH_INVALID_STATE);
+    }
     match = next;
     REQUIRE(mygames_ddz_match_bid(&match, 42u, 500u, 202u, 1u, 2u,
                                    &next, &event) == MYGAMES_DDZ_MATCH_STALE_TURN);
@@ -164,6 +170,12 @@ static void test_early_three_all_pass_and_faults(void) {
     REQUIRE(next.phase == MYGAMES_DDZ_MATCH_PLAYING &&
             next.bid_count == 1u && next.highest_seat == 0u);
     REQUIRE(result.landlord_seat == 0u && count_cards(result.revealed_kitty) == 3u);
+    {   /* An early conclusion requires a legitimate winning 3-point bid. */
+        mygames_ddz_match corrupt = next;
+        corrupt.highest_bid = 2u;
+        REQUIRE(mygames_ddz_match_validate(&corrupt) ==
+                MYGAMES_DDZ_MATCH_INVALID_STATE);
+    }
     REQUIRE(mygames_ddz_match_bid(&next, 42u, 500u, 202u, 2u, 0u,
                                    &match, &result) == MYGAMES_DDZ_MATCH_WRONG_PHASE);
     match = begin_test_match();

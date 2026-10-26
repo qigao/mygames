@@ -200,6 +200,21 @@ mygames_ddz_match_status mygames_ddz_match_validate(const mygames_ddz_match *mat
             match->highest_seat != MYGAMES_DDZ_NO_SEAT :
             match->highest_seat >= MYGAMES_DDZ_SEATS))
         return MYGAMES_DDZ_MATCH_INVALID_STATE;
+    /* A positive bid must originate from an already admitted bidding seat.
+     * A score-3 winner must be the last bidder, because it ends bidding. */
+    if (match->highest_bid != 0u) {
+        bool seen_bidder = false;
+        if (match->bid_count == 0u) return MYGAMES_DDZ_MATCH_INVALID_STATE;
+        for (i = 0u; i < match->bid_count; ++i) {
+            if ((match->bid_start_seat + i) % MYGAMES_DDZ_SEATS ==
+                match->highest_seat) seen_bidder = true;
+        }
+        if (!seen_bidder ||
+            (match->highest_bid == 3u &&
+             (match->bid_start_seat + match->bid_count - 1u) %
+                MYGAMES_DDZ_SEATS != match->highest_seat))
+            return MYGAMES_DDZ_MATCH_INVALID_STATE;
+    }
     for (i = 0u; i < MYGAMES_DDZ_SEATS; ++i) {
         unsigned int j;
         if (match->players[i] == 0u) return MYGAMES_DDZ_MATCH_INVALID_STATE;
@@ -242,6 +257,7 @@ mygames_ddz_match_status mygames_ddz_match_validate(const mygames_ddz_match *mat
         return MYGAMES_DDZ_MATCH_OK;
     }
     if (match->highest_bid == 0u || match->bid_turn_seat != MYGAMES_DDZ_NO_SEAT ||
+        (match->bid_count != 3u && match->highest_bid != 3u) ||
         mygames_ddz_round_validate(&match->round) != MYGAMES_DDZ_OK ||
         match->round.landlord_seat != match->highest_seat ||
         match->round.finished != (match->phase == MYGAMES_DDZ_MATCH_FINISHED))
