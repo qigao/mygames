@@ -55,7 +55,7 @@ static void assert_public_ack(const void *payload, size_t bytes, uint64_t seq,
     memcpy(decoded, payload, bytes);
     decoded[bytes] = '\0';
     n = snprintf(expected_sequence, sizeof(expected_sequence),
-                 "\"seq\":%" PRIu64, seq);
+                 "\"seq\":\"%" PRIu64 "\"", seq);
     assert(n > 0 && (size_t)n < sizeof(expected_sequence));
     n = snprintf(expected_action, sizeof(expected_action),
                  "\"action\":\"%s\"", operation);

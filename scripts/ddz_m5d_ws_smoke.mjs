@@ -96,7 +96,7 @@ async function initial() {
   assert.equal(started.action,'start');
   const gid=String(started.game_id);
   assert.match(gid,/^[1-9][0-9]*$/);
-  assert.ok(started.seq>roomAck.seq || started.seq>0);
+  assert.ok(BigInt(started.seq)>0n);
   a.send('game.snapshot.get','m5d-snap-bidding',{game_id:gid});
   const before=await a.receive(gameSnapshot('m5d-snap-bidding'));
   assert.equal(before.phase,'bidding');
@@ -140,7 +140,7 @@ async function initial() {
   a.send('game.play','m5d-first-play',{game_id:gid,turn_id:'1',cards_hex:first});
   const play=await a.receive(ack('m5d-first-play'));
   assert.equal(play.action,'play');
-  assert.ok(play.seq>bid.seq);
+  assert.ok(BigInt(play.seq)>BigInt(bid.seq));
   b.send('game.snapshot.get','m5d-snap-after-play',{game_id:gid});
   const snap=await b.receive(gameSnapshot('m5d-snap-after-play'));
   assert.equal(snap.last_cards_hex,first);

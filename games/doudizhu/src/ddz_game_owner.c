@@ -132,8 +132,8 @@ static mygames_ddz_owner_status commit_candidate(
     n = snprintf(ack, sizeof(ack),
         "{\"v\":1,\"type\":\"game.ack\",\"action\":\"%s\","
         "\"request_id\":\"%s\",\"room_id\":\"%s\","
-        "\"room_epoch\":%" PRIu64 ",\"game_id\":%" PRIu64 ","
-        "\"phase\":%u,\"turn_id\":%" PRIu64 ",\"seq\":%" PRIu64 "}",
+        "\"room_epoch\":\"%" PRIu64 "\",\"game_id\":\"%" PRIu64 "\","
+        "\"phase\":%u,\"turn_id\":\"%" PRIu64 "\",\"seq\":\"%" PRIu64 "\"}",
         operation, request_id, owner->room_id, owner->epoch,
         candidate->game_id, (unsigned int)candidate->phase,
         public_turn, *owner->sequence + 1u);

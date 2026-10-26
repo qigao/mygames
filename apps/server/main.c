@@ -908,10 +908,14 @@ static void ws_handle_command(dev_server_state *state, client_peer *client,
          * The actual game and private deal follow in a separate, exact
          * stage->COMMIT->Game ACK transaction. */
 #if defined(MYGAMES_WITH_TURBODB)
-        if (!state->store) result = MYGAMES_ROOM_WRONG_PHASE;
-        else
+        result = state->store ?
+            mygames_room_directory_start(target, identity->player) :
+            MYGAMES_ROOM_WRONG_PHASE;
+#else
+        /* Do not enter an unplayable STARTING room without the physical
+         * TurboDB ledger; never silently downgrade durable gameplay. */
+        result = MYGAMES_ROOM_WRONG_PHASE;
 #endif
-            result = mygames_room_directory_start(target, identity->player);
         changed = result == MYGAMES_ROOM_OK;
         room = mygames_room_directory_get_player(target, identity->player);
     } else if (command.kind == MYGAMES_COMMAND_LEAVE_ROOM) {
