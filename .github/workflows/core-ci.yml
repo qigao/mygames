@@ -1,0 +1,124 @@
+name: Core C11
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  room:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure C11 core (without external SDK)
+        run: cmake -S . -B build -DBUILD_TESTING=ON -DMYGAMES_ENABLE_GATEWAY=OFF
+      - name: Build
+        run: cmake --build build --config Debug --parallel 2
+      - name: Test
+        run: ctest --test-dir build -C Debug --output-on-failure
+
+  protocol:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install pinned TypeScript syntax checker
+        run: npm install --no-save --no-package-lock --ignore-scripts --no-audit --no-fund typescript@5.9.3
+      - name: Validate wire, Cocos scene graph and TypeScript UI syntax
+        run: node --experimental-strip-types --test tests/protocol.test.mjs tests/cocos_scene.test.mjs tests/cocos_ts_syntax.test.mjs tests/game_socket.test.mjs
+
+
+  gateway-linux-sdk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Download pinned SDKs using curl and SHA256 (no mono)
+        shell: bash
+        run: bash scripts/ci/restore-native-sdks.sh "$RUNNER_TEMP/mygames-sdk"
+      - name: Cache pinned GmSSL native static SDK
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/mygames-gmssl/installed/x64-linux
+          key: mygames-gmssl-3.2.0-port12-linux-x64-v1
+      - name: Restore exact GmSSL port 12 (source build, no mono)
+        shell: bash
+        run: bash scripts/ci/restore-gmssl.sh "$RUNNER_TEMP/mygames-gmssl"
+      - name: Configure exact CHttp/CNet installed SDK consumer
+        shell: bash
+        run: |
+          cmake -S . -B build/gateway -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=ON -DMYGAMES_ENABLE_GATEWAY=ON \
+            -DMYGAMES_ENABLE_TURBODB=ON -DMYGAMES_ENABLE_FLOWIE=ON \
+            -DCMAKE_PREFIX_PATH="$SDK_PREFIX_PATH"
+      - name: Build CHttp gateway and CFlow Owner conformance
+        run: cmake --build build/gateway --target mygames_recovery_service mygames_recovery_native_client_test mygames_server mygames_cflow_owner_test mygames_turbodb_store_test mygames_room_gateway_probe mygames_idle_expiry_probe mygames_outbox_publisher mygames_flowie_broker_test mygames_outbox_seed_test mygames_outbox_audit_test mygames_outbox_contract_test mygames_flowie_acl_client_test mygames_consumer_projection_test mygames_flowie_consumer_projection_audit mygames_event_reconcile_test mygames_archive_corrupt_test --parallel 2
+      - name: Verify worker isolation, bounded queue and shutdown drain
+        run: ctest --test-dir build/gateway -C Release --output-on-failure -R 'mygames[.]cflow_owner'
+      - name: Validate transactional TurboDB room persistence and outbox
+        run: ctest --test-dir build/gateway -C Release --output-on-failure -R 'mygames[.]turbodb_store'
+      - name: Reject private fields and incorrect room event sequence
+        run: ctest --test-dir build/gateway -C Release --output-on-failure -R 'mygames[.]outbox_contract'
+      - name: Real Flowie MQTT QoS1 Outbox settlement and replay
+        run: |
+          python3 scripts/ci/ci_flowie_outbox_smoke.py \
+            build/gateway/mygames_flowie_broker_test \
+            build/gateway/mygames_outbox_publisher \
+            build/gateway/mygames_outbox_seed_test \
+            build/gateway/mygames_outbox_audit_test \
+            "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so"
+      - name: Durable subscriber receipt, projection and rollback qualification
+        run: ctest --test-dir build/gateway -C Release --output-on-failure -R 'mygames[.]consumer_projection'
+      - name: Reject corrupted source archive and forged consumer receipts
+        run: |
+          python3 scripts/ci/ci_reconcile_negative.py \
+            build/gateway/mygames_outbox_seed_test \
+            build/gateway/mygames_archive_corrupt_test \
+            build/gateway/mygames_event_reconcile_test \
+            build/gateway/mygames_flowie_consumer_projection_audit \
+            "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so"
+      - name: Authenticated Flowie broker service ACL and subscriber fanout
+        run: |
+          python3 scripts/ci/ci_flowie_acl_smoke.py \
+            build/gateway/mygames_flowie_broker_test \
+            build/gateway/mygames_flowie_acl_client_test \
+            build/gateway/mygames_outbox_publisher \
+            build/gateway/mygames_outbox_seed_test \
+            build/gateway/mygames_outbox_audit_test \
+            build/gateway/mygames_flowie_consumer_projection_audit \
+            build/gateway/mygames_event_reconcile_test \
+            "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so"
+      - name: HTTP/WS real four-client test
+        run: python3 scripts/ci/ci_gateway_smoke.py build/gateway/mygames_server
+      - name: Verify CLOSE survives ordinary CFlow mailbox FULL
+        run: python3 scripts/ci/ci_terminal_stress.py build/gateway/mygames_server
+      - name: Autonomous no-ingress expiry, transaction journal and Outbox
+        run: |
+          python3 scripts/ci/ci_idle_expiry_smoke.py \
+            build/gateway/mygames_server \
+            "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so"
+      - name: Real persisted Room Owner WebSocket and fail-closed restart
+        run: |
+          python3 scripts/ci/ci_persistent_gateway_smoke.py \
+            build/gateway/mygames_server \
+            "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so"
+      - name: Real CHttp/CNet mTLS readonly recovery and certificate rejection
+        run: |
+          python3 scripts/ci/ci_recovery_mtls.py \
+            build/gateway/mygames_recovery_service \
+            build/gateway/mygames_outbox_seed_test \
+            "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so" \
+            build/gateway/mygames_recovery_native_client_test
