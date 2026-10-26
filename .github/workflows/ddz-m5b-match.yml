@@ -1,0 +1,92 @@
+name: M5b Dou Dizhu secure bidding and Game Owner (C11)
+
+'on':
+  pull_request:
+    paths:
+      - 'games/doudizhu/src/ddz_match.c'
+      - 'games/doudizhu/include/mygames/ddz_match.h'
+      - 'games/doudizhu/src/ddz_round.c'
+      - 'games/doudizhu/include/mygames/ddz_round.h'
+      - 'games/doudizhu/src/room.c'
+      - 'games/doudizhu/include/mygames/room.h'
+      - 'tests/ddz_match_test.c'
+      - 'CMakeLists.txt'
+      - '.github/workflows/ddz-m5b-match.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mygames-ddz-m5b-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-match:
+    name: Secure gameplay / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Configure real host secure C11 game and room core
+        run: >-
+          cmake -S . -B build/ddz-m5b
+          -DBUILD_TESTING=ON
+          -DMYGAMES_ENABLE_GATEWAY=OFF
+          -DMYGAMES_ENABLE_TURBODB=OFF
+          -DMYGAMES_ENABLE_FLOWIE=OFF
+
+      - name: Build full C11 game and room core with warnings as errors
+        run: cmake --build build/ddz-m5b --config Debug --parallel 2
+
+      - name: Run full existing and new C11 CTests
+        run: >-
+          ctest --test-dir build/ddz-m5b -C Debug --no-tests=error
+          --output-on-failure --timeout 60
+
+      - name: Repeat secure OS shuffle, bidding, hand-privacy and gameplay
+        run: >-
+          ctest --test-dir build/ddz-m5b -C Debug --no-tests=error
+          --output-on-failure --timeout 60 --repeat until-fail:20
+          -R '^mygames[.]ddz_match$'
+
+  game-source-asan:
+    name: Real game source ASan+UBSan / Linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Build only true C11 game and Owner state with sanitizers
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build/ddz-m5b-asan \
+            -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON \
+            -DMYGAMES_ENABLE_GATEWAY=OFF -DMYGAMES_ENABLE_TURBODB=OFF \
+            -DMYGAMES_ENABLE_FLOWIE=OFF \
+            -DCMAKE_C_FLAGS='-fsanitize=address,undefined -g -fno-omit-frame-pointer -Wall -Wextra -Wpedantic -Werror' \
+            -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=address,undefined'
+          cmake --build build/ddz-m5b-asan --target mygames_ddz_match_test --parallel 2
+
+      - name: Run actual shuffle, match and hand tests under sanitizers
+        shell: bash
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          set -euo pipefail
+          ctest --test-dir build/ddz-m5b-asan --no-tests=error \
+            --output-on-failure --timeout 60 --repeat until-fail:20 \
+            -R '^mygames[.]ddz_match$'

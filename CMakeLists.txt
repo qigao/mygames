@@ -33,6 +33,24 @@ else()
   target_compile_options(mygames_ddz_round PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
 
+# M5b: real CSPRNG deal + staged bidding and Game Owner validation.
+# This match library is private game authority, never a network callback or
+# persisted transaction/ACK by itself. Strict C11 and no third-party SDK.
+add_library(mygames_ddz_match STATIC games/doudizhu/src/ddz_match.c)
+add_library(MyGames::DouDizhuMatch ALIAS mygames_ddz_match)
+target_compile_features(mygames_ddz_match PUBLIC c_std_11)
+target_include_directories(mygames_ddz_match PUBLIC games/doudizhu/include)
+target_link_libraries(mygames_ddz_match PUBLIC MyGames::Room MyGames::DouDizhuRound)
+if(WIN32)
+  # Native OS CSPRNG only. No rand() or published TLS/provider dependency.
+  target_link_libraries(mygames_ddz_match PRIVATE bcrypt)
+endif()
+if(MSVC)
+  target_compile_options(mygames_ddz_match PRIVATE /W4 /WX)
+else()
+  target_compile_options(mygames_ddz_match PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+
 # The recovery admission core is pure C11; no network, database or
 # fallback implementation is linked into this policy target.
 add_library(mygames_recovery_gate STATIC
@@ -153,6 +171,20 @@ endif()
 
 
 if(BUILD_TESTING)
+  # A deterministic entropy provider exists ONLY in CTest-linked source
+  # builds, not in a production/installed match binary or network API.
+  target_compile_definitions(mygames_ddz_match PRIVATE MYGAMES_DDZ_MATCH_TESTING=1)
+  add_executable(mygames_ddz_match_test tests/ddz_match_test.c)
+  target_compile_features(mygames_ddz_match_test PRIVATE c_std_11)
+  target_compile_definitions(mygames_ddz_match_test PRIVATE MYGAMES_DDZ_MATCH_TESTING=1)
+  target_link_libraries(mygames_ddz_match_test PRIVATE MyGames::DouDizhuMatch)
+  if(MSVC)
+    target_compile_options(mygames_ddz_match_test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_ddz_match_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME mygames.ddz_match COMMAND mygames_ddz_match_test)
+
   add_executable(mygames_ddz_round_test tests/ddz_round_test.c)
   target_compile_features(mygames_ddz_round_test PRIVATE c_std_11)
   target_link_libraries(mygames_ddz_round_test PRIVATE MyGames::DouDizhuRound)
