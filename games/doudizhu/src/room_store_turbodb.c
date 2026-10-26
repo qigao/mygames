@@ -962,7 +962,7 @@ static mygames_store_status rebind_private_games(
         char room_id[MYGAMES_ROOM_ID_CAPACITY];
         uint8_t image[MYGAMES_DDZ_CHECKPOINT_V1_BYTES];
         uint64_t sequence;
-    } games[MYGAMES_ROOM_DIRECTORY_CAPACITY] = {{0}};
+    } games[MYGAMES_ROOM_DIRECTORY_CAPACITY];
     orm_result_t *result = NULL;
     orm_error_t error;
     orm_status_t rc;
