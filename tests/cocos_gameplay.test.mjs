@@ -1,6 +1,6 @@
 import {after, test} from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync, readFileSync, writeFileSync, rmSync} from 'node:fs';
+import {mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createRequire} from 'node:module';
@@ -21,15 +21,17 @@ for(const [name,source] of [
   });
   const errors=(emitted.diagnostics??[]).filter(d=>d.category===ts.DiagnosticCategory.Error);
   assert.deepEqual(errors.map(d=>ts.flattenDiagnosticMessageText(d.messageText,'\n')),[]);
-  writeFileSync(join(dir,name+'.js'),emitted.outputText,'utf8');
+  const output = join(dir,source.replace(/\.ts$/,'.js'));
+  mkdirSync(join(dir,source.split('/')[0]),{recursive:true});
+  writeFileSync(output,emitted.outputText,'utf8');
 }
 const require=createRequire(import.meta.url);
 const {
   parseServerFrame,encodeGameCommand,cardMaskFromIds,cardsFromMask,
   canonicalU64,cardMaskHex
-}=require(join(dir,'Protocol.js'));
-const {GameStore}=require(join(dir,'GameStore.js'));
-const {GameSocket}=require(join(dir,'GameSocket.js'));
+}=require(join(dir,'net','Protocol.js'));
+const {GameStore}=require(join(dir,'state','GameStore.js'));
+const {GameSocket}=require(join(dir,'net','GameSocket.js'));
 
 const originalWebSocket=globalThis.WebSocket;
 after(()=>{globalThis.WebSocket=originalWebSocket;rmSync(dir,{recursive:true,force:true});});
