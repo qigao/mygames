@@ -30,6 +30,9 @@ typedef struct deferred_probe {
     atomic_int connected;
     atomic_int subscribed;
     atomic_int settled;
+    atomic_int connect_raw_status;
+    atomic_int connect_reason_code;
+    atomic_int last_network_error;
     int session_present; /* published by connected release-store */
 } deferred_probe;
 
@@ -95,6 +98,9 @@ static void on_connect(flowie_mqtt_client_t *client, int status,
     deferred_probe *p = (deferred_probe *)user;
     (void)client;
     p->session_present = response ? response->session_present : -1;
+    atomic_store_explicit(&p->connect_raw_status, status, memory_order_relaxed);
+    atomic_store_explicit(&p->connect_reason_code,
+                          response ? response->reason_code : -1, memory_order_relaxed);
     atomic_store_explicit(&p->connected,
         status == SALTS_OK && response &&
         response->type == FLOWIE_MQTT_PACKET_CONNACK &&
@@ -124,7 +130,7 @@ static void on_settled(flowie_mqtt_client_t *client, int status,
 static void on_error(flowie_mqtt_client_t *client, int status, void *user) {
     deferred_probe *p = (deferred_probe *)user;
     (void)client;
-    (void)status;
+    atomic_store_explicit(&p->last_network_error, status, memory_order_relaxed);
     atomic_store_explicit(&p->error, true, memory_order_release);
 }
 
@@ -172,6 +178,7 @@ int main(int argc, char **argv) {
     uint64_t cursor = 0u, effects = 0u;
     mygames_owner_result committed;
     int rc = 1;
+    int connect_enqueue = -1;
     if ((!first && !second && !third && !fourth) || !password || !*password ||
         !argv[2][0] || !argv[3][0] || !argv[4][0])
         return 2;
@@ -182,12 +189,16 @@ int main(int argc, char **argv) {
     atomic_init(&p.connected, -1);
     atomic_init(&p.subscribed, -1);
     atomic_init(&p.settled, -1);
+    atomic_init(&p.connect_raw_status, -1);
+    atomic_init(&p.connect_reason_code, -1);
+    atomic_init(&p.last_network_error, -1);
     if (mygames_consumer_projection_open(argv[2], argv[3], &projection) !=
             MYGAMES_CONSUMER_APPLIED ||
         mygames_consumer_owner_open(projection, namespace_id, CONSUMER_ID,
                                     &owner) != MYGAMES_OWNER_OK)
         goto cleanup;
     p.owner = owner;
+    marker("MYGAMES_DEFERRED_OWNER_READY");
     handler.filter = (flowie_mqtt_span_t){
         (const uint8_t *)TOPIC, sizeof(TOPIC) - 1u};
     handler.on_message = ordinary_receive;
@@ -204,12 +215,23 @@ int main(int argc, char **argv) {
     config.on_subscribe = on_subscribe;
     config.on_error = on_error;
     config.user_data = &p;
-    if (flowie_mqtt_client_create(&config, &client) != SALTS_OK || !client)
-        goto cleanup;
+    {
+        const int created = flowie_mqtt_client_create(&config, &client);
+        if (created != SALTS_OK || !client) {
+            fprintf(stderr, "Deferred Client create failed: %d\n", created);
+            goto cleanup;
+        }
+    }
     policy.max_pending_qos1 = 1u;
     policy.on_delivery = on_delivery;
-    if (flowie_mqtt_client_set_receive_policy(client, &policy) != SALTS_OK)
-        goto cleanup;
+    {
+        const int configured = flowie_mqtt_client_set_receive_policy(client, &policy);
+        if (configured != SALTS_OK) {
+            fprintf(stderr, "Deferred receive policy failed: %d\n", configured);
+            goto cleanup;
+        }
+    }
+    marker("MYGAMES_DEFERRED_POLICY_READY");
     connect.size = sizeof(connect);
     connect.abi_version = FLOWIE_MQTT_PROTOCOL_ABI_V1;
     connect.version = FLOWIE_MQTT_VERSION_5;
@@ -224,10 +246,21 @@ int main(int argc, char **argv) {
     connect.has_password = 1u;
     connect.password = (flowie_mqtt_span_t){
         (const uint8_t *)password, strlen(password)};
-    if (flowie_mqtt_client_connect(client, &connect) != SALTS_OK ||
+    connect_enqueue = flowie_mqtt_client_connect(client, &connect);
+    if (connect_enqueue != SALTS_OK ||
         !wait_status(&p.connected, TIMEOUT_MS) ||
-        p.session_present != (first ? 0 : 1))
+        p.session_present != (first ? 0 : 1)) {
+        fprintf(stderr,
+            "Deferred CONNECT refused: enqueue=%d callback=%d raw_status=%d "
+            "reason=%d session_present=%d expected_present=%d net_error=%d\n",
+            connect_enqueue,
+            atomic_load_explicit(&p.connected, memory_order_acquire),
+            atomic_load_explicit(&p.connect_raw_status, memory_order_relaxed),
+            atomic_load_explicit(&p.connect_reason_code, memory_order_relaxed),
+            p.session_present, first ? 0 : 1,
+            atomic_load_explicit(&p.last_network_error, memory_order_relaxed));
         goto cleanup;
+    }
     if (first) {
         subscribe.size = sizeof(subscribe);
         subscribe.abi_version = FLOWIE_MQTT_PROTOCOL_ABI_V1;
