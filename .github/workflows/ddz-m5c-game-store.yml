@@ -35,7 +35,8 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/ci/restore-native-sdks.sh "$RUNNER_TEMP/mygames-sdk"
-          test -f "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so"
+          # GITHUB_ENV exports TURBODB_ROOT to the NEXT step, not this one.
+          test -f "$RUNNER_TEMP/mygames-sdk/turbodb/sdk/linux-x64/lib/turbodb/drivers/turbodb_driver_sqlite.so"
 
       - name: Configure genuine native TurboDB-backed Room+GameStore
         shell: bash
