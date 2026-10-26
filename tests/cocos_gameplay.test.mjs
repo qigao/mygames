@@ -161,6 +161,7 @@ test('private hand can be displayed only for an EXACT bound request, not an old 
   store.bindRoom('room-1','101',0);
   store.noteAck(startAck);
   assert.equal(store.gameId,gameId);
+  assert.equal(store.applySnapshot({...playing(),game_id:'1'}),false);
   assert.equal(store.applySnapshot(playing()),true);
   store.expectHand('fresh-1',gameId);
   assert.equal(store.applyPrivateHand(privateHand('stale-1')),false);
@@ -241,6 +242,31 @@ test('failed session recovery never replays old player game commands',()=>{
   assert.equal(client.pendingGameCount,0);
   assert.equal(client.currentPlayerId,'202');
   assert.equal(ws.sent.length,1); // only the attempted resume token
+  client.disconnect();
+  globalThis.WebSocket=originalWebSocket;
+});
+
+test('unknown COMMIT keeps the original game request, never guesses success',()=>{
+  globalThis.WebSocket=FakeWebSocket;
+  const client=new GameSocket(()=>{},()=>{});
+  client.connect('ws://127.0.0.1:1780/ws');
+  let ws=FakeWebSocket.instances.at(-1);
+  ws.open();ws.receive(hello(101,token('a')));
+  const id=client.startGame();
+  const saved=ws.sent.at(-1);
+  ws.receive({v:1,type:'game.error',request_id:id,code:'storage_unavailable'});
+  assert.equal(client.pendingGameCount,1,
+               'An uncertain TurboDB COMMIT cannot retire its client receipt');
+  ws.disconnect();
+  client.connect('ws://127.0.0.1:1780/ws');
+  ws=FakeWebSocket.instances.at(-1);
+  ws.open();ws.receive(hello(404,token('b')));
+  ws.receive({v:1,type:'session.ready',player_id:'101',
+              generation:2,resume_token:token('c'),resumed:true});
+  assert.deepEqual(ws.sent.at(-1),saved);
+  assert.equal(client.pendingGameCount,1);
+  ws.receive({...startAck,request_id:id});
+  assert.equal(client.pendingGameCount,0);
   client.disconnect();
   globalThis.WebSocket=originalWebSocket;
 });
