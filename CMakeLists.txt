@@ -172,6 +172,8 @@ if(MYGAMES_ENABLE_TURBODB)
     endif()
     add_executable(mygames_game_store_test
       tests/ddz_turbodb_game_commit_test.c)
+    target_compile_definitions(mygames_game_store_test PRIVATE
+      MYGAMES_STORE_FAULT_TESTING=1)
     target_compile_features(mygames_game_store_test PRIVATE c_std_11)
     target_link_libraries(mygames_game_store_test PRIVATE
       MyGames::Store MyGames::DouDizhuCheckpoint Orm::C)
