@@ -11,7 +11,7 @@
 static uint32_t checksum(const unsigned char *bytes) {
     uint32_t result = UINT32_C(2166136261);
     size_t i;
-    for (i = 0u; i < MYGAMES_DDZ_CHECKPOINT_V1_BYTES; ++i) {
+    for (i = 0u; i < MYGAMES_DDZ_CHECKPOINT_V2_BYTES; ++i) {
         const unsigned char x = (i >= 28u && i < 32u) ? 0u : bytes[i];
         result = (result ^ (uint32_t)x) * UINT32_C(16777619);
     }
@@ -39,16 +39,16 @@ static mygames_room started_room(void) {
 }
 
 static void roundtrip(const mygames_ddz_match *source) {
-    unsigned char encoded[MYGAMES_DDZ_CHECKPOINT_V1_BYTES] = {0};
-    unsigned char reencoded[MYGAMES_DDZ_CHECKPOINT_V1_BYTES] = {0};
-    unsigned char contaminated[MYGAMES_DDZ_CHECKPOINT_V1_BYTES];
+    unsigned char encoded[MYGAMES_DDZ_CHECKPOINT_V2_BYTES] = {0};
+    unsigned char reencoded[MYGAMES_DDZ_CHECKPOINT_V2_BYTES] = {0};
+    unsigned char contaminated[MYGAMES_DDZ_CHECKPOINT_V2_BYTES];
     mygames_ddz_match restored = {0}, sentinel = {0}, candidate;
     size_t bytes = 12345u, reread = 0u;
     REQUIRE(mygames_ddz_match_validate(source) == MYGAMES_DDZ_MATCH_OK);
     REQUIRE(mygames_ddz_checkpoint_encode(source, encoded, sizeof(encoded), &bytes) ==
             MYGAMES_DDZ_CHECKPOINT_OK);
-    REQUIRE(bytes == MYGAMES_DDZ_CHECKPOINT_V1_BYTES);
-    REQUIRE(memcmp(encoded, "MGDG", 4u) == 0 && encoded[4] == 1u);
+    REQUIRE(bytes == MYGAMES_DDZ_CHECKPOINT_V2_BYTES);
+    REQUIRE(memcmp(encoded, "MGDG", 4u) == 0 && encoded[4] == 2u);
     REQUIRE(encoded[6] == 0u && encoded[7] == 0u);
     REQUIRE(encoded[8] == (unsigned char)(source->room_epoch & 255u));
     REQUIRE(encoded[16] == (unsigned char)(source->game_id & 255u));
@@ -82,11 +82,16 @@ static void roundtrip(const mygames_ddz_match *source) {
     REQUIRE(mygames_ddz_checkpoint_decode(contaminated, sizeof(contaminated),
         &candidate) == MYGAMES_DDZ_CHECKPOINT_UNSUPPORTED);
     memcpy(contaminated, encoded, sizeof(contaminated));
-    contaminated[4] = 2u;
+    contaminated[4] = 3u;
     REQUIRE(mygames_ddz_checkpoint_decode(contaminated, sizeof(contaminated),
         &candidate) == MYGAMES_DDZ_CHECKPOINT_UNSUPPORTED);
     memcpy(contaminated, encoded, sizeof(contaminated));
     contaminated[7] = 1u; rewrite_checksum(contaminated);
+    REQUIRE(mygames_ddz_checkpoint_decode(contaminated, sizeof(contaminated),
+        &candidate) == MYGAMES_DDZ_CHECKPOINT_CORRUPT);
+    memcpy(contaminated, encoded, sizeof(contaminated));
+    contaminated[MYGAMES_DDZ_CHECKPOINT_V2_BYTES - 1u] = 1u;
+    rewrite_checksum(contaminated);
     REQUIRE(mygames_ddz_checkpoint_decode(contaminated, sizeof(contaminated),
         &candidate) == MYGAMES_DDZ_CHECKPOINT_CORRUPT);
     memcpy(contaminated, encoded, sizeof(contaminated));
@@ -111,7 +116,7 @@ int main(void) {
     mygames_ddz_match start = {0}, next = {0}, bogus = {0};
     mygames_ddz_bid_result bid = {0};
     mygames_ddz_action_result action = {0};
-    unsigned char encoded[MYGAMES_DDZ_CHECKPOINT_V1_BYTES];
+    unsigned char encoded[MYGAMES_DDZ_CHECKPOINT_V2_BYTES];
     size_t bytes = 77u;
     uint64_t hand, first;
     REQUIRE(mygames_ddz_match_start(&start, &room, 42u, 513u) ==

@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-/* Version 1, canonical little-endian, fixed-size private game image.
+/* Version 2, canonical little-endian, fixed-size private game image.
  * This format contains ALL players' SECRET physical cards and the exact
  * CSPRNG shuffle permutation. It must ONLY be written through a trusted
  * TurboDB Owner transaction. Never expose it to public WebSocket, MQTT,
@@ -18,7 +18,7 @@ extern "C" {
  * Checksum is FNV-1a for accidental corruption, NOT a signature, MAC or
  * encryption. Protect database/media at rest and authenticate access.
  */
-#define MYGAMES_DDZ_CHECKPOINT_V1_BYTES 216u
+#define MYGAMES_DDZ_CHECKPOINT_V2_BYTES 224u
 
 typedef enum mygames_ddz_checkpoint_status {
     MYGAMES_DDZ_CHECKPOINT_OK = 0,

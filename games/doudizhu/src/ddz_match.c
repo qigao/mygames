@@ -290,7 +290,9 @@ mygames_ddz_match_status mygames_ddz_match_validate(const mygames_ddz_match *mat
             (unsigned int)counters.bombs_rockets * 2u >
                 landlord_played + farmers_played ||
             nonpass > landlord_played + farmers_played ||
-            counters.landlord_nonpass == 0u ||
+            (landlord_played != 0u && counters.landlord_nonpass == 0u) ||
+            (landlord_played == 0u && counters.landlord_nonpass != 0u) ||
+            (farmers_played != 0u && counters.farmers_nonpass == 0u) ||
             nonpass >= match->round.turn_id)
             return MYGAMES_DDZ_MATCH_INVALID_STATE;
         if (match->phase == MYGAMES_DDZ_MATCH_FINISHED) {

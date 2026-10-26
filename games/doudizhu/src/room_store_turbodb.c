@@ -306,7 +306,7 @@ static mygames_store_status create_schema(mygames_room_store *s) {
         "epoch integer not null check(epoch>0),"
         "game_id integer not null check(game_id>0),"
         "seq integer not null check(seq>0),"
-        "private_image blob not null check(length(private_image)=216))"
+        "private_image blob not null check(length(private_image)=224))"
     };
     orm_transaction_t *tx = NULL;
     mygames_store_status st = begin_transaction(s, &tx);
@@ -859,7 +859,7 @@ typedef struct stored_private_game {
     uint64_t epoch;
     uint64_t game_id;
     uint64_t sequence;
-    uint8_t image[MYGAMES_DDZ_CHECKPOINT_V1_BYTES];
+    uint8_t image[MYGAMES_DDZ_CHECKPOINT_V2_BYTES];
     mygames_ddz_match match;
 } stored_private_game;
 
@@ -960,7 +960,7 @@ static mygames_store_status rebind_private_games(
     const mygames_room_directory *rooms, uint64_t old_epoch) {
     struct game_rebind {
         char room_id[MYGAMES_ROOM_ID_CAPACITY];
-        uint8_t image[MYGAMES_DDZ_CHECKPOINT_V1_BYTES];
+        uint8_t image[MYGAMES_DDZ_CHECKPOINT_V2_BYTES];
         uint64_t sequence;
     } games[MYGAMES_ROOM_DIRECTORY_CAPACITY];
     orm_result_t *result = NULL;
@@ -1004,7 +1004,7 @@ static mygames_store_status rebind_private_games(
         }
         if (!name.data || name.len == 0u ||
             name.len >= MYGAMES_ROOM_ID_CAPACITY ||
-            !blob.data || blob.size != MYGAMES_DDZ_CHECKPOINT_V1_BYTES ||
+            !blob.data || blob.size != MYGAMES_DDZ_CHECKPOINT_V2_BYTES ||
             epoch <= 0 || (uint64_t)epoch != old_epoch ||
             id <= 0 || sequence <= 0) {
             st = MYGAMES_STORE_CORRUPT;
@@ -1235,8 +1235,8 @@ static bool game_transition_authorized(
     mygames_ddz_match derived = {0};
     mygames_ddz_action_result move = {0};
     mygames_ddz_bid_result bid = {0};
-    uint8_t expected[MYGAMES_DDZ_CHECKPOINT_V1_BYTES];
-    uint8_t actual[MYGAMES_DDZ_CHECKPOINT_V1_BYTES];
+    uint8_t expected[MYGAMES_DDZ_CHECKPOINT_V2_BYTES];
+    uint8_t actual[MYGAMES_DDZ_CHECKPOINT_V2_BYTES];
     size_t expected_size = 0u, actual_size = 0u;
     unsigned int seat;
     if (!candidate || player == 0u ||
@@ -1301,8 +1301,8 @@ static mygames_store_status game_store_candidate(
     uint64_t epoch, uint64_t expected_sequence, uint64_t next_sequence,
     mygames_player_id authenticated_player) {
     stored_private_game existing = {0};
-    uint8_t candidate_image[MYGAMES_DDZ_CHECKPOINT_V1_BYTES];
-    uint8_t prior_image[MYGAMES_DDZ_CHECKPOINT_V1_BYTES];
+    uint8_t candidate_image[MYGAMES_DDZ_CHECKPOINT_V2_BYTES];
+    uint8_t prior_image[MYGAMES_DDZ_CHECKPOINT_V2_BYTES];
     size_t size = 0u, previous_size = 0u;
     orm_value_t args[6];
     mygames_store_status st;
