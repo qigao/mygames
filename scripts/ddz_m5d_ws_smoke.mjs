@@ -51,6 +51,8 @@ async function connect(){
   const c = new Client();clients.push(c);
   const hello=await c.receive(m=>m.type==='server.hello');
   assert.equal(hello.v,1);
+  assert.ok(hello.capabilities.includes('games'),
+            'Durable Game Owner must be advertised only when TurboDB is present');
   assert.match(hello.player_id,/^[1-9][0-9]*$/);
   c.player=hello.player_id;
   c.ticket=hello.resume_token;
@@ -183,6 +185,16 @@ async function restarted(){
   assert.equal(ready.player_id,audit.player_id);
   assert.notEqual(ready.resume_token,audit.resume_token);
   assert.equal(ready.resumed,true);
+  // CFlow now sends this exact PUBLIC view after authenticating a rotated
+  // session, so Creator can learn the server-minted game ID without guessing
+  // or retaining a previous process' private hand.
+  const automatic=await resumed.receive(m=>
+    m.type==='game.snapshot' && m.request_id==='resume-public-game');
+  assert.equal(automatic.game_id,audit.game_id);
+  assert.equal(automatic.phase,'playing');
+  assert.equal(automatic.turn_id,'4');
+  assert.ok(!Object.hasOwn(automatic,'cards_hex'));
+  assert.ok(!Object.hasOwn(automatic,'secret_deck'));
 
   resumed.send('game.snapshot.get','m5d-after-restart',{game_id:audit.game_id});
   const state=await resumed.receive(gameSnapshot('m5d-after-restart'));
