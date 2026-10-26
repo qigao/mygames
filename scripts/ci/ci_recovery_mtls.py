@@ -95,7 +95,8 @@ def check(condition: bool, why: str) -> None:
 
 
 def run(binary: Path, seed: Path, sqlite_driver: Path,
-        native_client: Path) -> None:
+        native_client: Path, remote_consumer: Path | None = None,
+        consumer_audit: Path | None = None) -> None:
     if not shutil.which("openssl"):
         raise RuntimeError("OpenSSL CLI is required for ephemeral mTLS certs")
     with tempfile.TemporaryDirectory(prefix="mygames-recovery-mtls-") as work:
@@ -300,6 +301,57 @@ def run(binary: Path, seed: Path, sqlite_driver: Path,
                     continue  # mTLS rejects before any HTTP request.
                 raise AssertionError(f"{description} unexpectedly passed mTLS")
 
+            # M4.3 second layer, opt-in only for the coherent port14
+            # source workflow. The consumer process gets a DISTINCT local
+            # TurboDB ledger path and a TLS URI, never source DB filename.
+            if remote_consumer is not None and consumer_audit is not None:
+                consumer_db = root / "remote-consumer-ledger.sqlite"
+                namespace = "trusted-source-v1"
+                consumer_id = "backend-projection-v1"
+
+                def audit_cursor(expected: int) -> None:
+                    command(str(consumer_audit), str(sqlite_driver),
+                            str(consumer_db), namespace,
+                            str(expected), str(expected))
+
+                def run_remote(mode: str, max_pages: int,
+                               expected_exit: int, identity=None) -> None:
+                    selected_cert, selected_key = (
+                        identity if identity is not None
+                        else (client_cert, client_key))
+                    result = subprocess.run(
+                        [str(remote_consumer), str(sqlite_driver),
+                         str(consumer_db), str(port), str(ca),
+                         str(selected_cert), str(selected_key),
+                         namespace, consumer_id, "3", str(max_pages),
+                         mode],
+                        capture_output=True, text=True, timeout=30,
+                        check=False)
+                    if result.returncode != expected_exit:
+                        raise AssertionError(
+                            "remote consumer unexpectedly changed settlement "
+                            f"mode={mode} rc={result.returncode} expected="
+                            f"{expected_exit} stdout={result.stdout[-550:]} "
+                            f"stderr={result.stderr[-850:]}")
+
+                # Reset per-principal rate-token credit after the preceding
+                # raw protocol probes; 429 must NOT be disguised as success.
+                time.sleep(1.5)
+                run_remote("before-commit", 1, 4)
+                audit_cursor(0)  # true GET; no committed effect
+                run_remote("commit-one", 1, 3)
+                audit_cursor(1)  # one and only one durable receipt/effect
+                run_remote("normal", 2, 0)
+                audit_cursor(3)  # restart from persisted seq=1, reaches 3
+                run_remote("normal", 1, 0)
+                audit_cursor(3)  # repeated run, no duplicate effect
+                run_remote("normal", 1, 1,
+                           identity=(extra_cert, extra_key))
+                audit_cursor(3)  # CA-trusted, unpinned client cannot affect DB
+                print("mygames.remote_recovery: PASS actual mTLS GET, "
+                      "no-COMMIT crash, partial-page restart, durable cursor, "
+                      "wrong-service identity denied", flush=True)
+
             print("mygames.recovery_mtls: PASS real TLS client auth, "
                   "untrusted/wrong principal denial, readonly archive pages")
         finally:
@@ -327,7 +379,8 @@ def run(binary: Path, seed: Path, sqlite_driver: Path,
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 5:
+    if len(sys.argv) not in (5, 7):
         sys.exit("usage: ci_recovery_mtls.py recovery-service seed-binary "
-                 "sqlite-driver native-client")
-    run(*(Path(item).resolve() for item in sys.argv[1:]))
+                 "sqlite-driver native-client [remote-consumer audit]")
+    args = [Path(item).resolve() for item in sys.argv[1:]]
+    run(*args)
