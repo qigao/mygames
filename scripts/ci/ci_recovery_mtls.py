@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import select
+import signal
 import shutil
 import ssl
 import subprocess
@@ -334,22 +335,80 @@ def run(binary: Path, seed: Path, sqlite_driver: Path,
                             f"{expected_exit} stdout={result.stdout[-550:]} "
                             f"stderr={result.stderr[-850:]}")
 
-                # Reset per-principal rate-token credit after the preceding
-                # raw protocol probes; 429 must NOT be disguised as success.
+                def kill_at_commit_boundary(
+                    mode: str, stage: str, expected_cursor: int
+                ) -> None:
+                    """Actually SIGKILL a live mTLS consumer at a fenced DB stage.
+
+                    The marker is flushed by the child only AFTER a real
+                    authenticated HTTP GET/verified page (BEFORE_COMMIT), or
+                    AFTER a positive SQLite COMMIT (AFTER_ONE_COMMIT). The
+                    child blocks on a test-only stdin pipe until killed.
+                    """
+                    child = subprocess.Popen(
+                        [str(remote_consumer), str(sqlite_driver),
+                         str(consumer_db), str(port), str(ca),
+                         str(client_cert), str(client_key),
+                         namespace, consumer_id, "3", "1", mode],
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, text=True, bufsize=1,
+                    )
+                    try:
+                        assert child.stdout is not None
+                        ready, _, _ = select.select(
+                            [child.stdout], [], [], 18)
+                        if not ready:
+                            raise AssertionError(
+                                f"{mode}: never reached the SIGKILL gate")
+                        line = child.stdout.readline().strip()
+                        expected_line = (
+                            f"mygames.remote_recovery: FAULT_READY_{stage}"
+                            f" cursor={expected_cursor}")
+                        if line != expected_line or child.poll() is not None:
+                            stderr_text = (
+                                child.stderr.read()[-1200:]
+                                if child.poll() is not None and child.stderr
+                                else "<still running>")
+                            raise AssertionError(
+                                f"{mode}: no exact durable crash marker, "
+                                f"line={line!r}, diagnostics={stderr_text}")
+                        child.kill()  # actual Linux SIGKILL, no C cleanup
+                        child.wait(timeout=8)
+                        if child.returncode != -signal.SIGKILL:
+                            raise AssertionError(
+                                f"{mode}: expected genuine SIGKILL, "
+                                f"got {child.returncode}")
+                    finally:
+                        if child.poll() is None:
+                            child.kill()
+                            child.wait(timeout=8)
+                        if child.stdin:
+                            child.stdin.close()
+                        if child.stdout:
+                            child.stdout.close()
+                        if child.stderr:
+                            child.stderr.close()
+
+                # Reset bounded per-principal admission after initial
+                # protocol/auth negative matrix; the crash is real, not
+                # a simulated exit code or manual SQLite cursor update.
                 time.sleep(1.5)
-                run_remote("before-commit", 1, 4)
-                audit_cursor(0)  # true GET; no committed effect
-                run_remote("commit-one", 1, 3)
-                audit_cursor(1)  # one and only one durable receipt/effect
+                kill_at_commit_boundary(
+                    "sigkill-before-commit", "BEFORE_COMMIT", 0)
+                audit_cursor(0)
+                kill_at_commit_boundary(
+                    "sigkill-after-one", "AFTER_ONE_COMMIT", 1)
+                audit_cursor(1)
                 run_remote("normal", 2, 0)
-                audit_cursor(3)  # restart from persisted seq=1, reaches 3
+                audit_cursor(3)  # fresh process resumes from seq=1
                 run_remote("normal", 1, 0)
                 audit_cursor(3)  # repeated run, no duplicate effect
                 run_remote("normal", 1, 1,
                            identity=(extra_cert, extra_key))
                 audit_cursor(3)  # CA-trusted, unpinned client cannot affect DB
                 print("mygames.remote_recovery: PASS actual mTLS GET, "
-                      "no-COMMIT crash, partial-page restart, durable cursor, "
+                      "real SIGKILL before COMMIT and after one COMMIT, "
+                      "cold process restart from durable cursor, "
                       "wrong-service identity denied", flush=True)
 
             print("mygames.recovery_mtls: PASS real TLS client auth, "
