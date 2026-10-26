@@ -80,7 +80,7 @@ static int on_delivery(flowie_mqtt_client_t *client,
     if (!read_positive_field(copied, "\"room_epoch\":", &epoch) ||
         !read_positive_field(copied, "\"seq\":", &sequence) ||
         !mygames_outbox_public_event_validate(
-            copied, message->payload.size, epoch, sequence) ||
+            (const uint8_t *)copied, message->payload.size, epoch, sequence) ||
         mygames_consumer_owner_admit_mqtt(
             p->owner, TOPIC, copied, message->payload.size,
             epoch, sequence, &admitted) != MYGAMES_OWNER_OK)
@@ -163,7 +163,7 @@ int main(int argc, char **argv) {
     flowie_mqtt_client_config_t config = FLOWIE_MQTT_CLIENT_CONFIG_INIT;
     flowie_mqtt_client_receive_policy_t policy = FLOWIE_MQTT_CLIENT_RECEIVE_POLICY_INIT;
     flowie_mqtt_client_topic_handler_t handler = {0};
-    flowie_mqtt_connect_packet_t connect = FLOWIE_MQTT_CONNECT_PACKET_INIT;
+    flowie_mqtt_connect_packet_t connect = {0};
     flowie_mqtt_subscribe_packet_t subscribe = {0};
     flowie_mqtt_subscription_t subscription = {0};
     /* MQTT 5 CONNECT session expiry interval = 3600 seconds (0x11). */
