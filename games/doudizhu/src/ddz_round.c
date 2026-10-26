@@ -282,6 +282,25 @@ mygames_ddz_status mygames_ddz_round_validate(const mygames_ddz_round *round) {
     return MYGAMES_DDZ_OK;
 }
 
+mygames_ddz_status mygames_ddz_round_public_view(const mygames_ddz_round *round,
+                                                 mygames_ddz_public_view *out_view) {
+    mygames_ddz_public_view view = {0};
+    if (!out_view) return MYGAMES_DDZ_INVALID_ARGUMENT;
+    if (mygames_ddz_round_validate(round) != MYGAMES_DDZ_OK)
+        return MYGAMES_DDZ_INVALID_STATE;
+    view.turn_id = round->turn_id;
+    view.last_cards = round->last_cards;
+    view.last_move = round->last_move;
+    memcpy(view.remaining, round->remaining, sizeof(view.remaining));
+    view.landlord_seat = round->landlord_seat;
+    view.turn_seat = round->turn_seat;
+    view.last_seat = round->last_seat;
+    view.winner_seat = round->winner_seat;
+    view.finished = round->finished;
+    *out_view = view;
+    return MYGAMES_DDZ_OK;
+}
+
 mygames_ddz_status mygames_ddz_round_submit(mygames_ddz_round *round,
                                             unsigned acting_seat,
                                             uint64_t expected_turn_id,
@@ -330,6 +349,7 @@ mygames_ddz_status mygames_ddz_round_submit(mygames_ddz_round *round,
         next.last_seat = (uint8_t)acting_seat;
         next.passes = 0u;
         event.move = move;
+        event.played_cards = cards_mask;
         if (next.remaining[acting_seat] == 0u) {
             next.finished = true;
             next.winner_seat = (uint8_t)acting_seat;
