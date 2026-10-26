@@ -1,5 +1,5 @@
-import {encodePing, encodeResume, encodeRoomCommand, parseServerFrame} from './Protocol';
-import type {RoomCommandType, ServerFrame, ServerHello} from './Protocol';
+import {encodePing, encodeResume, encodeRoomCommand, encodeGameCommand, parseServerFrame} from './Protocol';
+import type {RoomCommandType, GameClientCommand, ServerFrame, ServerHello} from './Protocol';
 
 export type ConnectionState =
     'offline' | 'connecting' | 'handshaking' | 'restoring' | 'ready' | 'failed';
@@ -14,6 +14,9 @@ export class GameSocket {
     private requestOrdinal = 0;
     private status: ConnectionState = 'offline';
     private roomsAvailable = false;
+    private gamesAvailable = false;
+    private gameNonce: string | null = null;
+    private readonly pendingGameActions = new Map<string, string>();
 
     private resumeTicket: string | null = null;
     private playerId: string | null = null;
@@ -27,6 +30,8 @@ export class GameSocket {
     get state(): ConnectionState { return this.status; }
     get canResume(): boolean { return this.resumeTicket !== null; }
     get currentPlayerId(): string | null { return this.playerId; }
+    get canPlayGames(): boolean { return this.status === 'ready' && this.gamesAvailable; }
+    get pendingGameCount(): number { return this.pendingGameActions.size; }
 
     connect(url: string): void {
         // An accidental Connect click must not replace a healthy connection,
@@ -73,6 +78,7 @@ export class GameSocket {
             if (id === this.generation && this.status !== 'failed') {
                 this.socket = null;
                 this.roomsAvailable = false;
+                this.gamesAvailable = false;
                 this.provisional = null;
                 this.transition('offline');
             }
@@ -91,7 +97,66 @@ export class GameSocket {
         return this.requestRoom('room.ready', {ready});
     }
     leaveRoom(): string { return this.requestRoom('room.leave'); }
+    startRoom(): string { return this.requestRoom('room.start'); }
     requestSnapshot(): string { return this.requestRoom('room.snapshot.get'); }
+
+    /** A secure, per-Cocos-session nonce prevents a new browser process
+     * from reusing a previously journalled per-player request_id. Existing
+     * pending commands are retained across transient disconnect and resent
+     * byte-for-byte ONLY after the original session bearer is recovered.
+     * Never retry with a newly minted ID or an unbounded command queue. */
+    private newGameRequestId(): string {
+        if (!this.gameNonce) {
+            const entropy = globalThis.crypto?.getRandomValues?.(new Uint8Array(8));
+            if (!entropy) throw new Error('Secure request ID generation unavailable');
+            this.gameNonce = [...entropy].map(x => x.toString(16).padStart(2, '0')).join('');
+        }
+        return 'g-' + this.gameNonce + '-' + (++this.requestOrdinal).toString(36);
+    }
+
+    private sendGameCommand(type: GameClientCommand,
+                            options: {game_id?: string; turn_id?: string;
+                                      bid?: number; cards_hex?: string} = {},
+                            durable: boolean): string {
+        this.ensureReady();
+        if (!this.gamesAvailable) throw new Error('Game service unavailable');
+        if (durable && this.pendingGameActions.size >= 8)
+            throw new Error('Resolve the pending game requests first');
+        const id = this.newGameRequestId();
+        const json = encodeGameCommand(type, id, options);
+        if (durable) this.pendingGameActions.set(id, json);
+        try { this.socket!.send(json); }
+        catch (error) {
+            this.pendingGameActions.delete(id);
+            throw error;
+        }
+        return id;
+    }
+    startGame(): string { return this.sendGameCommand('game.start', {}, true); }
+    bid(gameId: string, turnId: string, score: number): string {
+        return this.sendGameCommand('game.bid',
+                                    {game_id: gameId, turn_id: turnId, bid: score}, true);
+    }
+    play(gameId: string, turnId: string, cardMask: string): string {
+        return this.sendGameCommand('game.play',
+                                    {game_id: gameId, turn_id: turnId,
+                                     cards_hex: cardMask}, true);
+    }
+    pass(gameId: string, turnId: string): string {
+        return this.sendGameCommand('game.pass',
+                                    {game_id: gameId, turn_id: turnId}, true);
+    }
+    requestGameSnapshot(gameId: string): string {
+        return this.sendGameCommand('game.snapshot.get', {game_id: gameId}, false);
+    }
+    requestGameHand(gameId: string): string {
+        return this.sendGameCommand('game.hand.get', {game_id: gameId}, false);
+    }
+    retryPendingGameActions(): void {
+        this.ensureReady();
+        if (!this.gamesAvailable) throw new Error('Game service unavailable');
+        for (const original of this.pendingGameActions.values()) this.socket!.send(original);
+    }
 
     /** Simulated transient network disconnect. Retains the in-memory ticket. */
     suspend(): void {
@@ -103,6 +168,8 @@ export class GameSocket {
         this.closeTransport();
         this.resumeTicket = null;
         this.playerId = null;
+        this.pendingGameActions.clear();
+        this.gameNonce = null;
         this.transition('offline');
     }
 
@@ -113,6 +180,7 @@ export class GameSocket {
                 throw new Error('Incompatible server handshake');
             }
             this.roomsAvailable = frame.capabilities.includes('rooms');
+            this.gamesAvailable = frame.capabilities.includes('games');
             if (this.resumeTicket && frame.resume_token && frame.player_id &&
                 frame.capabilities.includes('resume')) {
                 this.provisional = frame;
@@ -121,6 +189,7 @@ export class GameSocket {
                 return;
             }
             const hadPreviousLease = this.resumeTicket !== null;
+            if (hadPreviousLease) this.pendingGameActions.clear();
             this.resumeTicket = frame.resume_token ?? null;
             this.playerId = frame.player_id ?? null;
             this.transition('ready');
@@ -139,6 +208,8 @@ export class GameSocket {
             this.playerId = frame.player_id;
             this.provisional = null;
             this.transition('ready');
+            if (this.gamesAvailable) this.retryPendingGameActions();
+            else this.pendingGameActions.clear();
             this.onFrame(frame);
             return;
         }
@@ -149,6 +220,7 @@ export class GameSocket {
             // development session, and make the UI discard its old room state.
             const fresh = this.provisional;
             this.provisional = null;
+            this.pendingGameActions.clear();
             this.resumeTicket = fresh.resume_token ?? null;
             this.playerId = fresh.player_id ?? null;
             this.transition('ready');
@@ -158,6 +230,8 @@ export class GameSocket {
         }
         if (this.status !== 'ready')
             throw new Error('Event received before session handshake');
+        if (frame.type === 'game.ack' || frame.type === 'game.error')
+            this.pendingGameActions.delete(frame.request_id);
         this.onFrame(frame);
     }
 
@@ -178,6 +252,7 @@ export class GameSocket {
     private closeTransport(): void {
         ++this.generation;
         this.roomsAvailable = false;
+        this.gamesAvailable = false;
         this.provisional = null;
         this.requestOrdinal = 0;
         const previous = this.socket;
