@@ -20,6 +20,14 @@ client-controlled shuffle seed. The production gateway must use an
 unpredictable, unbiased CSPRNG-backed Fisher–Yates shuffle, after a separately
 committed bidding decision. Neither shuffle nor bidding is implemented by M5a.
 
+`mygames_ddz_round_public_view()` copies a validated public-only
+projection with current turn ID, landlord, active seat, last revealed
+physical cards, comparable move, winner and remaining counts. Invalid or
+corrupt private states leave this output unchanged. `mygames_ddz_action_result`
+carries the selected **revealed** physical cards (zero for PASS), but does not
+contain any unplayed hand or dealer-private kitty array. Cocos/web clients
+must consume this projection rather than the authoritative round POD.
+
 `mygames_ddz_round` stores all three **PRIVATE hands**, and must never be
 dumped to JSON, public `room.snapshot`, Flowie room events, client logs or
 other players. `mygames_ddz_action_result` contains only move kind,
