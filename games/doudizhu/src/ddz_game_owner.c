@@ -41,10 +41,16 @@ static bool digest_command(
     if (!operation || !digest || !player || !epoch || !turn ||
         (!game_id && strcmp(operation, "start") != 0))
         return false;
+    /* Room epoch is a TRANSACTIONAL OWNER FENCE, not part of the
+     * immutable player's semantic action. A valid reconnected user may
+     * request the original (game_id,turn_id,request_id) after a fresh
+     * Owner epoch claim; the recorded SHA256 must remain identical.
+     * SQLite epoch CAS still fences all NEW writes from stale Owners.
+     * A different game_id/turn/value with the same request_id conflicts. */
     n = snprintf(normalized, sizeof(normalized),
-        "mygames.ddz.v1|%s|%" PRIu64 "|%" PRIu64 "|%" PRIu64
+        "mygames.ddz.v1|%s|%" PRIu64 "|%" PRIu64
         "|%" PRIu64 "|%" PRIu64,
-        operation, epoch, game_id, turn, player, value);
+        operation, game_id, turn, player, value);
     return n > 0 && (size_t)n < sizeof(normalized) &&
            cmeta_sha256(normalized, (size_t)n, digest) == SALTS_OK;
 }
