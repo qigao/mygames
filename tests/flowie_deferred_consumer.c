@@ -25,6 +25,9 @@
 typedef struct deferred_probe {
     mygames_consumer_owner *owner; /* kept alive until client worker joins */
     flowie_mqtt_client_inbound_token_t token; /* copied in callback */
+    flowie_mqtt_client_inbound_token_t second_token;
+    atomic_uint delivery_count;
+    int window_two; /* configured before native Client worker starts */
     atomic_bool received;
     atomic_bool error;
     atomic_int connected;
@@ -68,6 +71,7 @@ static int on_delivery(flowie_mqtt_client_t *client,
     char copied[MYGAMES_STORE_EVENT_MAX + 1u];
     mygames_owner_ticket admitted = {0};
     uint64_t epoch = 0u, sequence = 0u;
+    unsigned int prior;
     (void)client;
     if (!p || !message || !token || !p->owner || message->qos != 1u ||
         token->session_generation == 0u || token->delivery_sequence == 0u ||
@@ -75,20 +79,27 @@ static int on_delivery(flowie_mqtt_client_t *client,
         message->topic.size != sizeof(TOPIC) - 1u ||
         memcmp(message->topic.data, TOPIC, sizeof(TOPIC) - 1u) != 0 ||
         !message->payload.data || !message->payload.size ||
-        message->payload.size > MYGAMES_STORE_EVENT_MAX ||
-        atomic_load_explicit(&p->received, memory_order_acquire))
+        message->payload.size > MYGAMES_STORE_EVENT_MAX)
         return SALTS_EPROTO;
+    /* The native Worker serializes callbacks. Count is release-published
+     * only AFTER admission of the borrowed packet and copied token. */
+    prior = atomic_load_explicit(&p->delivery_count, memory_order_acquire);
+    if (prior >= (p->window_two ? 2u : 1u)) return SALTS_EPROTO;
     memcpy(copied, message->payload.data, message->payload.size);
     copied[message->payload.size] = '\0';
     if (!read_positive_field(copied, "\"room_epoch\":", &epoch) ||
         !read_positive_field(copied, "\"seq\":", &sequence) ||
+        (p->window_two && sequence != (uint64_t)prior + 1u) ||
         !mygames_outbox_public_event_validate(
             (const uint8_t *)copied, message->payload.size, epoch, sequence) ||
         mygames_consumer_owner_admit_mqtt(
             p->owner, TOPIC, copied, message->payload.size,
             epoch, sequence, &admitted) != MYGAMES_OWNER_OK)
         return SALTS_ENOBUFS;
-    p->token = *token; /* no borrowed Flowie pointers escape */
+    if (prior == 0u) p->token = *token;
+    else p->second_token = *token;
+    /* No borrowed Flowie pointers escape. */
+    atomic_store_explicit(&p->delivery_count, prior + 1u, memory_order_release);
     atomic_store_explicit(&p->received, true, memory_order_release);
     return SALTS_OK; /* only admission: no DB operation and NO PUBACK */
 }
@@ -151,6 +162,16 @@ static bool wait_delivery(deferred_probe *p, uint64_t max_ms) {
     return atomic_load_explicit(&p->received, memory_order_acquire);
 }
 
+static bool wait_delivery_count(deferred_probe *p, unsigned int expected,
+                                uint64_t max_ms) {
+    const uint64_t start = cmeta_monotonic_ms();
+    while (atomic_load_explicit(&p->delivery_count, memory_order_acquire) < expected &&
+           !atomic_load_explicit(&p->error, memory_order_acquire) &&
+           cmeta_monotonic_ms() - start < max_ms)
+        cmeta_sleep_ms(3u);
+    return atomic_load_explicit(&p->delivery_count, memory_order_acquire) == expected;
+}
+
 static void marker(const char *message) {
     puts(message);
     fflush(stdout);
@@ -164,6 +185,7 @@ int main(int argc, char **argv) {
     const bool third = argc == 5 && strcmp(argv[1], "replay-and-ack") == 0;
     const bool fourth = argc == 5 && strcmp(argv[1], "post-ack-no-redelivery") == 0;
     const bool rollback_fault = argc == 5 && strcmp(argv[1], "rollback-before-cursor") == 0;
+    const bool window_two = argc == 5 && strcmp(argv[1], "receive-window-two") == 0;
     mygames_consumer_projection *projection = NULL;
     mygames_consumer_owner *owner = NULL;
     flowie_mqtt_client_t *client = NULL;
@@ -175,17 +197,22 @@ int main(int argc, char **argv) {
     flowie_mqtt_subscription_t subscription = {0};
     /* MQTT 5 CONNECT session expiry interval = 3600 seconds (0x11). */
     const uint8_t expiry[] = {0x11u, 0x00u, 0x00u, 0x0eu, 0x10u};
+    /* MQTT 5 persistent Session Expiry=3600 + Receive Maximum=1. */
+    const uint8_t receive_one[] = {
+        0x11u, 0x00u, 0x00u, 0x0eu, 0x10u, 0x21u, 0x00u, 0x01u};
     deferred_probe p = {0};
     uint64_t cursor = 0u, effects = 0u;
     mygames_owner_result committed;
     int rc = 1;
     int connect_enqueue = -1;
-    if ((!first && !second && !third && !fourth && !rollback_fault) ||
+    if ((!first && !second && !third && !fourth && !rollback_fault && !window_two) ||
         !password || !*password ||
         !argv[2][0] || !argv[3][0] || !argv[4][0])
         return 2;
     mode = argv[1];
     namespace_id = argv[4];
+    p.window_two = window_two;
+    atomic_init(&p.delivery_count, 0u);
     atomic_init(&p.received, false);
     atomic_init(&p.error, false);
     atomic_init(&p.connected, -1);
@@ -241,7 +268,9 @@ int main(int argc, char **argv) {
     connect.keep_alive = 10u;
     connect.client_id = (flowie_mqtt_span_t){
         (const uint8_t *)CLIENT_ID, sizeof(CLIENT_ID) - 1u};
-    connect.properties = (flowie_mqtt_span_t){expiry, sizeof(expiry)};
+    connect.properties = window_two
+        ? (flowie_mqtt_span_t){receive_one, sizeof(receive_one)}
+        : (flowie_mqtt_span_t){expiry, sizeof(expiry)};
     connect.has_username = 1u;
     connect.username = (flowie_mqtt_span_t){
         (const uint8_t *)"svc-consumer", sizeof("svc-consumer") - 1u};
@@ -251,7 +280,7 @@ int main(int argc, char **argv) {
     connect_enqueue = flowie_mqtt_client_connect(client, &connect);
     if (connect_enqueue != SALTS_OK ||
         !wait_status(&p.connected, TIMEOUT_MS) ||
-        p.session_present != (first ? 0 : 1)) {
+        p.session_present != ((first || window_two) ? 0 : 1)) {
         fprintf(stderr,
             "Deferred CONNECT refused: enqueue=%d callback=%d raw_status=%d "
             "reason=%d session_present=%d expected_present=%d net_error=%d\n",
@@ -259,11 +288,11 @@ int main(int argc, char **argv) {
             atomic_load_explicit(&p.connected, memory_order_acquire),
             atomic_load_explicit(&p.connect_raw_status, memory_order_relaxed),
             atomic_load_explicit(&p.connect_reason_code, memory_order_relaxed),
-            p.session_present, first ? 0 : 1,
+            p.session_present, (first || window_two) ? 0 : 1,
             atomic_load_explicit(&p.last_network_error, memory_order_relaxed));
         goto cleanup;
     }
-    if (first) {
+    if (first || window_two) {
         subscribe.size = sizeof(subscribe);
         subscribe.abi_version = FLOWIE_MQTT_PROTOCOL_ABI_V1;
         subscribe.version = FLOWIE_MQTT_VERSION_5;
@@ -286,6 +315,43 @@ int main(int argc, char **argv) {
                 MYGAMES_CONSUMER_APPLIED || cursor != 1u || effects != 1u)
             goto cleanup;
         marker("MYGAMES_DEFERRED_AFTER_ACK_NO_REDELIVERY");
+    } else if (window_two) {
+        /* The CI controller waits for BOTH separate Broker accepted PUBLISHes
+         * before releasing this stdin barrier. It is not a timing inference:
+         * the second QoS1 may be stored by the Broker, but MUST NOT cross
+         * the actual MQTT 5 Receive Maximum=1 connection until PUBACK #1. */
+        if (!wait_delivery_count(&p, 1u, TIMEOUT_MS)) goto cleanup;
+        marker("MYGAMES_RECEIVE_WINDOW_FIRST_UNACKED");
+        if (getchar() != '\n' ||
+            atomic_load_explicit(&p.delivery_count, memory_order_acquire) != 1u ||
+            mygames_consumer_projection_snapshot(
+                projection, namespace_id, CONSUMER_ID, &cursor, &effects) !=
+                MYGAMES_CONSUMER_APPLIED || cursor != 0u || effects != 0u)
+            goto cleanup;
+        marker("MYGAMES_RECEIVE_WINDOW_FENCED");
+        if (mygames_consumer_owner_pump_one(owner, &cursor) != MYGAMES_OWNER_APPLIED ||
+            cursor != 1u ||
+            flowie_mqtt_client_settle_inbound_qos1(
+                client, &p.token, on_settled, &p) != SALTS_OK ||
+            !wait_status(&p.settled, TIMEOUT_MS))
+            goto cleanup;
+        /* The second durable Broker delivery becomes eligible only after
+         * native PUBACK #1 retires its MQTT 5 outbound window credit. */
+        if (!wait_delivery_count(&p, 2u, TIMEOUT_MS)) goto cleanup;
+        if (mygames_consumer_owner_pump_one(owner, &cursor) != MYGAMES_OWNER_APPLIED ||
+            cursor != 2u)
+            goto cleanup;
+        atomic_store_explicit(&p.settled, -1, memory_order_release);
+        if (flowie_mqtt_client_settle_inbound_qos1(
+                client, &p.second_token, on_settled, &p) != SALTS_OK ||
+            !wait_status(&p.settled, TIMEOUT_MS) ||
+            mygames_consumer_projection_snapshot(
+                projection, namespace_id, CONSUMER_ID, &cursor, &effects) !=
+                MYGAMES_CONSUMER_APPLIED ||
+            cursor != 2u || effects != 2u ||
+            atomic_load_explicit(&p.delivery_count, memory_order_acquire) != 2u)
+            goto cleanup;
+        marker("MYGAMES_RECEIVE_WINDOW_TWO_COMMITTED");
     } else {
         if (!wait_delivery(&p, TIMEOUT_MS)) goto cleanup;
         if (first) {
