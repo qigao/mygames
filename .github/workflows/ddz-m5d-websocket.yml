@@ -1,0 +1,121 @@
+name: M5d authoritative game WebSocket and durable Game ACK
+
+'on':
+  pull_request:
+    paths:
+      - 'apps/server/main.c'
+      - 'games/doudizhu/src/ddz_game_wire.c'
+      - 'games/doudizhu/include/mygames/ddz_game_wire.h'
+      - 'games/doudizhu/src/ddz_game_owner.c'
+      - 'games/doudizhu/src/room_directory.c'
+      - 'games/doudizhu/src/wire.c'
+      - 'tests/ddz_game_wire_test.c'
+      - 'scripts/ddz_m5d_ws_smoke.mjs'
+      - 'scripts/ci/ci_ddz_m5d_websocket.py'
+      - 'CMakeLists.txt'
+      - '.github/workflows/ddz-m5d-websocket.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mygames-m5d-websocket-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  portable-game-protocol:
+    name: Strict game wire + room start / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Configure portable C11 game and room rules without SDK
+        run: >-
+          cmake -S . -B build/m5d-core -DBUILD_TESTING=ON
+          -DMYGAMES_ENABLE_GATEWAY=OFF -DMYGAMES_ENABLE_TURBODB=OFF
+          -DMYGAMES_ENABLE_FLOWIE=OFF
+      - name: Build all native C11 game modules with warnings as errors
+        run: cmake --build build/m5d-core --config Debug --parallel 2
+      - name: Run ALL existing strict room/game C11 tests
+        run: >-
+          ctest --test-dir build/m5d-core -C Debug
+          --output-on-failure --no-tests=error --timeout 60
+      - name: Repeat strict 64-bit JSON game decoder
+        run: >-
+          ctest --test-dir build/m5d-core -C Debug
+          --output-on-failure --no-tests=error
+          --repeat until-fail:20 --timeout 30
+          -R '^mygames[.]ddz_game_wire$'
+
+  real-websocket-game:
+    name: Native CHttp + CFlow + TurboDB committed Game ACK / Linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Restore coherent, SHA256-pinned Native SDKs using curl
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/ci/restore-native-sdks.sh "$RUNNER_TEMP/mygames-sdk"
+          test -f "$RUNNER_TEMP/mygames-sdk/turbodb/sdk/linux-x64/lib/turbodb/drivers/turbodb_driver_sqlite.so"
+      - name: Configure actual released CHttp/CFlow/TurboDB native consumer
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build/gateway -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=ON -DMYGAMES_ENABLE_GATEWAY=ON \
+            -DMYGAMES_ENABLE_TURBODB=ON -DMYGAMES_ENABLE_FLOWIE=OFF \
+            -DCMAKE_PREFIX_PATH="$SDK_PREFIX_PATH"
+      - name: Build actual game server, GameOwner, room and wire conformance
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build build/gateway --parallel 2 --target \
+            mygames_server mygames_ddz_game_wire_test \
+            mygames_game_owner_test mygames_game_store_test \
+            mygames_turbodb_store_test
+      - name: Audit loaded native ORM and CHttp/Salts SDK closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          ldd build/gateway/mygames_server | tee build/gateway/m5d-native-dependencies.txt
+          ! grep -q 'not found' build/gateway/m5d-native-dependencies.txt
+      - name: Run actual durable GameOwner and strict protocol tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          ctest --test-dir build/gateway -C Release --no-tests=error \
+            --output-on-failure --timeout 90 \
+            -R '^mygames[.](ddz_game_wire|game_owner|game_store|turbodb_store)$'
+      - name: Three real CHttp WebSockets, private hands, cold restart and ACK replay
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/ci_ddz_m5d_websocket.py \
+            build/gateway/mygames_server \
+            "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so"
+      - name: Retain NONPRIVATE native dependencies and CTest failures only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m5d-game-websocket-${{ github.run_id }}
+          retention-days: 14
+          if-no-files-found: ignore
+          path: |
+            build/gateway/m5d-native-dependencies.txt
+            build/gateway/Testing/Temporary/LastTest.log
