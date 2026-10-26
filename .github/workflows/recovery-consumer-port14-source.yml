@@ -241,7 +241,9 @@ jobs:
             mygames_recovery_consumer_test \
             mygames_consumer_owner_test \
             mygames_recovery_remote_consumer_test \
-            mygames_flowie_consumer_projection_audit
+            mygames_flowie_consumer_projection_audit \
+            mygames_flowie_broker_test mygames_flowie_acl_client_test \
+            mygames_outbox_publisher mygames_outbox_audit_test
           ctest --test-dir build/recovery-port14 -C Release \
             -R '^(mygames[.](recovery_gate|recovery_wire|recovery_decode|recovery_consumer|consumer_owner|turbodb_store|outbox_contract|consumer_projection))$' \
             --output-on-failure --no-tests=error
@@ -263,6 +265,20 @@ jobs:
             build/recovery-port14/mygames_recovery_native_client_test \
             build/recovery-port14/mygames_recovery_remote_consumer_test \
             build/recovery-port14/mygames_flowie_consumer_projection_audit
+
+      - name: Real Flowie Broker and mTLS Outbox page into single bounded Consumer Owner
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/ci_flowie_owner_live_mtls.py \
+            build/recovery-port14/mygames_flowie_broker_test \
+            build/recovery-port14/mygames_flowie_acl_client_test \
+            build/recovery-port14/mygames_outbox_publisher \
+            build/recovery-port14/mygames_outbox_seed_test \
+            build/recovery-port14/mygames_outbox_audit_test \
+            build/recovery-port14/mygames_flowie_consumer_projection_audit \
+            build/recovery-port14/mygames_recovery_service \
+            "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so"
 
       - name: Preserve source-only recovery qualification evidence
         if: always()
