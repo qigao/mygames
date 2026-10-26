@@ -78,8 +78,24 @@ typedef struct mygames_ddz_round {
 /* Only the public move and public remaining-counts belong in this result.
  * Do not infer a durable Game ACK from success: Caller must stage and commit
  * round + command receipt + sanitized event transactionally before replying. */
+/* Explicit public projection. There is no private hand, shuffled deck or
+ * full game-state pointer in this type. The service may encode only a
+ * validated public view and the currently accepted public action. */
+typedef struct mygames_ddz_public_view {
+    uint64_t turn_id;
+    uint64_t last_cards;
+    mygames_ddz_move last_move;
+    uint8_t remaining[MYGAMES_DDZ_SEATS];
+    uint8_t landlord_seat;
+    uint8_t turn_seat;
+    uint8_t last_seat;
+    uint8_t winner_seat;
+    bool finished;
+} mygames_ddz_public_view;
+
 typedef struct mygames_ddz_action_result {
     uint64_t next_turn_id;
+    uint64_t played_cards; /* Only cards voluntarily revealed by this action. */
     mygames_ddz_move move;
     uint8_t acting_seat;
     uint8_t next_seat;
@@ -107,6 +123,8 @@ mygames_ddz_status mygames_ddz_round_deal(mygames_ddz_round *round,
                                           const uint8_t deck[MYGAMES_DDZ_CARDS],
                                           unsigned landlord_seat);
 mygames_ddz_status mygames_ddz_round_validate(const mygames_ddz_round *round);
+mygames_ddz_status mygames_ddz_round_public_view(const mygames_ddz_round *round,
+                                                 mygames_ddz_public_view *out_view);
 
 /* cards_mask=0 means PASS. expected_turn_id fences stale model/network
  * decisions. On any non-OK result, round AND result remain unchanged. */
