@@ -1,0 +1,172 @@
+name: M4.5 Flowie deferred COMMIT-PUBACK integration
+
+'on':
+  push:
+    branches: [feature/m4-owner-recovery-fetch-fence]
+    paths:
+      - '.github/workflows/deferred-projection-source.yml'
+      - 'CMakeLists.txt'
+      - 'tests/flowie_deferred_consumer.c'
+      - 'tests/flowie_local_broker.c'
+      - 'scripts/ci/ci_flowie_deferred_broker_restart.py'
+      - 'scripts/ci/ci_flowie_receive_maximum.py'
+      - 'scripts/ci/ci_flowie_deferred_projection.py'
+      - 'games/doudizhu/src/consumer_owner.c'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mygames-flowie73-ledger-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  real-broker-ledger:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      EXPECTED_FLOWIE: 72647d8d9203f1ef1738a970ce276c4df63ef89e
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: qigao/flowie
+          ref: 72647d8d9203f1ef1738a970ce276c4df63ef89e
+          path: build/deferred/flowie-src
+          persist-credentials: false
+      - name: Pin exact candidate and prepare host
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C build/deferred/flowie-src rev-parse HEAD)" = "$EXPECTED_FLOWIE"
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ninja-build pkg-config re2c bison flex unzip curl
+          mkdir -p build/deferred
+          printf 'mygames=%s\nflowie=%s\nbroker_test_1=live_process\nbroker_test_2=independent_disk_sqlite_process_restart\n' \
+            "$(git rev-parse HEAD)" "$EXPECTED_FLOWIE" > build/deferred/provenance.txt
+      - name: Restore coherent published Salts, CHttp, TurboDB and pinned port12 provider
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/ci/restore-native-sdks.sh "$RUNNER_TEMP/mygames-deferred-sdk"
+          # GITHUB_ENV is available only in the NEXT step, not this shell.
+          # restore-gmssl.sh reads SDK_PREFIX_PATH with set -u.
+          export SDK_PREFIX_PATH="$RUNNER_TEMP/mygames-deferred-sdk/flowie/sdk/linux-x64;$RUNNER_TEMP/mygames-deferred-sdk/chttp/sdk/linux-x64;$RUNNER_TEMP/mygames-deferred-sdk/turbodb/sdk/linux-x64;$RUNNER_TEMP/mygames-deferred-sdk/salts/sdk/linux-x64;$RUNNER_TEMP/mygames-deferred-sdk/saltsutils/sdk/linux-x64"
+          bash scripts/ci/restore-gmssl.sh "$RUNNER_TEMP/mygames-deferred-gmssl"
+      - name: Restore exact-baseline ancillary Flowie dependencies without provider replacement
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/mygames-deferred-gmssl"
+          test -x "$root/vcpkg/vcpkg"
+          test -f "$root/installed/x64-linux/share/gmssl/GmSSLConfig.cmake"
+          VCPKG_BINARY_SOURCES=clear "$root/vcpkg/vcpkg" install \
+            xxhash:x64-linux c-ares:x64-linux llhttp:x64-linux \
+            --x-install-root="$root/installed" --disable-metrics
+      - name: Build and install exact-source Flowie #73 as isolated candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HTTP_SERVICES_ROOT="$CHTTP_ROOT"
+          pinned="$RUNNER_TEMP/mygames-deferred-gmssl/installed/x64-linux"
+          install="$RUNNER_TEMP/mygames-deferred-flowie"
+          cmake -S build/deferred/flowie-src -B build/deferred/flowie-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$install" \
+            -DBUILD_TESTING=OFF -DFLOWIE_BUILD_TESTS=OFF \
+            -DFLOWIE_BUILD_CONTROL=OFF -DFLOWIE_BUILD_SERVER=OFF \
+            -DFLOWIE_BUILD_CLUSTER=OFF -DFLOWIE_BUILD_BENCHMARKS=OFF \
+            -DCMAKE_PREFIX_PATH="$pinned;$SALTS_ROOT;$SALTS_UTILS_ROOT;$CHTTP_ROOT;$TURBODB_ROOT"
+          cmake --build build/deferred/flowie-build --parallel 2
+          cmake --install build/deferred/flowie-build
+          test -f "$install/lib/cmake/Flowie/FlowieConfig.cmake"
+          grep -q 'flowie_mqtt_client_settle_inbound_qos1' "$install/include/flowie_mqtt_client.h"
+          nm -D "$install/lib/libflowie_client.so" | grep 'flowie_mqtt_client_settle_inbound_qos1'
+          echo "FLOWIE_CANDIDATE=$install" >> "$GITHUB_ENV"
+      - name: Build MyGames against candidate symbols and actual TurboDB
+        shell: bash
+        run: |
+          set -euo pipefail
+          export FLOWIE_ROOT="$FLOWIE_CANDIDATE"
+          export HTTP_SERVICES_ROOT="$CHTTP_ROOT"
+          pinned="$RUNNER_TEMP/mygames-deferred-gmssl/installed/x64-linux"
+          export LD_LIBRARY_PATH="$FLOWIE_CANDIDATE/lib:$CHTTP_ROOT/lib:$TURBODB_ROOT/lib:$SALTS_UTILS_ROOT/lib:$SALTS_ROOT/lib:$pinned/lib:${LD_LIBRARY_PATH:-}"
+          cmake -S . -B build/deferred/mygames-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
+            -DMYGAMES_ENABLE_GATEWAY=OFF -DMYGAMES_ENABLE_TURBODB=ON \
+            -DMYGAMES_ENABLE_FLOWIE=ON -DMYGAMES_TEST_FLOWIE_DEFERRED=ON \
+            -DCMAKE_PREFIX_PATH="$FLOWIE_CANDIDATE;$CHTTP_ROOT;$TURBODB_ROOT;$SALTS_ROOT;$SALTS_UTILS_ROOT;$pinned"
+          cmake --build build/deferred/mygames-build --parallel 2 --target \
+            mygames_flowie_deferred_consumer_test mygames_flowie_broker_test \
+            mygames_outbox_publisher mygames_outbox_seed_test \
+            mygames_outbox_audit_test mygames_flowie_consumer_projection_audit \
+            mygames_consumer_owner_test mygames_consumer_projection_test
+          ldd build/deferred/mygames-build/mygames_flowie_deferred_consumer_test \
+            | tee build/deferred/consumer-ldd.txt
+          grep -F "$FLOWIE_CANDIDATE/lib" build/deferred/consumer-ldd.txt
+          echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+      - name: Verify real persisted TurboDB Owner and projection tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          ctest --test-dir build/deferred/mygames-build -C Release \
+            --output-on-failure --no-tests=error \
+            -R '^mygames[.](consumer_owner|consumer_projection)$'
+      - name: Verify two SIGKILL windows and one Broker publish without synthetic replay
+        shell: bash
+        env:
+          MYGAMES_DEFERRED_EVIDENCE_DIR: build/deferred/evidence
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/ci_flowie_deferred_projection.py \
+            build/deferred/mygames-build/mygames_flowie_broker_test \
+            build/deferred/mygames-build/mygames_flowie_deferred_consumer_test \
+            build/deferred/mygames-build/mygames_outbox_publisher \
+            build/deferred/mygames-build/mygames_outbox_seed_test \
+            build/deferred/mygames-build/mygames_outbox_audit_test \
+            build/deferred/mygames-build/mygames_flowie_consumer_projection_audit \
+            "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so"
+      - name: SIGKILL actual disk-backed Flowie Broker and reload unacknowledged session
+        shell: bash
+        env:
+          MYGAMES_DEFERRED_BROKER_EVIDENCE_DIR: build/deferred/broker-restart-evidence
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/ci_flowie_deferred_broker_restart.py \
+            build/deferred/mygames-build/mygames_flowie_broker_test \
+            build/deferred/mygames-build/mygames_flowie_deferred_consumer_test \
+            build/deferred/mygames-build/mygames_outbox_publisher \
+            build/deferred/mygames-build/mygames_outbox_seed_test \
+            build/deferred/mygames-build/mygames_outbox_audit_test \
+            build/deferred/mygames-build/mygames_flowie_consumer_projection_audit \
+            "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so"
+      - name: Receive Maximum=1 wire window and two actual TurboDB consumer COMMITs
+        shell: bash
+        env:
+          MYGAMES_RECEIVE_WINDOW_EVIDENCE_DIR: build/deferred/receive-window-evidence
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/ci_flowie_receive_maximum.py \
+            build/deferred/mygames-build/mygames_flowie_broker_test \
+            build/deferred/mygames-build/mygames_flowie_deferred_consumer_test \
+            build/deferred/mygames-build/mygames_outbox_publisher \
+            build/deferred/mygames-build/mygames_outbox_seed_test \
+            build/deferred/mygames-build/mygames_outbox_audit_test \
+            build/deferred/mygames-build/mygames_flowie_consumer_projection_audit \
+            "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so"
+      - name: Preserve evidence (not production approval)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mygames-flowie73-durable-ledger-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            build/deferred/provenance.txt
+            build/deferred/consumer-ldd.txt
+            build/deferred/evidence/
+            build/deferred/broker-restart-evidence/
+            build/deferred/receive-window-evidence/
+            build/deferred/mygames-build/Testing/Temporary/LastTest.log

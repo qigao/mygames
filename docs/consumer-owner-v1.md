@@ -101,3 +101,62 @@ process/host leader fencing, retention expiry and pruning, IAM
 rotation/revocation, unknown DB COMMIT audit after power loss,
 Windows/macOS genuine Broker/HTTPS integration, release packaging.
 Neither exactly-once end-to-end nor production no-loss is established.
+
+## M4.5 opt-in deferred incoming QoS1 and actual Broker restart (candidate)
+
+[Flowie #73](https://github.com/qigao/flowie/pull/73) source
+`1fe0fd119d468bb8b9f6bb534891e17a31a78200` adds an opt-in
+per-Client bounded QoS1 deferred wire disposition. MyGames PR #9 now
+contains **test-only** `MYGAMES_TEST_FLOWIE_DEFERRED=ON` qualification.
+The released Flowie 1.0.4 import and production `RoomDirectory` /
+gateway remain unchanged.
+
+- A copied MQTT token belongs only to the current Flowie worker/session
+  generation. The Client callback copies canonical public-event bytes
+  into the 8-slot MQTT portion of the one 24-slot ConsumerOwner mailbox.
+  It does **not** execute TurboDB or send PUBACK. No borrowed Flowie
+  payload pointer survives the callback.
+- The creator thread runs `pump_one()` and applies one event via the
+  **real TurboDB** ConsumerProjection transaction. Only successful
+  `APPLIED` or matching receipt digest `REPLAY` authorizes native
+  `settle_inbound_qos1()`. A successful enqueue of that command is
+  **not** wire-ACK proof; the native completion is observed separately.
+- A crash invalidates the Client's ephemeral token; it is **not**
+  persisted in MyGames. A resumed Broker session redelivers its
+  unacknowledged QoS1 PUBLISH with a *fresh* Flowie session token. The
+  ConsumerOwner reads the durable receipt/cursor and permits the new ACK
+  only after identical REPLAY or new COMMIT.
+- The M4.5 Linux proof uses **three separate SQLite database paths**:
+  authoritative source Outbox, consumer-owned ledger, and Flowie Broker
+  protocol sessions/deliveries. A fourth, read-only SQLite connection
+  polls the Broker protocol store for a committed pending delivery
+  before SIGKILL; after ACK it verifies durable retirement. It never
+  writes the Broker's protocol state.
+- With only **one real publisher PUBLISH**, two Consumer SIGKILL points
+  (pre-COMMIT and post-COMMIT/pre-PUBACK) and three Broker SIGKILL points
+  across four Broker startups, the session resumes with
+  `Session Present=1`, cursor=1/effect_count=1, and no further
+  redelivery after PUBACK plus restart.
+- First red run exposed Flowie V2 repository restore not marking its
+  logical session `initialized`, yielding false `Session Present=0`
+  even while an unacknowledged delivery remained on disk. Upstream
+  Flowie fix `2de67b5c` and persisted identity test at
+  `1fe0fd11` are required; the MyGames test never relaxes this
+  negative assertion.
+
+Evidence: [exact-source M4.5 CI #40289959092](https://github.com/qigao/mygames/actions/runs/40289959092)
+**SUCCESS**, with preserved four-Broker logs, two Consumer crash logs,
+one native ACK trace and exact candidate provenance. Flowie standalone
+strict C11 [#40289937464](https://github.com/qigao/flowie/actions/runs/40289937464)
+**SUCCESS 3/3**.
+
+### Important safety limits
+
+This is a single-node disk-backed Broker qualification, **not** proof
+of hardware power-cut durability or distributed exactly-once delivery.
+Pending: cross-host owner leases/fencing, independent full-source TSan,
+stop/destroy/queue-FULL races under real external COMMIT, QoS0 flood
+and MQTT 5 Receive Maximum / credit policy, persistence pruning, real
+service credential lifecycle, and Windows/macOS installed Debug/Release
+SDK runtime matrices. Keep Flowie #22 Open and PRs #1/#7/#9/#73 Draft,
+unmerged; no production cutover.

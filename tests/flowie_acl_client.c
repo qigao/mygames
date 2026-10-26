@@ -538,6 +538,15 @@ int main(int argc, char **argv) {
                 p.native_http = &native_http;
                 if (mygames_test_owner_http_start(&native_http) != SALTS_OK)
                     goto cleanup;
+                /* Reject a competing HTTP recovery request BEFORE opening a
+                 * socket or borrowing this consumer's persistent ledger. */
+                {
+                    mygames_owner_fetch_ticket denied = {0};
+                    if (mygames_consumer_owner_begin_fetch(
+                            p.owner, &denied) != MYGAMES_OWNER_BUSY ||
+                        denied.generation != 0u)
+                        goto cleanup;
+                }
                 puts("FLOWIE_OWNER_NATIVE_HTTP_STARTED");
                 fflush(stdout);
                 if (!wait_bool(&p.received, 9000u)) goto cleanup;

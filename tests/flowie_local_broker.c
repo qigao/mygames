@@ -5,6 +5,7 @@
  */
 #include <flowie.h>
 #include <salts/error_codes.h>
+#include <orm.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -97,6 +98,14 @@ int main(void) {
     flowie_endpoint_security_binding_t security = FLOWIE_ENDPOINT_SECURITY_BINDING_INIT;
     flowie_endpoint_bindings_t bindings = FLOWIE_ENDPOINT_BINDINGS_INIT;
     flowie_execution_binding_t execution = FLOWIE_EXECUTION_BINDING_INIT;
+    flowie_protocol_repository_t *repository = NULL;
+    flowie_protocol_repository_config_t repository_config = {0};
+    flowie_endpoint_persistence_binding_t persistence =
+        FLOWIE_ENDPOINT_PERSISTENCE_BINDING_INIT;
+    orm_config_t database_config;
+    orm_option_t database_options[2] = {{0}};
+    const char *broker_database = getenv("MYGAMES_TEST_BROKER_DB");
+    const char *broker_driver = getenv("MYGAMES_TEST_BROKER_DRIVER");
     int status;
 
     config.host = "127.0.0.1";
@@ -109,6 +118,45 @@ int main(void) {
     config.max_inflight_per_session = 8u;
     config.reuse_port = 1;
     options.on_message = on_message;
+
+    /* Test-only disk-backed protocol facts, separate from authoritative
+     * Room Outbox and ConsumerProjection. Requires explicit absolute paths;
+     * refusing a missing driver avoids implicit native-plugin fallback. */
+    if (broker_database || broker_driver) {
+        if (!secure || !broker_database || !broker_driver ||
+            broker_database[0] != '/' || broker_driver[0] != '/') {
+            fputs("Invalid disk-backed Broker fixture configuration\n", stderr);
+            return 2;
+        }
+        orm_config(&database_config);
+        database_options[0].keyword = orm_view("filename");
+        database_options[0].value = orm_view(broker_database);
+        database_options[1].keyword = orm_view("flowie.driver_module");
+        database_options[1].value = orm_view(broker_driver);
+        database_config.driver = orm_view("sqlite");
+        database_config.options = database_options;
+        database_config.option_count = 2u;
+        repository_config.size = sizeof(repository_config);
+        repository_config.database = &database_config;
+        repository_config.namespace_name = "mygames_ci_broker";
+        repository_config.create_schema = 1;
+        repository_config.limits.max_sessions = config.max_sessions;
+        repository_config.limits.max_subscriptions_per_session =
+            config.max_subscriptions_per_session;
+        repository_config.limits.max_inflight_per_session =
+            config.max_inflight_per_session;
+        repository_config.limits.max_retained_messages = 16u;
+        repository_config.limits.max_client_id_size = 128u;
+        repository_config.limits.max_topic_size = 512u;
+        repository_config.limits.max_packet_size = config.max_packet_size;
+        status = flowie_protocol_repository_open(&repository_config, &repository);
+        if (status != SALTS_OK || !repository) {
+            fprintf(stderr, "Disk-backed Broker repository open failed: %d\n", status);
+            return 1;
+        }
+        persistence.repository = repository;
+        bindings.persistence = &persistence;
+    }
 
     if (secure) {
         if (!getenv("MYGAMES_TEST_PUBLISHER_SECRET") ||
@@ -133,6 +181,7 @@ int main(void) {
         status = flowie_security_realm_create(&realm_config, &realm);
         if (status != SALTS_OK || !realm) {
             fprintf(stderr, "Flowie security realm create: %d\n", status);
+            flowie_protocol_repository_close(repository);
             return 1;
         }
         auth.size = sizeof(auth);
@@ -152,6 +201,7 @@ int main(void) {
     if (status != SALTS_OK || !endpoint) {
         fprintf(stderr, "Flowie endpoint create: %d\n", status);
         flowie_security_realm_destroy(realm);
+        flowie_protocol_repository_close(repository);
         return 1;
     }
     status = flowie_endpoint_core_start(endpoint);
@@ -159,6 +209,7 @@ int main(void) {
         fprintf(stderr, "Flowie endpoint start: %d\n", status);
         flowie_endpoint_core_destroy(endpoint);
         flowie_security_realm_destroy(realm);
+        flowie_protocol_repository_close(repository);
         return 1;
     }
     puts(secure ? "FLOWIE_SECURE_BROKER_READY" : "FLOWIE_BROKER_READY");
@@ -167,5 +218,6 @@ int main(void) {
     status = flowie_endpoint_core_stop(endpoint);
     flowie_endpoint_core_destroy(endpoint);
     flowie_security_realm_destroy(realm);
+    flowie_protocol_repository_close(repository);
     return status == SALTS_OK ? 0 : 1;
 }

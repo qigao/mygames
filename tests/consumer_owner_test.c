@@ -175,6 +175,18 @@ static void close_during_taken(void *arg) {
 }
 #endif
 
+typedef struct fetch_release_worker {
+    mygames_consumer_owner *owner;
+    mygames_owner_fetch_ticket ticket;
+    mygames_owner_result result;
+} fetch_release_worker;
+static void release_fetch_from_other_thread(void *arg) {
+    fetch_release_worker *ctx = (fetch_release_worker *)arg;
+    assert(ctx);
+    ctx->result = mygames_consumer_owner_finish_fetch(
+        ctx->owner, ctx->ticket);
+}
+
 static mygames_consumer_owner *open_owner(
     mygames_consumer_projection *ledger) {
     mygames_consumer_owner *owner = NULL;
@@ -375,6 +387,53 @@ int main(int argc, char **argv) {
     assert_cursor(ledger, 20u);
     assert(mygames_consumer_owner_destroy(owner) == MYGAMES_OWNER_OK);
 #endif
+    /* M4.4 one in-flight HTTP fetch per consumer: only the Owner creator
+     * may read the durable cursor and issue the generation token. A second
+     * recovery worker is rejected before it can start any network read.
+     * Stale release cannot close a newer fetch. Closing during a borrowed
+     * fetch cannot free the Owner until the worker releases its token. */
+    owner = open_owner(ledger);
+    {
+        mygames_owner_fetch_ticket a_fetch = {0};
+        mygames_owner_fetch_ticket b_fetch = {0};
+        mygames_owner_fetch_ticket denied = {0};
+        fetch_release_worker release = {0};
+        assert(mygames_consumer_owner_begin_fetch(
+                   owner, &a_fetch) == MYGAMES_OWNER_OK);
+        assert(a_fetch.generation > 0u && a_fetch.committed_after == 20u);
+        assert(mygames_consumer_owner_begin_fetch(
+                   owner, &denied) == MYGAMES_OWNER_BUSY);
+        assert(denied.generation == 0u);
+        assert(mygames_consumer_owner_finish_fetch(
+                   owner, a_fetch) == MYGAMES_OWNER_OK);
+        assert(mygames_consumer_owner_begin_fetch(
+                   owner, &b_fetch) == MYGAMES_OWNER_OK);
+        assert(b_fetch.generation > a_fetch.generation &&
+               b_fetch.committed_after == 20u);
+        assert(mygames_consumer_owner_finish_fetch(
+                   owner, a_fetch) == MYGAMES_OWNER_STALE);
+        assert(mygames_consumer_owner_begin_fetch(
+                   owner, &denied) == MYGAMES_OWNER_BUSY);
+        assert(mygames_consumer_owner_begin_close(owner) ==
+               MYGAMES_OWNER_BUSY);
+        assert(mygames_consumer_owner_destroy(owner) ==
+               MYGAMES_OWNER_BUSY);
+        release.owner = owner;
+        release.ticket = b_fetch;
+        assert(cmeta_thread_create(
+                   &threads[0], release_fetch_from_other_thread,
+                   &release) == SALTS_OK);
+        assert(cmeta_thread_join(&threads[0]) == SALTS_OK);
+        cmeta_thread_destroy(&threads[0]);
+        assert(release.result == MYGAMES_OWNER_OK);
+        assert(mygames_consumer_owner_finish_fetch(
+                   owner, b_fetch) == MYGAMES_OWNER_STALE);
+        assert(mygames_consumer_owner_begin_fetch(
+                   owner, &denied) == MYGAMES_OWNER_CLOSED);
+        assert(mygames_consumer_owner_destroy(owner) ==
+               MYGAMES_OWNER_OK);
+    }
+    assert_cursor(ledger, 20u);
     mygames_consumer_projection_close(ledger);
     erase_test_db(argv[2]);
     puts("mygames.consumer_owner: PASS capacity, concurrent ingress, "

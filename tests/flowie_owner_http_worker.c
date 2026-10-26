@@ -143,6 +143,15 @@ done:
         job->successful = false;
     if (profile_ready && chttp_tls_profile_destroy(&profile) != SALTS_OK)
         job->successful = false;
+    /* HTTP owns no durable effect. Release its generation retain only AFTER
+     * the CHttp client, TLS profile and response have been quiesced, so a
+     * concurrent close/destroy cannot invalidate Owner state too early. */
+    if (job->fetch_owned) {
+        if (mygames_consumer_owner_finish_fetch(
+                job->owner, job->fetch_ticket) != MYGAMES_OWNER_OK)
+            job->successful = false;
+        job->fetch_owned = false;
+    }
     atomic_store_explicit(&job->in_flight, false, memory_order_release);
 }
 
@@ -151,8 +160,24 @@ int mygames_test_owner_http_start(mygames_test_owner_http *job) {
     atomic_init(&job->in_flight, false);
     job->successful = false;
     job->admitted = 0u;
-    if (cmeta_thread_create(&job->thread, native_http_worker, job) != SALTS_OK)
+    job->fetch_owned = false;
+    memset(&job->fetch_ticket, 0, sizeof(job->fetch_ticket));
+    if (mygames_consumer_owner_begin_fetch(
+            job->owner, &job->fetch_ticket) != MYGAMES_OWNER_OK)
+        return SALTS_EINVAL; /* no socket/ledger access on second worker */
+    job->fetch_owned = true;
+    if (job->fetch_ticket.committed_after != job->committed_after) {
+        (void)mygames_consumer_owner_finish_fetch(
+            job->owner, job->fetch_ticket);
+        job->fetch_owned = false;
+        return SALTS_EINVAL; /* stale GET cursor: no implicit retry */
+    }
+    if (cmeta_thread_create(&job->thread, native_http_worker, job) != SALTS_OK) {
+        (void)mygames_consumer_owner_finish_fetch(
+            job->owner, job->fetch_ticket);
+        job->fetch_owned = false;
         return SALTS_EINVAL;
+    }
     job->started = true;
     return SALTS_OK;
 }
