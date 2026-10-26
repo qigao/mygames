@@ -314,6 +314,16 @@ if(MYGAMES_ENABLE_FLOWIE)
     target_link_libraries(mygames_flowie_acl_client_test PRIVATE
       Flowie::Client MyGames::ConsumerProjection MyGames::ConsumerOwner
       MyGames::RecoveryWire MyGames::Outbox Salts::Core Orm::C)
+    if(MYGAMES_ENABLE_GATEWAY)
+      # Native CHttp and Flowie work concurrently within this one test
+      # process, copying events into the same Consumer Owner. Flowie-only
+      # published-SDK CI does not add a new HTTP dependency.
+      target_sources(mygames_flowie_acl_client_test PRIVATE
+        tests/flowie_owner_http_worker.c)
+      target_compile_definitions(mygames_flowie_acl_client_test PRIVATE
+        MYGAMES_FLOWIE_OWNER_NATIVE_HTTP=1)
+      target_link_libraries(mygames_flowie_acl_client_test PRIVATE CHttp::Client)
+    endif()
     target_compile_features(mygames_flowie_acl_client_test PRIVATE c_std_11)
     add_executable(mygames_archive_corrupt_test tests/flowie_archive_corrupt_test.c)
     target_compile_features(mygames_archive_corrupt_test PRIVATE c_std_11)
