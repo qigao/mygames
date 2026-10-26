@@ -8,6 +8,7 @@ option(MYGAMES_ENABLE_FLOWIE "Build optional Flowie QoS1 Outbox publisher and lo
 add_library(mygames_room STATIC games/doudizhu/src/room.c
   games/doudizhu/src/room_directory.c
   games/doudizhu/src/wire.c
+  games/doudizhu/src/ddz_game_wire.c
   games/doudizhu/src/session_registry.c
   games/doudizhu/src/room_checkpoint.c)
 add_library(MyGames::Room ALIAS mygames_room)
@@ -141,7 +142,7 @@ if(MYGAMES_ENABLE_TURBODB)
     target_compile_definitions(mygames_server PRIVATE
       MYGAMES_WITH_TURBODB=1)
     target_link_libraries(mygames_server PRIVATE
-      MyGames::Store Salts::Core)
+      MyGames::Store MyGames::DouDizhuGameOwner Salts::Core)
     if(BUILD_TESTING)
       # Fault injection exists only in an explicitly test-qualified build.
       target_compile_definitions(mygames_server PRIVATE
@@ -236,6 +237,15 @@ endif()
 
 
 if(BUILD_TESTING)
+  add_executable(mygames_ddz_game_wire_test tests/ddz_game_wire_test.c)
+  target_link_libraries(mygames_ddz_game_wire_test PRIVATE MyGames::Room)
+  if(MSVC)
+    target_compile_options(mygames_ddz_game_wire_test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_ddz_game_wire_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME mygames.ddz_game_wire COMMAND mygames_ddz_game_wire_test)
+
   add_executable(mygames_ddz_checkpoint_test tests/ddz_match_checkpoint_test.c)
   target_compile_features(mygames_ddz_checkpoint_test PRIVATE c_std_11)
   target_link_libraries(mygames_ddz_checkpoint_test PRIVATE MyGames::DouDizhuCheckpoint)
