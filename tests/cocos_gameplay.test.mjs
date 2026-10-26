@@ -44,7 +44,7 @@ const bidding=(step='1')=>({...base,type:'game.snapshot',
   bid_turn_seat:0,highest_bid:0,highest_seat:3});
 const playing=(turn='1',count=20)=>({...base,type:'game.snapshot',request_id:'broadcaster',
   phase:'playing',highest_bid:3,landlord_seat:0,
-  revealed_kitty_hex:'00300000000000',turn_id:turn,turn_seat:0,
+  revealed_kitty_hex:'00700000000000',turn_id:turn,turn_seat:0,
   last_cards_hex:'00000000000000',last_seat:3,
   remaining:[count,17,17],winner_seat:3
 });
