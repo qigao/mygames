@@ -221,6 +221,53 @@ static bool project_received_owner(const probe *p, const char *namespace_id,
     return valid;
 }
 
+/* Real CHttp recovered bytes are fed in via a trusted test harness stdin
+ * pipe, while the independent Flowie network callback admits the matching
+ * MQTT event. Both entries share exactly the same Owner and Ledger.
+ * The harness, NOT this subscriber, verifies HTTPS TLS before injection. */
+static bool accept_real_history_stdin(probe *p) {
+    char length_line[32];
+    char bytes[MYGAMES_RECOVERY_RESPONSE_MAX];
+    char *end = NULL;
+    unsigned long length;
+    size_t n = 0u;
+    mygames_owner_ticket tickets[MYGAMES_STORE_ARCHIVE_PAGE_MAX];
+    if (!p || !p->owner ||
+        !fgets(length_line, sizeof(length_line), stdin))
+        return false;
+    length = strtoul(length_line, &end, 10);
+    if (!end || (*end != '\n' && *end != 0) ||
+        length == 0ul || length > sizeof(bytes))
+        return false;
+    if (fread(bytes, 1u, length, stdin) != length)
+        return false;
+    /* Explicit test source stream begins at durable zero, which is
+     * independently checked after the first Owner receives the source. */
+    return mygames_consumer_owner_admit_history(
+               p->owner, bytes, length, 0u,
+               tickets, MYGAMES_STORE_ARCHIVE_PAGE_MAX, &n) ==
+               MYGAMES_OWNER_OK && n == 1u;
+}
+static bool project_real_history_and_flowie_owner(const probe *p) {
+    const char *ns = getenv("MYGAMES_TEST_SOURCE_NAMESPACE");
+    uint64_t last = 0u, effects = 0u;
+    mygames_owner_result a, b;
+    if (!p || !p->owner || !p->projection || !ns ||
+        !p->mqtt_ticket.generation)
+        return false;
+    a = mygames_consumer_owner_pump_one(p->owner, &last);
+    b = mygames_consumer_owner_pump_one(p->owner, &last);
+    if (a != MYGAMES_OWNER_APPLIED ||
+        b != MYGAMES_OWNER_REPLAY ||
+        mygames_consumer_projection_snapshot(
+            p->projection, ns, "backend-projection-v1",
+            &last, &effects) != MYGAMES_CONSUMER_APPLIED ||
+        last != 1u || effects != 1u)
+        return false;
+    puts("FLOWIE_OWNER_REAL_MTLS_HISTORY_PASS");
+    return true;
+}
+
 static bool project_received_event(const probe *p) {
     const char *database = getenv("MYGAMES_TEST_PROJECTION_DB");
     const char *driver = getenv("MYGAMES_TEST_PROJECTION_DRIVER");
@@ -289,7 +336,8 @@ int main(int argc, char **argv) {
     if (strcmp(mode, "subscriber") == 0 ||
         strcmp(mode, "subscriber-listen") == 0 ||
         strcmp(mode, "subscriber-no-commit") == 0 ||
-        strcmp(mode, "subscriber-owner") == 0) {
+        strcmp(mode, "subscriber-owner") == 0 ||
+        strcmp(mode, "subscriber-owner-mtls") == 0) {
         identity = "svc-consumer";
         password = getenv("MYGAMES_TEST_CONSUMER_SECRET");
         client_id = "mygames-consumer-v1";
@@ -335,7 +383,8 @@ int main(int argc, char **argv) {
     p.owner = NULL;
     p.projection = NULL;
     p.mqtt_ticket = (mygames_owner_ticket){0};
-    if (strcmp(mode, "subscriber-owner") == 0) {
+    if (strcmp(mode, "subscriber-owner") == 0 ||
+        strcmp(mode, "subscriber-owner-mtls") == 0) {
         const char *db = getenv("MYGAMES_TEST_PROJECTION_DB");
         const char *driver = getenv("MYGAMES_TEST_PROJECTION_DRIVER");
         const char *ns = getenv("MYGAMES_TEST_SOURCE_NAMESPACE");
@@ -369,7 +418,8 @@ int main(int argc, char **argv) {
     config.user_data = &p;
     if ((strcmp(mode, "subscriber-listen") == 0 ||
          strcmp(mode, "subscriber-no-commit") == 0 ||
-         strcmp(mode, "subscriber-owner") == 0)) {
+         strcmp(mode, "subscriber-owner") == 0 ||
+         strcmp(mode, "subscriber-owner-mtls") == 0)) {
         handler.filter = (flowie_mqtt_span_t){
             (const uint8_t *)TOPIC, sizeof(TOPIC) - 1u};
         handler.on_message = on_message;
@@ -426,13 +476,24 @@ int main(int argc, char **argv) {
             (strcmp(mode, "subscriber") == 0 ||
              strcmp(mode, "subscriber-listen") == 0 ||
              strcmp(mode, "subscriber-no-commit") == 0 ||
-             strcmp(mode, "subscriber-owner") == 0))
+             strcmp(mode, "subscriber-owner") == 0 ||
+             strcmp(mode, "subscriber-owner-mtls") == 0))
             goto cleanup;
         if ((strcmp(mode, "subscriber-listen") == 0 ||
          strcmp(mode, "subscriber-no-commit") == 0 ||
-         strcmp(mode, "subscriber-owner") == 0)) {
+         strcmp(mode, "subscriber-owner") == 0 ||
+         strcmp(mode, "subscriber-owner-mtls") == 0)) {
             puts("FLOWIE_ACL_SUBSCRIBER_READY");
             fflush(stdout);
+            if (strcmp(mode, "subscriber-owner-mtls") == 0) {
+                if (!accept_real_history_stdin(&p) ||
+                    !wait_bool(&p.received, 9000u) ||
+                    !project_real_history_and_flowie_owner(&p))
+                    goto cleanup;
+                /* No duplicate projection and no MQTT ACK control here:
+                 * Flowie 1.0.4 auto-PUBACK is still pre-COMMIT. */
+                goto subscription_finished;
+            }
             if (!wait_bool(&p.received, 9000u)) goto cleanup;
             if (strcmp(mode, "subscriber-no-commit") == 0) {
                 /* Explicitly simulate a crash window after Flowie's
@@ -446,6 +507,7 @@ int main(int argc, char **argv) {
             if (!project_received_event(&p)) goto cleanup;
         }
     }
+subscription_finished:
     if (expect_publish) {
         item.qos = 1u;
         {
