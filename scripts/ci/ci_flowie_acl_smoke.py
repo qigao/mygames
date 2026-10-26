@@ -86,14 +86,16 @@ def main() -> int:
                          str(expected_seq), str(expected_seq)], env)
 
                 def subscriber_round(label, publish_mode, expected_result,
-                                     expected_seq, crash=False):
+                                     expected_seq, crash=False,
+                                     consumer_owner=False):
                     listener = None
                     with (root / f"subscriber-{label}.log").open(
                             "w+t", encoding="utf-8") as sublog:
                         listen_env = env.copy()
                         listen_env["MYGAMES_TEST_EXPECT_PROJECTION"] = expected_result
                         listener = subprocess.Popen(
-                            [client,"subscriber-listen"],stdout=sublog,
+                            [client, "subscriber-owner" if consumer_owner
+                             else "subscriber-listen"],stdout=sublog,
                             stderr=subprocess.STDOUT,env=listen_env)
                         try:
                             check_ready(listener, sublog, "FLOWIE_ACL_SUBSCRIBER_READY")
@@ -123,7 +125,13 @@ def main() -> int:
 
                 # Broker delivered event #1, publisher exits deliberately
                 # before acknowledging the Outbox row in SQLite.
-                subscriber_round("initial", "--once", "applied", 1, crash=True)
+                # Exercise the *actual* Flowie Broker delivery into the
+                # bounded ConsumerOwner, and overlap it with a canonical
+                # one-event historical page before Owner commits. The
+                # current Flowie worker still auto-PUBACKs before DB COMMIT;
+                # this does NOT qualify optional delayed inbound ACK.
+                subscriber_round("initial", "--once", "applied", 1,
+                                 crash=True, consumer_owner=True)
                 run([audit,plugin,database,"1"],env)
                 log.flush()
                 log.seek(0)
@@ -135,7 +143,8 @@ def main() -> int:
                 run([audit,plugin,database,"2"],env)
 
                 # Event #2 is new and advances durable projection to seq=2.
-                subscriber_round("second", "--drain", "applied", 2)
+                subscriber_round("second", "--drain", "applied", 2,
+                                 consumer_owner=True)
                 run([audit,plugin,database,"0"],env)
                 run([publisher,plugin,database,"--drain"],env)
                 log.flush()
@@ -194,8 +203,9 @@ def main() -> int:
                     raise RuntimeError("Flowie secured broker failure: "+
                                        log.read()[-1800:])
         print("mygames.flowie_acl_and_projection: PASS "
-              "(service ACL, player deny, durable MQTT duplicate replay, "
-              "atomic consumer cursor/effect after subscriber restart)",flush=True)
+              "(service ACL, player deny, bounded Consumer Owner real MQTT "
+              "callback + history overlap, durable duplicate replay, "
+              "atomic cursor/effect after subscriber restart)",flush=True)
     return 0
 
 if __name__ == "__main__":
