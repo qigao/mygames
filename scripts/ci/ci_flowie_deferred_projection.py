@@ -155,17 +155,17 @@ def main() -> int:
                 # Write only after ALL four modes and post-reconnect audits
                 # have independently passed; never promote partial logs to PASS.
                 (evidence / "acceptance.txt").write_text(
-                    "result=PASS\\n"
-                    "flowie=exact-source-73\\n"
-                    "broker_unique_business_publish=1\\n"
-                    "first_crash=pre_consumer_commit\\n"
-                    "second_crash=post_consumer_commit_pre_puback\\n"
-                    "durable_cursor=1\\n"
-                    "effect_count=1\\n"
-                    "redelivery=broker_persistent_session_same_client_id\\n"
-                    "native_puback=settlement_callback_success\\n"
-                    "post_ack_reconnect=no_redelivery_observed\\n"
-                    "broker_process_restart=NOT_TESTED\\n",
+                    "result=PASS\n"
+                    "flowie=exact-source-73\n"
+                    "broker_unique_business_publish=1\n"
+                    "first_crash=pre_consumer_commit\n"
+                    "second_crash=post_consumer_commit_pre_puback\n"
+                    "durable_cursor=1\n"
+                    "effect_count=1\n"
+                    "redelivery=broker_persistent_session_same_client_id\n"
+                    "native_puback=settlement_callback_success\n"
+                    "post_ack_reconnect=no_redelivery_observed\n"
+                    "broker_process_restart=NOT_TESTED\n",
                     encoding="ascii",
                 )
                 print(
