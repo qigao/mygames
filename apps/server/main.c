@@ -5,6 +5,7 @@
 #include <http_server/http.h>
 #include "mygames/room_directory.h"
 #include "mygames/wire.h"
+#include "mygames/ddz_game_wire.h"
 #include "mygames/session_registry.h"
 #include <salts/random.h>
 #include <salts/clock.h>
@@ -12,6 +13,7 @@
 #include <cflow/executor.h>
 #if defined(MYGAMES_WITH_TURBODB)
 #include "mygames/room_store.h"
+#include "mygames/ddz_game_owner.h"
 #include <cmeta_crypto.h>
 #endif
 #include <stdatomic.h>
@@ -577,6 +579,202 @@ static void storage_rejection(dev_server_state *state,
 }
 #endif
 
+
+#if defined(MYGAMES_WITH_TURBODB)
+/* This is called ONLY by the existing CFlow room_task_run, never by a
+ * CHttp/CNet callback. Session principal and CHttp session generation are
+ * resolved by current_identity before opening a private Game Owner. */
+static const char *game_error_code(mygames_ddz_owner_status status) {
+    switch (status) {
+    case MYGAMES_DDZ_OWNER_UNAUTHORIZED: return "not_authorized";
+    case MYGAMES_DDZ_OWNER_WRONG_PHASE: return "wrong_phase";
+    case MYGAMES_DDZ_OWNER_STALE: return "stale_generation_or_turn";
+    case MYGAMES_DDZ_OWNER_CAPACITY: return "capacity";
+    case MYGAMES_DDZ_OWNER_STORAGE_HALTED: return "storage_unavailable";
+    case MYGAMES_DDZ_OWNER_INVALID: return "invalid_game_command";
+    default: return "game_unavailable";
+    }
+}
+static void send_game_error(const chttp_server_websocket_session *session,
+                            const char *id, const char *code) {
+    char reply[196];
+    const int length = snprintf(reply, sizeof(reply),
+        "{\"v\":1,\"type\":\"game.error\",\"request_id\":\"%s\","
+        "\"code\":\"%s\"}", id, code);
+    if (length > 0 && (size_t)length < sizeof(reply))
+        (void)send_text(session, reply);
+}
+static bool encode_game_snapshot(const mygames_ddz_game_owner *owner,
+                                 const char *request_id, char *out,
+                                 size_t capacity) {
+    mygames_ddz_match_public view = {0};
+    int length;
+    const char *phase;
+    if (!owner || !out || !request_id ||
+        mygames_ddz_game_owner_public_view(owner, &view) != MYGAMES_DDZ_OWNER_OK)
+        return false;
+    phase = view.phase == MYGAMES_DDZ_MATCH_BIDDING ? "bidding" :
+            view.phase == MYGAMES_DDZ_MATCH_REDEAL_REQUIRED ? "redeal_required" :
+            view.phase == MYGAMES_DDZ_MATCH_PLAYING ? "playing" :
+            view.phase == MYGAMES_DDZ_MATCH_FINISHED ? "finished" : NULL;
+    if (!phase) return false;
+    if (!view.has_round) {
+        length = snprintf(out, capacity,
+            "{\"v\":1,\"type\":\"game.snapshot\",\"request_id\":\"%s\","
+            "\"room_id\":\"%s\",\"room_epoch\":\"%" PRIu64 "\","
+            "\"game_id\":\"%" PRIu64 "\",\"phase\":\"%s\","
+            "\"bid_turn_id\":\"%" PRIu64 "\",\"bid_turn_seat\":%u,"
+            "\"highest_bid\":%u,\"highest_seat\":%u}",
+            request_id, owner->room_id, view.room_epoch, view.game_id, phase,
+            view.bid_turn_id, (unsigned)view.bid_turn_seat,
+            (unsigned)view.highest_bid, (unsigned)view.highest_seat);
+    } else {
+        length = snprintf(out, capacity,
+            "{\"v\":1,\"type\":\"game.snapshot\",\"request_id\":\"%s\","
+            "\"room_id\":\"%s\",\"room_epoch\":\"%" PRIu64 "\","
+            "\"game_id\":\"%" PRIu64 "\",\"phase\":\"%s\","
+            "\"highest_bid\":%u,\"landlord_seat\":%u,"
+            "\"revealed_kitty_hex\":\"%014" PRIx64 "\","
+            "\"turn_id\":\"%" PRIu64 "\",\"turn_seat\":%u,"
+            "\"last_cards_hex\":\"%014" PRIx64 "\",\"last_seat\":%u,"
+            "\"remaining\":[%u,%u,%u],\"winner_seat\":%u}",
+            request_id, owner->room_id, view.room_epoch, view.game_id, phase,
+            (unsigned)view.highest_bid, (unsigned)view.highest_seat,
+            view.revealed_kitty, view.round.turn_id,
+            (unsigned)view.round.turn_seat, view.round.last_cards,
+            (unsigned)view.round.last_seat,
+            (unsigned)view.round.remaining[0], (unsigned)view.round.remaining[1],
+            (unsigned)view.round.remaining[2], (unsigned)view.round.winner_seat);
+    }
+    return length > 0 && (size_t)length < capacity;
+}
+
+/* Commit happens BEFORE any public fanout. Only current bound members of
+ * this room receive the public projection; no deck/secret or hand is ever
+ * retained or published by this function. Failed CHttp send admission is
+ * NOT a transaction rollback: clients must query or retry with request_id. */
+static void publish_game_snapshot(dev_server_state *state,
+                                  const mygames_ddz_game_owner *owner,
+                                  const char *request_id) {
+    char public_data[768];
+    const mygames_room *room;
+    size_t index;
+    if (!encode_game_snapshot(owner, request_id, public_data,
+                              sizeof(public_data))) return;
+    room = mygames_room_directory_get(&state->rooms, owner->room_id);
+    if (!room) return;
+    for (index = 0u; index < MYGAMES_PEER_CAPACITY; ++index) {
+        const client_peer *peer = &state->peers[index];
+        const mygames_session_record *identity = current_identity(state, peer);
+        if (!identity ||
+            mygames_room_directory_get_player(&state->rooms, identity->player) != room)
+            continue;
+        (void)send_text(&peer->session, public_data);
+    }
+}
+
+static void ws_handle_game_command(dev_server_state *state, client_peer *client,
+                                    const chttp_server_websocket_session *session,
+                                    const mygames_ddz_game_wire_command *command) {
+    mygames_ddz_game_owner owner = {0};
+    mygames_ddz_owner_status result;
+    const mygames_session_record *identity = current_identity(state, client);
+    const mygames_room *room;
+    char ack[MYGAMES_DDZ_GAME_ACK_MAX];
+    char view[768];
+    size_t ack_size = 0u;
+    uint64_t game_id;
+    if (!identity) {
+        send_game_error(session, command->request_id, "session_stale");
+        return;
+    }
+    if (!state->store || state->store_halted) {
+        send_game_error(session, command->request_id, "durable_game_unavailable");
+        return;
+    }
+    room = mygames_room_directory_get_player(&state->rooms, identity->player);
+    if (!room || room->phase != MYGAMES_ROOM_STARTING) {
+        send_game_error(session, command->request_id, "room_not_started");
+        return;
+    }
+    result = mygames_ddz_game_owner_init(&owner, state->store, &state->rooms,
+                                       state->room_epoch, &state->durable_sequence,
+                                       room->id);
+    if (result != MYGAMES_DDZ_OWNER_OK) {
+        /* The single CFlow Owner cannot trust an uncertain private/public
+         * mismatch. Refuse further writes until an independent disk audit. */
+        state->store_halted = true;
+        send_game_error(session, command->request_id, "storage_unavailable");
+        return;
+    }
+    if (command->kind == MYGAMES_DDZ_GAME_SNAPSHOT ||
+        command->kind == MYGAMES_DDZ_GAME_HAND) {
+        if (!owner.has_match || command->game_id != owner.private_match.game_id) {
+            result = MYGAMES_DDZ_OWNER_STALE;
+        } else if (command->kind == MYGAMES_DDZ_GAME_SNAPSHOT) {
+            if (encode_game_snapshot(&owner, command->request_id,
+                                     view, sizeof(view))) {
+                (void)send_text(session, view);
+                result = MYGAMES_DDZ_OWNER_OK;
+            } else result = MYGAMES_DDZ_OWNER_INVALID;
+        } else {
+            uint64_t hand = UINT64_C(0);
+            result = mygames_ddz_game_owner_private_hand(&owner, identity->player,
+                                                         &hand);
+            if (result == MYGAMES_DDZ_OWNER_OK) {
+                const int n = snprintf(view, sizeof(view),
+                    "{\"v\":1,\"type\":\"game.hand\",\"request_id\":\"%s\","
+                    "\"room_id\":\"%s\",\"game_id\":\"%" PRIu64 "\","
+                    "\"cards_hex\":\"%014" PRIx64 "\"}",
+                    command->request_id, owner.room_id, command->game_id, hand);
+                if (n > 0 && (size_t)n < sizeof(view))
+                    (void)send_text(session, view);
+                else result = MYGAMES_DDZ_OWNER_INVALID;
+            }
+        }
+    } else if (command->kind == MYGAMES_DDZ_GAME_START) {
+        /* game_id is minted ON THE CFlow Owner, never supplied by the
+         * untrusted client. game.start digest excludes server-minted id,
+         * so the original committed ACK can replay on retransmission. */
+        game_id = (owner.has_match &&
+                   owner.private_match.phase != MYGAMES_DDZ_MATCH_FINISHED &&
+                   owner.private_match.phase != MYGAMES_DDZ_MATCH_REDEAL_REQUIRED) ?
+                  owner.private_match.game_id : state->durable_sequence + UINT64_C(1);
+        if (state->durable_sequence >= (uint64_t)INT64_MAX - UINT64_C(1))
+            result = MYGAMES_DDZ_OWNER_STORAGE_HALTED;
+        else result = mygames_ddz_game_owner_start(&owner, identity->player, game_id,
+                    command->request_id, ack, sizeof(ack), &ack_size);
+    } else if (command->kind == MYGAMES_DDZ_GAME_BID) {
+        result = mygames_ddz_game_owner_bid(&owner, identity->player,
+                    command->game_id, command->turn_id, command->bid_score,
+                    command->request_id, ack, sizeof(ack), &ack_size);
+    } else {
+        const uint64_t played = command->kind == MYGAMES_DDZ_GAME_PASS ?
+                                UINT64_C(0) : command->cards_mask;
+        result = mygames_ddz_game_owner_play(&owner, identity->player,
+                    command->game_id, command->turn_id, played,
+                    command->request_id, ack, sizeof(ack), &ack_size);
+    }
+    if (command->kind == MYGAMES_DDZ_GAME_SNAPSHOT ||
+        command->kind == MYGAMES_DDZ_GAME_HAND) {
+        if (result != MYGAMES_DDZ_OWNER_OK)
+            send_game_error(session, command->request_id, game_error_code(result));
+    } else if (result == MYGAMES_DDZ_OWNER_OK ||
+               result == MYGAMES_DDZ_OWNER_REPLAY) {
+        /* This ACK is the exact durable response bytes from the same
+         * SQLite COMMIT or a duplicate receipt, NOT a CHttp queue ACK. */
+        (void)chttp_server_websocket_send_text(session, ack, ack_size);
+        if (result == MYGAMES_DDZ_OWNER_OK)
+            publish_game_snapshot(state, &owner, command->request_id);
+    } else {
+        if (result == MYGAMES_DDZ_OWNER_STORAGE_HALTED)
+            state->store_halted = true;
+        send_game_error(session, command->request_id, game_error_code(result));
+    }
+    mygames_ddz_game_owner_reset(&owner);
+}
+#endif /* MYGAMES_WITH_TURBODB */
+
 static void ws_handle_command(dev_server_state *state, client_peer *client,
                               const chttp_server_websocket_session *session,
                               const void *bytes, size_t size) {
@@ -600,6 +798,16 @@ static void ws_handle_command(dev_server_state *state, client_peer *client,
 
     parse_result = mygames_wire_decode_command(bytes, size, &command);
     if (parse_result != MYGAMES_WIRE_OK) {
+        mygames_ddz_game_wire_command game = {0};
+        if (mygames_ddz_game_wire_decode(bytes, size, &game) == MYGAMES_WIRE_OK) {
+#if defined(MYGAMES_WITH_TURBODB)
+            ws_handle_game_command(state, client, session, &game);
+#else
+            (void)send_text(session,
+                "{\"v\":1,\"type\":\"server.error\",\"code\":\"durable_game_unavailable\"}");
+#endif
+            return;
+        }
         const char *code = parse_result == MYGAMES_WIRE_TOO_LARGE ? "oversized_message" :
                            parse_result == MYGAMES_WIRE_UNSUPPORTED_VERSION ? "unsupported_version" :
                            parse_result == MYGAMES_WIRE_UNSUPPORTED_TYPE ? "unsupported_command" :
@@ -692,6 +900,18 @@ static void ws_handle_command(dev_server_state *state, client_peer *client,
         changed = result == MYGAMES_ROOM_OK;
     } else if (command.kind == MYGAMES_COMMAND_READY) {
         result = mygames_room_directory_ready(target, identity->player, command.ready);
+        changed = result == MYGAMES_ROOM_OK;
+        room = mygames_room_directory_get_player(target, identity->player);
+    } else if (command.kind == MYGAMES_COMMAND_START_ROOM) {
+        /* A room becomes STARTING only after three distinct ready seats,
+         * and via the same existing Room checkpoint/receipt/Outbox COMMIT.
+         * The actual game and private deal follow in a separate, exact
+         * stage->COMMIT->Game ACK transaction. */
+#if defined(MYGAMES_WITH_TURBODB)
+        if (!state->store) result = MYGAMES_ROOM_WRONG_PHASE;
+        else
+#endif
+            result = mygames_room_directory_start(target, identity->player);
         changed = result == MYGAMES_ROOM_OK;
         room = mygames_room_directory_get_player(target, identity->player);
     } else if (command.kind == MYGAMES_COMMAND_LEAVE_ROOM) {
