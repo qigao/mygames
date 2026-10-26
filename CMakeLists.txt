@@ -4,6 +4,7 @@ project(MyGames VERSION 0.1.0 LANGUAGES C)
 option(MYGAMES_ENABLE_GATEWAY "Build optional CHttp/CNet development gateway" OFF)
 option(MYGAMES_ENABLE_TURBODB "Build optional TurboDB transactional room storage" OFF)
 option(MYGAMES_ENABLE_FLOWIE "Build optional Flowie QoS1 Outbox publisher and local broker test" OFF)
+option(MYGAMES_TEST_FLOWIE_DEFERRED "Build Flowie #73 deferred-inbound real ledger crash qualification (test-only)" OFF)
 
 add_library(mygames_room STATIC games/doudizhu/src/room.c
   games/doudizhu/src/room_directory.c
@@ -348,6 +349,22 @@ if(MYGAMES_ENABLE_FLOWIE)
     else()
       target_compile_options(mygames_recovery_native_client_test PRIVATE
         -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    # Opt-in exact-source Flowie #73 qualification. Never compile this against
+    # the published Flowie 1.0.4 SDK or install it as a production consumer.
+    if(MYGAMES_TEST_FLOWIE_DEFERRED)
+      add_executable(mygames_flowie_deferred_consumer_test
+        tests/flowie_deferred_consumer.c)
+      target_compile_features(mygames_flowie_deferred_consumer_test PRIVATE c_std_11)
+      target_link_libraries(mygames_flowie_deferred_consumer_test PRIVATE
+        Flowie::Client MyGames::ConsumerOwner MyGames::ConsumerProjection
+        MyGames::Outbox Salts::Core Salts::Platform Orm::C)
+      if(MSVC)
+        target_compile_options(mygames_flowie_deferred_consumer_test PRIVATE /W4 /WX)
+      else()
+        target_compile_options(mygames_flowie_deferred_consumer_test PRIVATE
+          -Wall -Wextra -Wpedantic -Werror)
+      endif()
     endif()
     add_executable(mygames_flowie_broker_test tests/flowie_local_broker.c)
     target_link_libraries(mygames_flowie_broker_test PRIVATE
