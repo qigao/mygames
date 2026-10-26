@@ -115,6 +115,12 @@ export class GameTableView {
            pendingActions: number): void {
         const view = store.snapshot;
         const phase = view?.phase;
+        // Explicit tagged-union narrowing is required under Creator's
+        // strict TS compiler: bidding snapshots have NO private/playing
+        // remaining-card fields and may not be cast into a playing view.
+        const bidView = view?.phase === 'bidding' ? view : null;
+        const playView = view &&
+            (view.phase === 'playing' || view.phase === 'finished') ? view : null;
         const mySeat = store.localSeat;
         const hasGame = view !== null;
         this.header.string = !view ? '斗地主 · 等待发牌' :
@@ -132,12 +138,12 @@ export class GameTableView {
                 '对局结束 · 获胜座位 ' +
                 (view.phase === 'finished' ? view.winner_seat + 1 : '—');
         this.seats.string = !view ? '请等待其他玩家加入并准备' :
-            (phase === 'bidding' || phase === 'redeal_required') ?
+            !playView ?
                 '座位 ' + (mySeat === null ? '?' : mySeat + 1) +
                 ' · 叫分由服务端依次准入' :
-                '剩余牌：座位 1 · ' + view.remaining[0] +
-                '     座位 2 · ' + view.remaining[1] +
-                '     座位 3 · ' + view.remaining[2];
+                '剩余牌：座位 1 · ' + playView.remaining[0] +
+                '     座位 2 · ' + playView.remaining[1] +
+                '     座位 3 · ' + playView.remaining[2];
         if (view && (phase === 'playing' || phase === 'finished')) {
             const revealed = cardsFromMask(view.last_cards_hex);
             const kitty = cardsFromMask(view.revealed_kitty_hex);
@@ -165,14 +171,15 @@ export class GameTableView {
             (!view || phase === 'redeal_required' || phase === 'finished'));
         this.enable('bid0', mutable && bidding);
         this.enable('bid1', mutable && bidding &&
-            view.phase === 'bidding' && view.highest_bid < 1);
+            bidView !== null && bidView.highest_bid < 1);
         this.enable('bid2', mutable && bidding &&
-            view.phase === 'bidding' && view.highest_bid < 2);
+            bidView !== null && bidView.highest_bid < 2);
         this.enable('bid3', mutable && bidding &&
-            view.phase === 'bidding' && view.highest_bid < 3);
+            bidView !== null && bidView.highest_bid < 3);
         this.enable('play', mutable && playing && store.selected.length > 0);
-        this.enable('pass', mutable && playing &&
-            view.phase === 'playing' && view.last_cards_hex !== '00000000000000');
+        this.enable('pass', mutable && playing && playView !== null &&
+            playView.phase === 'playing' &&
+            playView.last_cards_hex !== '00000000000000');
         this.enable('retry', canPlay && pendingActions > 0);
         this.enable('refresh', canPlay && !!store.gameId);
         this.enable('hand', canPlay && !!store.gameId);
