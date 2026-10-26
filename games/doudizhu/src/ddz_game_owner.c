@@ -34,12 +34,23 @@ static bool digest_command(
     uint8_t digest[MYGAMES_STORE_COMMAND_DIGEST_BYTES]) {
     char normalized[218];
     int n;
-    if (!operation || !digest || !player || !epoch || !game_id || !turn)
+    /* game.start has a SERVER-minted game_id. Excluding it from the
+     * normalized start digest makes a retry after confirmed COMMIT replay
+     * the ORIGINAL Game ACK, rather than conflict against a newly minted
+     * id based on the now-incremented global sequence. */
+    if (!operation || !digest || !player || !epoch || !turn ||
+        (!game_id && strcmp(operation, "start") != 0))
         return false;
+    /* Room epoch is a TRANSACTIONAL OWNER FENCE, not part of the
+     * immutable player's semantic action. A valid reconnected user may
+     * request the original (game_id,turn_id,request_id) after a fresh
+     * Owner epoch claim; the recorded SHA256 must remain identical.
+     * SQLite epoch CAS still fences all NEW writes from stale Owners.
+     * A different game_id/turn/value with the same request_id conflicts. */
     n = snprintf(normalized, sizeof(normalized),
-        "mygames.ddz.v1|%s|%" PRIu64 "|%" PRIu64 "|%" PRIu64
+        "mygames.ddz.v1|%s|%" PRIu64 "|%" PRIu64
         "|%" PRIu64 "|%" PRIu64,
-        operation, epoch, game_id, turn, player, value);
+        operation, game_id, turn, player, value);
     return n > 0 && (size_t)n < sizeof(normalized) &&
            cmeta_sha256(normalized, (size_t)n, digest) == SALTS_OK;
 }
@@ -92,8 +103,9 @@ static mygames_ddz_owner_status preflight(
         return MYGAMES_DDZ_OWNER_INVALID;
     if (!owner_available(owner)) return MYGAMES_DDZ_OWNER_STORAGE_HALTED;
     if (!player_seated(owner, player)) return MYGAMES_DDZ_OWNER_UNAUTHORIZED;
-    if (!digest_command(operation, owner->epoch, game_id, turn,
-                        player, value, digest))
+    if (!digest_command(operation, owner->epoch,
+                        strcmp(operation, "start") == 0 ? UINT64_C(0) : game_id,
+                        turn, player, value, digest))
         return MYGAMES_DDZ_OWNER_INVALID;
     return lookup_replay(owner, player, request_id,
                          digest, out_ack, capacity, out_bytes);
@@ -120,8 +132,8 @@ static mygames_ddz_owner_status commit_candidate(
     n = snprintf(ack, sizeof(ack),
         "{\"v\":1,\"type\":\"game.ack\",\"action\":\"%s\","
         "\"request_id\":\"%s\",\"room_id\":\"%s\","
-        "\"room_epoch\":%" PRIu64 ",\"game_id\":%" PRIu64 ","
-        "\"phase\":%u,\"turn_id\":%" PRIu64 ",\"seq\":%" PRIu64 "}",
+        "\"room_epoch\":\"%" PRIu64 "\",\"game_id\":\"%" PRIu64 "\","
+        "\"phase\":%u,\"turn_id\":\"%" PRIu64 "\",\"seq\":\"%" PRIu64 "\"}",
         operation, request_id, owner->room_id, owner->epoch,
         candidate->game_id, (unsigned int)candidate->phase,
         public_turn, *owner->sequence + 1u);

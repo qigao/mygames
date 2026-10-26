@@ -22,6 +22,8 @@ int main(void) {
           MYGAMES_COMMAND_JOIN_ROOM);
     valid("{\"v\":1,\"type\":\"room.ready\",\"ready\":false,\"request_id\":\"r3\"}",
           MYGAMES_COMMAND_READY);
+    valid("{\"v\":1,\"type\":\"room.start\",\"request_id\":\"r4b\"}",
+          MYGAMES_COMMAND_START_ROOM);
     valid("{\"v\":1,\"type\":\"room.leave\",\"request_id\":\"r4\"}",
           MYGAMES_COMMAND_LEAVE_ROOM);
     valid("{\"v\":1,\"type\":\"room.snapshot.get\",\"request_id\":\"r5\"}",
@@ -48,6 +50,8 @@ int main(void) {
     invalid("{\"v\":1,\"type\":\"room.join\",\"request_id\":\"a\",\"room_id\":\"x\\\\y\"}");
     invalid("{\"v\":1,\"type\":\"room.create\",\"request_id\":\"a\"b\"}");
     invalid("{\"v\":1,\"type\":\"room.ready\",\"request_id\":\"a\",\"ready\":[true]}");
+    invalid("{\"v\":1,\"type\":\"room.start\",\"request_id\":\"r1\",\"ready\":true}");
+    invalid("{\"v\":1,\"type\":\"room.start\"}");
     invalid("{\"v\":1,\"type\":\"room.delete\",\"request_id\":\"r1\"}");
     {
         char json[160];

@@ -28,7 +28,8 @@ typedef enum mygames_command_kind {
     MYGAMES_COMMAND_READY,
     MYGAMES_COMMAND_LEAVE_ROOM,
     MYGAMES_COMMAND_GET_SNAPSHOT,
-    MYGAMES_COMMAND_RESUME_SESSION
+    MYGAMES_COMMAND_RESUME_SESSION,
+    MYGAMES_COMMAND_START_ROOM
 } mygames_command_kind;
 
 typedef struct mygames_wire_command {

@@ -100,6 +100,15 @@ mygames_room_status mygames_room_directory_ready(mygames_room_directory *directo
     return mygames_room_set_ready(&entry->room, player, ready);
 }
 
+mygames_room_status mygames_room_directory_start(mygames_room_directory *directory,
+                                                 mygames_player_id requester) {
+    mygames_room_directory_entry *entry;
+    if (!directory || !requester) return MYGAMES_ROOM_INVALID_ARGUMENT;
+    entry = find_player(directory, requester);
+    if (!entry) return MYGAMES_ROOM_NOT_FOUND;
+    return mygames_room_start(&entry->room, requester);
+}
+
 mygames_room_status mygames_room_directory_leave(mygames_room_directory *directory,
                                                   mygames_player_id player) {
     mygames_room_directory_entry *entry = find_player(directory, player);

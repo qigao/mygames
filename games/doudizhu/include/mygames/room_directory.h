@@ -36,6 +36,8 @@ mygames_room_status mygames_room_directory_join(mygames_room_directory *director
                                                  unsigned int *out_seat);
 mygames_room_status mygames_room_directory_ready(mygames_room_directory *directory,
                                                   mygames_player_id player, bool ready);
+mygames_room_status mygames_room_directory_start(mygames_room_directory *directory,
+                                                 mygames_player_id requester);
 mygames_room_status mygames_room_directory_leave(mygames_room_directory *directory,
                                                   mygames_player_id player);
 

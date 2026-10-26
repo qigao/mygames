@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-#define MYGAMES_DDZ_GAME_ACK_MAX 256u
+#define MYGAMES_DDZ_GAME_ACK_MAX 512u
 
 typedef enum mygames_ddz_owner_status {
     MYGAMES_DDZ_OWNER_OK = 0,
