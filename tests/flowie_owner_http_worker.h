@@ -19,8 +19,10 @@ typedef struct mygames_test_owner_http {
     const char *client_key;
     uint16_t port;
     uint64_t committed_after; /* snapshot by Owner creator before launch */
+    mygames_owner_fetch_ticket fetch_ticket; /* exact retained generation */
     cmeta_thread_t thread;
     atomic_bool in_flight;
+    bool fetch_owned; /* source worker must settle before Owner free */
     bool started;
     bool successful; /* read only AFTER joining */
     size_t admitted; /* read only AFTER joining */
