@@ -67,3 +67,23 @@ jobs:
         run: cmake --build build/consumer-ledger --parallel 2 --target mygames_recovery_consumer_test mygames_consumer_owner_test
       - name: Verify partial commits, restart, rollback and cursor fencing
         run: ctest --test-dir build/consumer-ledger -C Debug --output-on-failure --no-tests=error -R 'mygames[.](recovery_consumer|consumer_owner)'
+      - name: Build real authenticated Flowie Broker and Owner-backed client
+        run: |
+          cmake --build build/consumer-ledger --parallel 2 \
+            --target mygames_flowie_broker_test mygames_flowie_acl_client_test \
+            mygames_outbox_publisher mygames_outbox_seed_test \
+            mygames_outbox_audit_test \
+            mygames_flowie_consumer_projection_audit mygames_event_reconcile_test
+      - name: Verify MQTT callback copy and overlapping historical event under one Owner
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/ci_flowie_acl_smoke.py \
+            build/consumer-ledger/mygames_flowie_broker_test \
+            build/consumer-ledger/mygames_flowie_acl_client_test \
+            build/consumer-ledger/mygames_outbox_publisher \
+            build/consumer-ledger/mygames_outbox_seed_test \
+            build/consumer-ledger/mygames_outbox_audit_test \
+            build/consumer-ledger/mygames_flowie_consumer_projection_audit \
+            build/consumer-ledger/mygames_event_reconcile_test \
+            "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so"
