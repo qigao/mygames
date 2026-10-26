@@ -7,6 +7,8 @@ name: M4.5 Flowie deferred COMMIT-PUBACK integration
       - '.github/workflows/deferred-projection-source.yml'
       - 'CMakeLists.txt'
       - 'tests/flowie_deferred_consumer.c'
+      - 'tests/flowie_local_broker.c'
+      - 'scripts/ci/ci_flowie_deferred_broker_restart.py'
       - 'scripts/ci/ci_flowie_deferred_projection.py'
       - 'games/doudizhu/src/consumer_owner.c'
   workflow_dispatch:
@@ -125,6 +127,20 @@ jobs:
             build/deferred/mygames-build/mygames_outbox_audit_test \
             build/deferred/mygames-build/mygames_flowie_consumer_projection_audit \
             "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so"
+      - name: SIGKILL actual disk-backed Flowie Broker and reload unacknowledged session
+        shell: bash
+        env:
+          MYGAMES_DEFERRED_BROKER_EVIDENCE_DIR: build/deferred/broker-restart-evidence
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/ci_flowie_deferred_broker_restart.py \
+            build/deferred/mygames-build/mygames_flowie_broker_test \
+            build/deferred/mygames-build/mygames_flowie_deferred_consumer_test \
+            build/deferred/mygames-build/mygames_outbox_publisher \
+            build/deferred/mygames-build/mygames_outbox_seed_test \
+            build/deferred/mygames-build/mygames_outbox_audit_test \
+            build/deferred/mygames-build/mygames_flowie_consumer_projection_audit \
+            "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so"
       - name: Preserve evidence (not production approval)
         if: always()
         uses: actions/upload-artifact@v4
@@ -136,4 +152,5 @@ jobs:
             build/deferred/provenance.txt
             build/deferred/consumer-ldd.txt
             build/deferred/evidence/
+            build/deferred/broker-restart-evidence/
             build/deferred/mygames-build/Testing/Temporary/LastTest.log
