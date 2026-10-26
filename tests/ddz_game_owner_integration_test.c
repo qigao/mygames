@@ -128,9 +128,13 @@ int main(int argc, char **argv) {
         ack, sizeof(ack), &bytes), MYGAMES_DDZ_OWNER_REPLAY);
     assert(seq == 2u && bytes == initial_bytes &&
            memcmp(ack, initial_ack, bytes) == 0);
+    /* game_id is minted by CFlow, not a client semantic parameter:
+     * repeat of this same request_id must replay the original durable
+     * Game ACK even if a caller proposes the next available minted id. */
     require_game(mygames_ddz_game_owner_start(&owner, 101u, 100u, "game-start",
-        ack, sizeof(ack), &bytes), MYGAMES_DDZ_OWNER_STALE);
-    assert(seq == 2u);
+        ack, sizeof(ack), &bytes), MYGAMES_DDZ_OWNER_REPLAY);
+    assert(seq == 2u && bytes == initial_bytes &&
+           memcmp(ack, initial_ack, bytes) == 0);
 
     /* Emulate a failed true TurboDB transaction; no owner/Game ACK is
      * emitted, and a fresh ORM connection must recover the prior epoch. */
