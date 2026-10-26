@@ -175,6 +175,48 @@ test('private hand can be displayed only for an EXACT bound request, not an old 
   assert.equal(store.lastAck,old);
 });
 
+
+test('confirmed end-game ACK fences out-of-order turns and authentic rematch',()=>{
+  const store=new GameStore();
+  store.bindRoom('room-1','101',0);
+  const laterAck={...startAck,request_id:'play-late',action:'play',
+                  phase:3,turn_id:'50',seq:'18446744073709551605'};
+  assert.equal(store.noteAck(laterAck),true);
+  assert.equal(store.applySnapshot(playing('49',3)),false,
+               'An older public play must never overwrite confirmed durable turn');
+  assert.equal(store.applySnapshot(playing('50',2)),true);
+  store.expectHand('my-fresh-hand',gameId);
+  assert.equal(store.applyPrivateHand(privateHand('my-fresh-hand')),true);
+  assert.equal(store.isMyTurn,true);
+  assert.equal(store.toggle(0),true);
+  const finishedAck={...laterAck,request_id:'play-victory',phase:4,
+                     turn_id:'59',seq:'18446744073709551607'};
+  assert.equal(store.noteAck(finishedAck),true);
+  assert.equal(store.applySnapshot(playing('58',1)),false);
+  const finish={...playing('59',0),phase:'finished',turn_seat:3,
+                last_seat:0,last_cards_hex:'00000000000002',
+                winner_seat:0};
+  assert.equal(store.applySnapshot(finish),true);
+  assert.equal(store.isMyTurn,false);
+  assert.equal(store.selected.length,0);
+  assert.equal(store.snapshot.phase,'finished');
+  assert.equal(store.applySnapshot(playing('60',0)),false,
+               'A completed match must never revert into PLAYING');
+  store.suspend();
+  assert.equal(store.applySnapshot({...finish,turn_id:'58'}),false,
+               'Reconnect cannot roll public view backwards');
+  assert.equal(store.applySnapshot(finish),true,
+               'Verified reconnect may rehydrate equal current turn');
+  const nextGame='9007199254740995';
+  assert.equal(store.noteAck({...startAck,request_id:'rematch',seq:'18446744073709551608',
+                              game_id:nextGame,room_epoch:epoch}),true);
+  const newBidding={...bidding(),game_id:nextGame,bid_turn_id:'1'};
+  assert.equal(store.applySnapshot(newBidding),true);
+  assert.equal(store.snapshot.phase,'bidding');
+  assert.equal(store.hand.length,0,'old 0-card endgame hand cannot leak to rematch');
+  assert.equal(store.applySnapshot(finish),false,'old game never resurfaces');
+});
+
 class FakeWebSocket {
   static OPEN=1;
   static instances=[];
