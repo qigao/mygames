@@ -218,6 +218,38 @@ if(MYGAMES_ENABLE_FLOWIE)
         "${CMAKE_CURRENT_BINARY_DIR}/mygames-recovery-consumer-ci.sqlite")
   endif()
 
+  # M4.4 in-process Consumer Owner: thread-safe bounded borrowed-event
+  # handoff; only one Owner thread ever touches the TurboDB projection.
+  # No native MQTT ACK capability is inferred from admission.
+  add_library(mygames_consumer_owner STATIC
+    games/doudizhu/src/consumer_owner.c)
+  add_library(MyGames::ConsumerOwner ALIAS mygames_consumer_owner)
+  target_compile_features(mygames_consumer_owner PUBLIC c_std_11)
+  target_include_directories(mygames_consumer_owner PUBLIC games/doudizhu/include)
+  target_link_libraries(mygames_consumer_owner PRIVATE
+    MyGames::ConsumerProjection MyGames::RecoveryWire MyGames::Outbox
+    Salts::Core Salts::Platform)
+  if(MSVC)
+    target_compile_options(mygames_consumer_owner PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_consumer_owner PRIVATE
+      -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  if(BUILD_TESTING)
+    add_executable(mygames_consumer_owner_test tests/consumer_owner_test.c)
+    target_compile_features(mygames_consumer_owner_test PRIVATE c_std_11)
+    target_compile_definitions(mygames_consumer_owner_test PRIVATE
+      MYGAMES_CONSUMER_FAULT_TESTING=1)
+    target_link_libraries(mygames_consumer_owner_test PRIVATE
+      MyGames::ConsumerOwner MyGames::RecoveryWire
+      MyGames::ConsumerProjection MyGames::Outbox
+      Salts::Core Salts::Platform Orm::C)
+    add_test(NAME mygames.consumer_owner
+      COMMAND mygames_consumer_owner_test
+        "${TurboDB_DRIVER_DIR}/turbodb_driver_sqlite${CMAKE_SHARED_MODULE_SUFFIX}"
+        "${CMAKE_CURRENT_BINARY_DIR}/mygames-consumer-owner-ci.sqlite")
+  endif()
+
   add_executable(mygames_outbox_publisher apps/publisher/main.c)
   target_compile_features(mygames_outbox_publisher PRIVATE c_std_11)
   target_link_libraries(mygames_outbox_publisher PRIVATE
