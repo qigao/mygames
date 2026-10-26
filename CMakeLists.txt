@@ -248,6 +248,22 @@ if(MYGAMES_ENABLE_FLOWIE)
         -Wall -Wextra -Wpedantic -Werror)
     endif()
   endif()
+  if(MYGAMES_ENABLE_GATEWAY AND BUILD_TESTING)
+    # Qualification-only remote consumer; application runtime installation
+    # and Flowie live-input concurrency are NOT enabled by this target.
+    add_executable(mygames_recovery_remote_consumer_test
+      apps/consumer/recovery_remote_consumer.c)
+    target_compile_features(mygames_recovery_remote_consumer_test PRIVATE c_std_11)
+    target_link_libraries(mygames_recovery_remote_consumer_test PRIVATE
+      MyGames::RecoveryConsumer MyGames::Outbox CHttp::Client
+      Salts::Platform Orm::C)
+    if(MSVC)
+      target_compile_options(mygames_recovery_remote_consumer_test PRIVATE /W4 /WX)
+    else()
+      target_compile_options(mygames_recovery_remote_consumer_test PRIVATE
+        -Wall -Wextra -Wpedantic -Werror)
+    endif()
+  endif()
   if(BUILD_TESTING)
     target_compile_definitions(mygames_outbox_publisher PRIVATE MYGAMES_OUTBOX_TEST_FAULTS=1)
     add_executable(mygames_outbox_contract_test tests/outbox_contract_test.c)
