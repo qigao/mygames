@@ -80,6 +80,12 @@ def main() -> int:
     ]
     with tempfile.TemporaryDirectory(prefix="mygames-flowie-deferred-") as td:
         root = pathlib.Path(td)
+        # Persist exact callback/crash process evidence when CI requests it.
+        # Databases stay isolated in the temporary root; logs never print
+        # generated service passwords or the SQLite event payload.
+        evidence_env = os.environ.get("MYGAMES_DEFERRED_EVIDENCE_DIR")
+        evidence = pathlib.Path(evidence_env).resolve() if evidence_env else root
+        evidence.mkdir(parents=True, exist_ok=True)
         source_db = root / "source.sqlite"
         ledger_db = root / "consumer.sqlite"
         env = os.environ.copy()
@@ -98,7 +104,7 @@ def main() -> int:
         consumer_args = [driver, str(ledger_db), SOURCE_NAMESPACE]
         run([seed, driver, str(source_db), "--seed"], env)
         run([source_audit, driver, str(source_db), "1"], env)
-        with (root / "broker.log").open("w+t", encoding="utf-8") as brokerlog:
+        with (evidence / "broker.log").open("w+t", encoding="utf-8") as brokerlog:
             b = subprocess.Popen([broker], stdin=subprocess.PIPE,
                                  stdout=brokerlog, stderr=subprocess.STDOUT,
                                  env=env)
@@ -108,7 +114,7 @@ def main() -> int:
                 # ConsumerProjection transaction yet. No ACK is submitted.
                 kill_at_boundary(
                     client, "before-commit", "MYGAMES_DEFERRED_BEFORE_COMMIT",
-                    consumer_args, env, root / "before-commit.log")
+                    consumer_args, env, evidence / "before-commit.log")
                 run([consumer_audit, driver, str(ledger_db),
                      SOURCE_NAMESPACE, "0", "0"], env)
 
@@ -117,7 +123,7 @@ def main() -> int:
                 kill_at_boundary(
                     client, "after-commit-before-ack",
                     "MYGAMES_DEFERRED_AFTER_COMMIT_BEFORE_ACK",
-                    consumer_args, env, root / "after-commit.log")
+                    consumer_args, env, evidence / "after-commit.log")
                 run([consumer_audit, driver, str(ledger_db),
                      SOURCE_NAMESPACE, "1", "1"], env)
 
@@ -126,7 +132,7 @@ def main() -> int:
                 successful_round(
                     client, "replay-and-ack",
                     "MYGAMES_DEFERRED_REPLAY_AND_NATIVE_PUBACK",
-                    consumer_args, env, root / "replay-ack.log")
+                    consumer_args, env, evidence / "replay-ack.log")
                 run([consumer_audit, driver, str(ledger_db),
                      SOURCE_NAMESPACE, "1", "1"], env)
 
@@ -135,7 +141,7 @@ def main() -> int:
                 successful_round(
                     client, "post-ack-no-redelivery",
                     "MYGAMES_DEFERRED_AFTER_ACK_NO_REDELIVERY",
-                    consumer_args, env, root / "after-ack.log")
+                    consumer_args, env, evidence / "after-ack.log")
                 run([consumer_audit, driver, str(ledger_db),
                      SOURCE_NAMESPACE, "1", "1"], env)
                 brokerlog.flush()
@@ -146,6 +152,22 @@ def main() -> int:
                         "Redelivery was accidentally simulated via republish "
                         f"(broker accepted {actual} events, expected 1)")
                 run([source_audit, driver, str(source_db), "2"], env)
+                # Write only after ALL four modes and post-reconnect audits
+                # have independently passed; never promote partial logs to PASS.
+                (evidence / "acceptance.txt").write_text(
+                    "result=PASS\\n"
+                    "flowie=exact-source-73\\n"
+                    "broker_unique_business_publish=1\\n"
+                    "first_crash=pre_consumer_commit\\n"
+                    "second_crash=post_consumer_commit_pre_puback\\n"
+                    "durable_cursor=1\\n"
+                    "effect_count=1\\n"
+                    "redelivery=broker_persistent_session_same_client_id\\n"
+                    "native_puback=settlement_callback_success\\n"
+                    "post_ack_reconnect=no_redelivery_observed\\n"
+                    "broker_process_restart=NOT_TESTED\\n",
+                    encoding="ascii",
+                )
                 print(
                     "mygames.flowie_deferred_projection: PASS "
                     "1 Broker PUBLISH, 2 SIGKILL windows, persistent-session "
