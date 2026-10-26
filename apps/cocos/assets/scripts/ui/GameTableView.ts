@@ -149,6 +149,9 @@ export class GameTableView {
         } else this.trick.string = '地主确定前不能看底牌、牌序或其他玩家手牌';
 
         this.rebuildCards(store);
+        // Do not permit a second mutable game action while a previous
+        // durable COMMIT/ACK is unresolved. Retry uses the ORIGINAL ID.
+        const mutable = canPlay && pendingActions === 0;
         const bidding = phase === 'bidding' && store.isMyTurn;
         const playing = phase === 'playing' && store.isMyTurn;
         this.hint.string = !store.hydrated ? '重新连接后需同步公共状态与本人手牌' :
@@ -158,17 +161,17 @@ export class GameTableView {
             store.selected.length > 0 ?
                 '已选择 ' + store.selected.length + ' 张牌 · 服务端会再次校验' :
                 '点击本人手牌选中，再按出牌；不显示其他玩家的卡';
-        this.enable('start', canPlay && ownerSeat &&
+        this.enable('start', mutable && ownerSeat &&
             (!view || phase === 'redeal_required' || phase === 'finished'));
-        this.enable('bid0', canPlay && bidding);
-        this.enable('bid1', canPlay && bidding &&
+        this.enable('bid0', mutable && bidding);
+        this.enable('bid1', mutable && bidding &&
             view.phase === 'bidding' && view.highest_bid < 1);
-        this.enable('bid2', canPlay && bidding &&
+        this.enable('bid2', mutable && bidding &&
             view.phase === 'bidding' && view.highest_bid < 2);
-        this.enable('bid3', canPlay && bidding &&
+        this.enable('bid3', mutable && bidding &&
             view.phase === 'bidding' && view.highest_bid < 3);
-        this.enable('play', canPlay && playing && store.selected.length > 0);
-        this.enable('pass', canPlay && playing &&
+        this.enable('play', mutable && playing && store.selected.length > 0);
+        this.enable('pass', mutable && playing &&
             view.phase === 'playing' && view.last_cards_hex !== '00000000000000');
         this.enable('retry', canPlay && pendingActions > 0);
         this.enable('refresh', canPlay && !!store.gameId);
