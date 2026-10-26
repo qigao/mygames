@@ -210,6 +210,8 @@ int main(int argc, char **argv) {
     policy.on_delivery = on_delivery;
     if (flowie_mqtt_client_set_receive_policy(client, &policy) != SALTS_OK)
         goto cleanup;
+    connect.size = sizeof(connect);
+    connect.abi_version = FLOWIE_MQTT_PROTOCOL_ABI_V1;
     connect.version = FLOWIE_MQTT_VERSION_5;
     connect.clean_start = 0u;
     connect.keep_alive = 10u;
