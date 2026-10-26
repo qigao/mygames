@@ -92,12 +92,10 @@ export class GameStore {
                             2 : x.phase === 'playing' ? 3 : 4;
                     if (rank(next) < rank(current)) return false;
                     if (rank(next) === rank(current)) {
-                        const n = next.phase === 'bidding' ||
-                                  next.phase === 'redeal_required' ?
-                            next.bid_turn_id : next.turn_id;
-                        const p = current.phase === 'bidding' ||
-                                  current.phase === 'redeal_required' ?
-                            current.bid_turn_id : current.turn_id;
+                        const n = 'turn_id' in next ?
+                            next.turn_id : next.bid_turn_id;
+                        const p = 'turn_id' in current ?
+                            current.turn_id : current.bid_turn_id;
                         if (BigInt(n) <= BigInt(p)) return false;
                     }
                 }
