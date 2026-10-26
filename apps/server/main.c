@@ -1079,10 +1079,20 @@ static void room_open_apply(dev_server_state *state,
         identity = mygames_sessions_at(&state->sessions, issued);
         if (!identity) { rc = SALTS_EIO; break; }
         clear_cache(state, issued);
-        n = snprintf(hello, sizeof(hello),
-            "{\"v\":1,\"type\":\"server.hello\",\"capabilities\":[\"ping\",\"rooms\",\"resume\"],"
-            "\"player_id\":\"%" PRIu64 "\",\"resume_token\":\"%s\"}",
-            identity->player, identity->ticket);
+        {
+            /* Never advertise playable games when TurboDB is missing or the
+             * unique CFlow Room Owner has halted on uncertain durability. */
+            const char *games_capability = "";
+#if defined(MYGAMES_WITH_TURBODB)
+            if (state->store && !state->store_halted)
+                games_capability = ",\"games\"";
+#endif
+            n = snprintf(hello, sizeof(hello),
+                "{\"v\":1,\"type\":\"server.hello\","
+                "\"capabilities\":[\"ping\",\"rooms\",\"resume\"%s],"
+                "\"player_id\":\"%" PRIu64 "\",\"resume_token\":\"%s\"}",
+                games_capability, identity->player, identity->ticket);
+        }
         if (n <= 0 || (size_t)n >= sizeof(hello)) {
             (void)mygames_sessions_discard(&state->sessions, issued);
             rc = SALTS_EINVAL;
