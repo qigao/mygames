@@ -208,6 +208,18 @@ int main(int argc, char **argv) {
     mygames_ddz_game_owner_reset(&owner);
     require_game(mygames_ddz_game_owner_init(&owner, store, &persisted,
                  stored_epoch, &seq, "room-1"), MYGAMES_DDZ_OWNER_OK);
+    /* The same semantic receipt survives a REAL durable Owner epoch claim.
+     * A retransmitted old game command must return its original ACK,
+     * never a new turn or another Outbox event. */
+    bytes = 0u;
+    require_game(mygames_ddz_game_owner_play(&owner, 101u, 99u, 1u,
+        first, "play-first", ack, sizeof(ack), &bytes), MYGAMES_DDZ_OWNER_REPLAY);
+    assert(bytes == play_bytes && memcmp(ack, play_ack, bytes) == 0 && seq == 4u);
+    bytes = 0u;
+    require_game(mygames_ddz_game_owner_start(&owner, 101u, 100u,
+        "game-start", ack, sizeof(ack), &bytes), MYGAMES_DDZ_OWNER_REPLAY);
+    assert(bytes == initial_bytes &&
+           memcmp(ack, initial_ack, bytes) == 0 && seq == 4u);
     require_game(mygames_ddz_game_owner_play(&owner, 202u, 99u, 2u,
         0u, "pass-second", ack, sizeof(ack), &bytes), MYGAMES_DDZ_OWNER_OK);
     assert(seq == 5u);
