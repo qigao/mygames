@@ -41,8 +41,13 @@ jobs:
           -DMYGAMES_ENABLE_TURBODB=OFF
           -DMYGAMES_ENABLE_FLOWIE=OFF
 
-      - name: Build C11 rules and executable assertions
-        run: cmake --build build/ddz --config Debug --target mygames_ddz_round_test --parallel 2
+      - name: Build all C11 room/session/recovery/rules targets
+        run: cmake --build build/ddz --config Debug --parallel 2
+
+      - name: Run full pure C11 core regression suite
+        run: >-
+          ctest --test-dir build/ddz -C Debug --no-tests=error
+          --output-on-failure --timeout 60
 
       - name: Repeat real rules and turn state tests (no mocks or SDK)
         run: >-
