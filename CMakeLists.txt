@@ -369,6 +369,10 @@ if(MYGAMES_ENABLE_FLOWIE)
     add_executable(mygames_flowie_broker_test tests/flowie_local_broker.c)
     target_link_libraries(mygames_flowie_broker_test PRIVATE
       Flowie::Flowie Salts::Core)
+    if(MYGAMES_TEST_FLOWIE_DEFERRED)
+      # Disk-backed protocol repository fixture calls Orm::C directly.
+      target_link_libraries(mygames_flowie_broker_test PRIVATE Orm::C)
+    endif()
     add_executable(mygames_outbox_seed_test tests/flowie_outbox_seed.c)
     target_link_libraries(mygames_outbox_seed_test PRIVATE MyGames::Store)
     add_executable(mygames_outbox_audit_test tests/flowie_outbox_audit.c)
