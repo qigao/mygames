@@ -51,6 +51,20 @@ else()
   target_compile_options(mygames_ddz_match PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
 
+# M5c: portable, fixed-size canonical PRIVATE match state codec. No native
+# file persistence and no public game-state serialization API is provided.
+add_library(mygames_ddz_checkpoint STATIC
+  games/doudizhu/src/ddz_match_checkpoint.c)
+add_library(MyGames::DouDizhuCheckpoint ALIAS mygames_ddz_checkpoint)
+target_compile_features(mygames_ddz_checkpoint PUBLIC c_std_11)
+target_include_directories(mygames_ddz_checkpoint PUBLIC games/doudizhu/include)
+target_link_libraries(mygames_ddz_checkpoint PUBLIC MyGames::DouDizhuMatch)
+if(MSVC)
+  target_compile_options(mygames_ddz_checkpoint PRIVATE /W4 /WX)
+else()
+  target_compile_options(mygames_ddz_checkpoint PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+
 # The recovery admission core is pure C11; no network, database or
 # fallback implementation is linked into this policy target.
 add_library(mygames_recovery_gate STATIC
@@ -171,6 +185,15 @@ endif()
 
 
 if(BUILD_TESTING)
+  add_executable(mygames_ddz_checkpoint_test tests/ddz_match_checkpoint_test.c)
+  target_compile_features(mygames_ddz_checkpoint_test PRIVATE c_std_11)
+  target_link_libraries(mygames_ddz_checkpoint_test PRIVATE MyGames::DouDizhuCheckpoint)
+  if(MSVC)
+    target_compile_options(mygames_ddz_checkpoint_test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_ddz_checkpoint_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME mygames.ddz_checkpoint COMMAND mygames_ddz_checkpoint_test)
   # A deterministic entropy provider exists ONLY in CTest-linked source
   # builds, not in a production/installed match binary or network API.
   target_compile_definitions(mygames_ddz_match PRIVATE MYGAMES_DDZ_MATCH_TESTING=1)
