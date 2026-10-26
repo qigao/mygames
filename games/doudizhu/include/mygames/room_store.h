@@ -205,7 +205,9 @@ mygames_store_status mygames_room_store_commit(
  * a network callback/model proposal MUST NOT call this API.
  *
  * All DB work, including private game bytes, room checkpoint, exact command
- * outcome and PUBLIC-only sanitized Outbox event, commits atomically.
+ * outcome and PUBLIC-only sanitized Outbox event, commits atomically. The
+ * Outbox game event is generated INSIDE the store from public scalar fields;
+ * callers cannot insert arbitrary private-card JSON into that topic.
  * Only STORE_OK means the caller can replace its live match and send Game
  * ACK. STORE_REPLAY returns an earlier committed sequence; load the exact
  * original response with get_outcome, never send the candidate result.
@@ -221,7 +223,6 @@ mygames_store_status mygames_room_store_commit_game(
     const char *request_id,
     const uint8_t command_digest[MYGAMES_STORE_COMMAND_DIGEST_BYTES],
     const void *response, size_t response_bytes,
-    const void *sanitized_event, size_t event_bytes,
     uint64_t *out_committed_sequence);
 
 /* Loads one verified private match from the SAME TurboDB store and checks
