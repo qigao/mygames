@@ -118,6 +118,17 @@ def main() -> int:
                 run([consumer_audit, driver, str(ledger_db),
                      SOURCE_NAMESPACE, "0", "0"], env)
 
+                # Inject an actual ConsumerProjection SQLite rollback
+                # after receipt INSERT but before effect/cursor UPDATE.
+                # The Owner must quarantine and emit NO deferred PUBACK.
+                # The Broker remains the sole redelivery source.
+                kill_at_boundary(
+                    client, "rollback-before-cursor",
+                    "MYGAMES_DEFERRED_ROLLBACK_NO_ACK",
+                    consumer_args, env, evidence / "rollback-before-cursor.log")
+                run([consumer_audit, driver, str(ledger_db),
+                     SOURCE_NAMESPACE, "0", "0"], env)
+
                 # No second PUBLISH: only actual Broker session redelivery
                 # can make this Subscriber receive seq=1 again.
                 kill_at_boundary(
@@ -152,13 +163,14 @@ def main() -> int:
                         "Redelivery was accidentally simulated via republish "
                         f"(broker accepted {actual} events, expected 1)")
                 run([source_audit, driver, str(source_db), "2"], env)
-                # Write only after ALL four modes and post-reconnect audits
+                # Write only after all five modes and post-reconnect audits
                 # have independently passed; never promote partial logs to PASS.
                 (evidence / "acceptance.txt").write_text(
                     "result=PASS\n"
                     "flowie=exact-source-73\n"
                     "broker_unique_business_publish=1\n"
                     "first_crash=pre_consumer_commit\n"
+                    "real_turbodb_receipt_insert_rollback=NO_ACK\n"
                     "second_crash=post_consumer_commit_pre_puback\n"
                     "durable_cursor=1\n"
                     "effect_count=1\n"
@@ -170,7 +182,7 @@ def main() -> int:
                 )
                 print(
                     "mygames.flowie_deferred_projection: PASS "
-                    "1 Broker PUBLISH, 2 SIGKILL windows, persistent-session "
+                    "1 Broker PUBLISH, 3 SIGKILL windows (including DB rollback), persistent-session "
                     "redelivery, TurboDB COMMIT, receipt REPLAY, native "
                     "settlement and post-ACK no-redelivery. Broker remained live.",
                     flush=True,
