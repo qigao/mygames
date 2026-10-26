@@ -1,0 +1,132 @@
+name: M4.3 recovery cursor and wire qualification
+
+'on':
+  push:
+    branches:
+      - feature/recovery-consumer-durable-cursor
+  pull_request:
+    paths:
+      - "games/doudizhu/**"
+      - "tests/recovery_consumer_test.c"
+      - "tests/recovery_decode_test.c"
+      - "CMakeLists.txt"
+      - ".github/workflows/recovery-consumer-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: recovery-consumer-c11-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  strict-page:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, macos-15, windows-2025]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout exact qualification HEAD
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Configure pure C11 decoder without application SDK
+        run: cmake -S . -B build/m43 -DBUILD_TESTING=ON -DMYGAMES_ENABLE_GATEWAY=OFF -DMYGAMES_ENABLE_TURBODB=OFF -DMYGAMES_ENABLE_FLOWIE=OFF
+      - name: Build C11 contract tests
+        run: cmake --build build/m43 --config Debug --parallel 2 --target mygames_recovery_gate_test mygames_recovery_wire_test mygames_recovery_decode_test
+      - name: Verify strict wire and cursor page boundaries
+        run: ctest --test-dir build/m43 -C Debug --output-on-failure --no-tests=error -R 'mygames[.](recovery_gate|recovery_wire|recovery_decode)'
+
+  owner-source-tsan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact M4.4 Owner source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Restore pinned native SDK inputs without Mono
+        shell: bash
+        run: bash scripts/ci/restore-native-sdks.sh "$RUNNER_TEMP/mygames-owner-tsan-sdk"
+      - name: Restore matching provider without binary substitution
+        shell: bash
+        run: bash scripts/ci/restore-gmssl.sh "$RUNNER_TEMP/mygames-owner-tsan-gmssl"
+      - name: Configure source TSan instrumentation
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build/owner-tsan \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_C_FLAGS="-O1 -g -fsanitize=thread -fno-omit-frame-pointer -fPIE" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread -pie" \
+            -DBUILD_TESTING=ON -DMYGAMES_ENABLE_GATEWAY=OFF \
+            -DMYGAMES_ENABLE_TURBODB=ON -DMYGAMES_ENABLE_FLOWIE=ON \
+            -DCMAKE_PREFIX_PATH="$SDK_PREFIX_PATH"
+      - name: Build Owner TSan and real TurboDB test
+        shell: bash
+        run: cmake --build build/owner-tsan --parallel 2 --target mygames_consumer_owner_test
+      - name: Repeat cancel/close overlapping TAKEN COMMIT under TSan
+        shell: bash
+        env:
+          TSAN_OPTIONS: "halt_on_error=1:exitcode=66:second_deadlock_stack=1"
+        run: |
+          set -euo pipefail
+          for iteration in 1 2 3; do
+            echo "Owner source TSan run $iteration"
+            ctest --test-dir build/owner-tsan -C Debug \
+              --output-on-failure --no-tests=error \
+              -R '^mygames[.]consumer_owner$'
+          done
+
+  persisted-ledger:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact consumer qualification HEAD
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Restore exact published SDK inputs with curl and SHA256
+        shell: bash
+        run: bash scripts/ci/restore-native-sdks.sh "$RUNNER_TEMP/mygames-consumer-sdk"
+      - name: Restore matching GmSSL published runtime ABI
+        shell: bash
+        run: bash scripts/ci/restore-gmssl.sh "$RUNNER_TEMP/mygames-consumer-gmssl"
+      - name: Configure local ledger-only C11 integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build/consumer-ledger -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_TESTING=ON -DMYGAMES_ENABLE_GATEWAY=OFF \
+            -DMYGAMES_ENABLE_TURBODB=ON -DMYGAMES_ENABLE_FLOWIE=ON \
+            -DCMAKE_PREFIX_PATH="$SDK_PREFIX_PATH"
+      - name: Build bounded transactional consumer and TurboDB fault test
+        run: cmake --build build/consumer-ledger --parallel 2 --target mygames_recovery_consumer_test mygames_consumer_owner_test
+      - name: Verify partial commits, restart, rollback and cursor fencing
+        run: ctest --test-dir build/consumer-ledger -C Debug --output-on-failure --no-tests=error -R 'mygames[.](recovery_consumer|consumer_owner)'
+      - name: Build real authenticated Flowie Broker and Owner-backed client
+        run: |
+          cmake --build build/consumer-ledger --parallel 2 \
+            --target mygames_flowie_broker_test mygames_flowie_acl_client_test \
+            mygames_outbox_publisher mygames_outbox_seed_test \
+            mygames_outbox_audit_test \
+            mygames_flowie_consumer_projection_audit mygames_event_reconcile_test
+      - name: Verify MQTT callback copy and overlapping historical event under one Owner
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/ci_flowie_acl_smoke.py \
+            build/consumer-ledger/mygames_flowie_broker_test \
+            build/consumer-ledger/mygames_flowie_acl_client_test \
+            build/consumer-ledger/mygames_outbox_publisher \
+            build/consumer-ledger/mygames_outbox_seed_test \
+            build/consumer-ledger/mygames_outbox_audit_test \
+            build/consumer-ledger/mygames_flowie_consumer_projection_audit \
+            build/consumer-ledger/mygames_event_reconcile_test \
+            "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so"

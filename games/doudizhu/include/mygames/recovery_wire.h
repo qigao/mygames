@@ -19,7 +19,8 @@ typedef enum mygames_recovery_wire_status {
     MYGAMES_RECOVERY_WIRE_OK = 0,
     MYGAMES_RECOVERY_WIRE_BAD_QUERY,
     MYGAMES_RECOVERY_WIRE_INVALID_PAGE,
-    MYGAMES_RECOVERY_WIRE_CAPACITY
+    MYGAMES_RECOVERY_WIRE_CAPACITY,
+    MYGAMES_RECOVERY_WIRE_WRONG_PRINCIPAL
 } mygames_recovery_wire_status;
 
 typedef bool (*mygames_recovery_public_event_validate_fn)(
@@ -40,6 +41,27 @@ mygames_recovery_wire_status mygames_recovery_encode_page(
     const mygames_store_archive_page *page,
     mygames_recovery_public_event_validate_fn validate_event,
     char *output, size_t output_capacity, size_t *out_bytes);
+
+/* Candidate M4.3 response decoder. The only accepted representation is the
+ * exact versioned, ordered and unescaped JSON emitted by encode_page().
+ * It strictly binds SOURCE NAMESPACE and CONSUMER ID to the caller's fixed,
+ * already-authenticated service policy; payloads are canonical public events.
+ *
+ * after_committed_seq MUST come from the consumer's durable local projection
+ * snapshot (never from HTTP resume_after). No writes/ACK/cursor modification
+ * occur here. out_page is assigned atomically only after complete validation.
+ * Max 16 events / 32 KiB input; malformed names, gaps, retention, partial
+ * responses, unexpected fields, numeric overflow and forged identity reject.
+ *
+ * Caller MUST use an independent verified TLS client and check HTTP status,
+ * Content-Type/body size, then feed only HTTP 200 bytes to this parser.
+ */
+mygames_recovery_wire_status mygames_recovery_decode_page(
+    const void *response_bytes, size_t response_size,
+    const char *expected_source_namespace, const char *expected_consumer_id,
+    uint64_t after_committed_seq,
+    mygames_recovery_public_event_validate_fn validate_event,
+    mygames_store_archive_page *out_page);
 #ifdef __cplusplus
 }
 #endif

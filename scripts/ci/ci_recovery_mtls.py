@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import select
+import signal
 import shutil
 import ssl
 import subprocess
@@ -95,7 +96,8 @@ def check(condition: bool, why: str) -> None:
 
 
 def run(binary: Path, seed: Path, sqlite_driver: Path,
-        native_client: Path) -> None:
+        native_client: Path, remote_consumer: Path | None = None,
+        consumer_audit: Path | None = None) -> None:
     if not shutil.which("openssl"):
         raise RuntimeError("OpenSSL CLI is required for ephemeral mTLS certs")
     with tempfile.TemporaryDirectory(prefix="mygames-recovery-mtls-") as work:
@@ -300,6 +302,127 @@ def run(binary: Path, seed: Path, sqlite_driver: Path,
                     continue  # mTLS rejects before any HTTP request.
                 raise AssertionError(f"{description} unexpectedly passed mTLS")
 
+            # M4.3 second layer, opt-in only for the coherent port14
+            # source workflow. The consumer process gets a DISTINCT local
+            # TurboDB ledger path and a TLS URI, never source DB filename.
+            if remote_consumer is not None and consumer_audit is not None:
+                consumer_db = root / "remote-consumer-ledger.sqlite"
+                namespace = "trusted-source-v1"
+                consumer_id = "backend-projection-v1"
+
+                def audit_cursor(expected: int) -> None:
+                    command(str(consumer_audit), str(sqlite_driver),
+                            str(consumer_db), namespace,
+                            str(expected), str(expected))
+
+                def run_remote(mode: str, max_pages: int,
+                               expected_exit: int, identity=None) -> None:
+                    selected_cert, selected_key = (
+                        identity if identity is not None
+                        else (client_cert, client_key))
+                    result = subprocess.run(
+                        [str(remote_consumer), str(sqlite_driver),
+                         str(consumer_db), str(port), str(ca),
+                         str(selected_cert), str(selected_key),
+                         namespace, consumer_id, "3", str(max_pages),
+                         mode],
+                        capture_output=True, text=True, timeout=30,
+                        check=False)
+                    if result.returncode != expected_exit:
+                        raise AssertionError(
+                            "remote consumer unexpectedly changed settlement "
+                            f"mode={mode} rc={result.returncode} expected="
+                            f"{expected_exit} stdout={result.stdout[-550:]} "
+                            f"stderr={result.stderr[-850:]}")
+                    if expected_exit == 5 and (
+                        "ledger Owner unavailable" not in result.stderr
+                    ):
+                        raise AssertionError(
+                            "concurrent process was not refused at explicit "
+                            "consumer Ledger Owner admission")
+
+                def kill_at_commit_boundary(
+                    mode: str, stage: str, expected_cursor: int
+                ) -> None:
+                    """Actually SIGKILL a live mTLS consumer at a fenced DB stage.
+
+                    The marker is flushed by the child only AFTER a real
+                    authenticated HTTP GET/verified page (BEFORE_COMMIT), or
+                    AFTER a positive SQLite COMMIT (AFTER_ONE_COMMIT). The
+                    child blocks on a test-only stdin pipe until killed.
+                    """
+                    child = subprocess.Popen(
+                        [str(remote_consumer), str(sqlite_driver),
+                         str(consumer_db), str(port), str(ca),
+                         str(client_cert), str(client_key),
+                         namespace, consumer_id, "3", "1", mode],
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, text=True, bufsize=1,
+                    )
+                    try:
+                        assert child.stdout is not None
+                        ready, _, _ = select.select(
+                            [child.stdout], [], [], 18)
+                        if not ready:
+                            raise AssertionError(
+                                f"{mode}: never reached the SIGKILL gate")
+                        line = child.stdout.readline().strip()
+                        expected_line = (
+                            f"mygames.remote_recovery: FAULT_READY_{stage}"
+                            f" cursor={expected_cursor}")
+                        if line != expected_line or child.poll() is not None:
+                            stderr_text = (
+                                child.stderr.read()[-1200:]
+                                if child.poll() is not None and child.stderr
+                                else "<still running>")
+                            raise AssertionError(
+                                f"{mode}: no exact durable crash marker, "
+                                f"line={line!r}, diagnostics={stderr_text}")
+                        # A separate process must be refused by the live
+                        # Owner's nonblocking OS advisory lock, BEFORE any
+                        # source GET or local projection mutation. No "wait
+                        # until lock free" hidden fallback.
+                        run_remote("normal", 1, 5)
+                        child.kill()  # actual Linux SIGKILL, no C cleanup
+                        child.wait(timeout=8)
+                        if child.returncode != -signal.SIGKILL:
+                            raise AssertionError(
+                                f"{mode}: expected genuine SIGKILL, "
+                                f"got {child.returncode}")
+                    finally:
+                        if child.poll() is None:
+                            child.kill()
+                            child.wait(timeout=8)
+                        if child.stdin:
+                            child.stdin.close()
+                        if child.stdout:
+                            child.stdout.close()
+                        if child.stderr:
+                            child.stderr.close()
+
+                # Reset bounded per-principal admission after initial
+                # protocol/auth negative matrix; the crash is real, not
+                # a simulated exit code or manual SQLite cursor update.
+                time.sleep(1.5)
+                kill_at_commit_boundary(
+                    "sigkill-before-commit", "BEFORE_COMMIT", 0)
+                audit_cursor(0)
+                kill_at_commit_boundary(
+                    "sigkill-after-one", "AFTER_ONE_COMMIT", 1)
+                audit_cursor(1)
+                run_remote("normal", 2, 0)
+                audit_cursor(3)  # fresh process resumes from seq=1
+                run_remote("normal", 1, 0)
+                audit_cursor(3)  # repeated run, no duplicate effect
+                run_remote("normal", 1, 1,
+                           identity=(extra_cert, extra_key))
+                audit_cursor(3)  # CA-trusted, unpinned client cannot affect DB
+                print("mygames.remote_recovery: PASS actual mTLS GET, "
+                      "single-host concurrent owner BUSY, real SIGKILL "
+                      "before COMMIT and after one COMMIT, cold process "
+                      "restart with released OS Owner lock, "
+                      "wrong-service identity denied", flush=True)
+
             print("mygames.recovery_mtls: PASS real TLS client auth, "
                   "untrusted/wrong principal denial, readonly archive pages")
         finally:
@@ -327,7 +450,8 @@ def run(binary: Path, seed: Path, sqlite_driver: Path,
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 5:
+    if len(sys.argv) not in (5, 7):
         sys.exit("usage: ci_recovery_mtls.py recovery-service seed-binary "
-                 "sqlite-driver native-client")
-    run(*(Path(item).resolve() for item in sys.argv[1:]))
+                 "sqlite-driver native-client [remote-consumer audit]")
+    args = [Path(item).resolve() for item in sys.argv[1:]]
+    run(*args)

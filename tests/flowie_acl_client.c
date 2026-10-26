@@ -5,6 +5,11 @@
 #include <flowie_mqtt_client.h>
 #include "mygames/consumer_projection.h"
 #include "mygames/outbox_dispatch.h"
+#include "mygames/consumer_owner.h"
+#include "mygames/recovery_wire.h"
+#if defined(MYGAMES_FLOWIE_OWNER_NATIVE_HTTP)
+#include "flowie_owner_http_worker.h"
+#endif
 #include <cmeta_crypto.h>
 #include <salts/clock.h>
 #include <salts/thread.h>
@@ -27,7 +32,16 @@ typedef struct probe {
     atomic_bool received;
     uint8_t received_payload[MYGAMES_STORE_EVENT_MAX + 1u];
     size_t received_size; /* published by received release store */
+    mygames_consumer_owner *owner; /* callback-borrowed until Flowie destroyed */
+    mygames_consumer_projection *projection;
+    mygames_owner_ticket mqtt_ticket;
+#if defined(MYGAMES_FLOWIE_OWNER_NATIVE_HTTP)
+    mygames_test_owner_http *native_http; /* stack lifetime through Flowie */
+    atomic_bool overlapped_http_request;
+#endif
 } probe;
+static bool read_positive_field(const char *json, const char *field,
+                                uint64_t *out);
 
 static bool wait_bool(atomic_bool *flag, uint64_t deadline_ms) {
     const uint64_t start = cmeta_monotonic_ms();
@@ -102,6 +116,26 @@ static int on_message(flowie_mqtt_client_t *client,
            message->payload.size);
     p->received_payload[message->payload.size] = 0u;
     p->received_size = message->payload.size;
+    if (p->owner) {
+        uint64_t epoch = 0u, seq = 0u;
+        /* Callback copied borrowed Flowie bytes above. This is queue
+         * admission ONLY; Flowie 1.0.4 auto-PUBACK may precede DB COMMIT. */
+        if (!read_positive_field((const char *)p->received_payload,
+                                 "\"room_epoch\":", &epoch) ||
+            !read_positive_field((const char *)p->received_payload,
+                                 "\"seq\":", &seq) ||
+            mygames_consumer_owner_admit_mqtt(
+                p->owner, TOPIC, p->received_payload, p->received_size,
+                epoch, seq, &p->mqtt_ticket) != MYGAMES_OWNER_OK)
+            return SALTS_ENOBUFS;
+#if defined(MYGAMES_FLOWIE_OWNER_NATIVE_HTTP)
+        if (p->native_http &&
+            atomic_load_explicit(&p->native_http->in_flight,
+                                 memory_order_acquire))
+            atomic_store_explicit(&p->overlapped_http_request, true,
+                                  memory_order_release);
+#endif
+    }
     atomic_store_explicit(&p->received, true, memory_order_release);
     return SALTS_OK;
 }
@@ -128,6 +162,126 @@ static bool read_positive_field(const char *json, const char *field,
     return true;
 }
 
+/* An explicitly test-only overlap of one genuine Flowie MQTT callback and
+ * an independently validated canonical HISTORY page with the same seq.
+ * No CHttp transport is faked here: the actual separate port14 HTTPS tests
+ * qualify remote transport; this test qualifies one in-process ledger Owner.
+ * Flowie #22 native delayed PUBACK remains NOT IMPLEMENTED. */
+static bool project_received_owner(const probe *p, const char *namespace_id,
+                                   const char *expected,
+                                   uint64_t owner_epoch, uint64_t seq) {
+    mygames_store_archive_page page = {0};
+    mygames_recovery_grant grant = {0};
+    mygames_owner_ticket history[MYGAMES_STORE_ARCHIVE_PAGE_MAX];
+    char encoded[MYGAMES_RECOVERY_RESPONSE_MAX];
+    uint64_t cursor = 0u, effects = 0u;
+    size_t used = 0u, admitted = 0u;
+    mygames_owner_result first, second;
+    bool valid;
+    int n;
+    if (!p || !p->owner || !p->projection || !namespace_id ||
+        !owner_epoch || !seq || seq > (uint64_t)INT64_MAX)
+        return false;
+    if (mygames_consumer_projection_snapshot(
+            p->projection, namespace_id, "backend-projection-v1",
+            &cursor, &effects) != MYGAMES_CONSUMER_APPLIED ||
+        cursor != effects ||
+        (cursor != seq && cursor + 1u != seq))
+        return false;
+    grant.generation = 1u;
+    grant.after_committed_seq = seq - 1u;
+    grant.page_limit = 1u;
+    n = snprintf(grant.source_namespace, sizeof(grant.source_namespace),
+                 "%s", namespace_id);
+    if (n <= 0 || (size_t)n >= sizeof(grant.source_namespace)) return false;
+    n = snprintf(grant.consumer_id, sizeof(grant.consumer_id),
+                 "%s", "backend-projection-v1");
+    if (n <= 0 || (size_t)n >= sizeof(grant.consumer_id)) return false;
+    page.epoch = owner_epoch;
+    page.checkpoint_sequence = seq;
+    page.retained_from_sequence = 1u;
+    page.resume_after_sequence = seq;
+    page.count = 1u;
+    page.items[0].sequence = seq;
+    page.items[0].size = p->received_size;
+    memcpy(page.items[0].payload, p->received_payload, p->received_size);
+    if (mygames_recovery_encode_page(
+            &grant, &page, mygames_outbox_public_event_validate,
+            encoded, sizeof(encoded), &used) != MYGAMES_RECOVERY_WIRE_OK ||
+        mygames_consumer_owner_admit_history(
+            p->owner, encoded, used, seq - 1u,
+            history, MYGAMES_STORE_ARCHIVE_PAGE_MAX, &admitted) !=
+            MYGAMES_OWNER_OK || admitted != 1u)
+        return false;
+
+    first = mygames_consumer_owner_pump_one(p->owner, &cursor);
+    second = mygames_consumer_owner_pump_one(p->owner, &cursor);
+    if ((first != MYGAMES_OWNER_APPLIED &&
+         first != MYGAMES_OWNER_REPLAY) ||
+        second != MYGAMES_OWNER_REPLAY ||
+        mygames_consumer_projection_snapshot(
+            p->projection, namespace_id, "backend-projection-v1",
+            &cursor, &effects) != MYGAMES_CONSUMER_APPLIED ||
+        cursor != seq || effects != seq)
+        return false;
+    valid = (expected && strcmp(expected, "applied") == 0 &&
+             first == MYGAMES_OWNER_APPLIED) ||
+            (expected && strcmp(expected, "replay") == 0 &&
+             first == MYGAMES_OWNER_REPLAY);
+    if (valid)
+        printf("FLOWIE_ACL_PROJECTION_%s count=%llu seq=%llu\n",
+               first == MYGAMES_OWNER_REPLAY ? "REPLAY" : "APPLIED",
+               (unsigned long long)effects, (unsigned long long)cursor);
+    return valid;
+}
+
+/* Real CHttp recovered bytes are fed in via a trusted test harness stdin
+ * pipe, while the independent Flowie network callback admits the matching
+ * MQTT event. Both entries share exactly the same Owner and Ledger.
+ * The harness, NOT this subscriber, verifies HTTPS TLS before injection. */
+static bool accept_real_history_stdin(probe *p) {
+    char length_line[32];
+    char bytes[MYGAMES_RECOVERY_RESPONSE_MAX];
+    char *end = NULL;
+    unsigned long length;
+    size_t n = 0u;
+    mygames_owner_ticket tickets[MYGAMES_STORE_ARCHIVE_PAGE_MAX];
+    if (!p || !p->owner ||
+        !fgets(length_line, sizeof(length_line), stdin))
+        return false;
+    length = strtoul(length_line, &end, 10);
+    if (!end || (*end != '\n' && *end != 0) ||
+        length == 0ul || length > sizeof(bytes))
+        return false;
+    if (fread(bytes, 1u, length, stdin) != length)
+        return false;
+    /* Explicit test source stream begins at durable zero, which is
+     * independently checked after the first Owner receives the source. */
+    return mygames_consumer_owner_admit_history(
+               p->owner, bytes, length, 0u,
+               tickets, MYGAMES_STORE_ARCHIVE_PAGE_MAX, &n) ==
+               MYGAMES_OWNER_OK && n == 1u;
+}
+static bool project_real_history_and_flowie_owner(const probe *p) {
+    const char *ns = getenv("MYGAMES_TEST_SOURCE_NAMESPACE");
+    uint64_t last = 0u, effects = 0u;
+    mygames_owner_result a, b;
+    if (!p || !p->owner || !p->projection || !ns ||
+        !p->mqtt_ticket.generation)
+        return false;
+    a = mygames_consumer_owner_pump_one(p->owner, &last);
+    b = mygames_consumer_owner_pump_one(p->owner, &last);
+    if (a != MYGAMES_OWNER_APPLIED ||
+        b != MYGAMES_OWNER_REPLAY ||
+        mygames_consumer_projection_snapshot(
+            p->projection, ns, "backend-projection-v1",
+            &last, &effects) != MYGAMES_CONSUMER_APPLIED ||
+        last != 1u || effects != 1u)
+        return false;
+    puts("FLOWIE_OWNER_REAL_MTLS_HISTORY_PASS");
+    return true;
+}
+
 static bool project_received_event(const probe *p) {
     const char *database = getenv("MYGAMES_TEST_PROJECTION_DB");
     const char *driver = getenv("MYGAMES_TEST_PROJECTION_DRIVER");
@@ -147,6 +301,8 @@ static bool project_received_event(const probe *p) {
         !mygames_outbox_public_event_validate(p->received_payload,
                                               p->received_size, epoch, seq))
         return false;
+    if (p->owner)
+        return project_received_owner(p, ns, expected, epoch, seq);
     if (cmeta_sha256(p->received_payload, p->received_size, hash) != SALTS_OK)
         return false;
     status = mygames_consumer_projection_open(driver, database, &projection);
@@ -181,6 +337,9 @@ int main(int argc, char **argv) {
     flowie_mqtt_client_topic_handler_t handler = {0};
     flowie_mqtt_client_t *client = NULL;
     probe p;
+#if defined(MYGAMES_FLOWIE_OWNER_NATIVE_HTTP)
+    mygames_test_owner_http native_http = {0};
+#endif
     const char *identity = NULL, *password = NULL, *client_id = NULL;
     const char *mode;
     int rc = 1;
@@ -190,10 +349,15 @@ int main(int argc, char **argv) {
         "\"room_epoch\":1,\"revision\":1,\"seq\":1}";
     if (argc != 2) return 2;
     mode = argv[1];
+#if !defined(MYGAMES_FLOWIE_OWNER_NATIVE_HTTP)
+    if (strcmp(mode, "subscriber-owner-native") == 0) return 2;
+#endif
     expect_connect = strcmp(mode, "bad-secret") != 0;
     if (strcmp(mode, "subscriber") == 0 ||
         strcmp(mode, "subscriber-listen") == 0 ||
-        strcmp(mode, "subscriber-no-commit") == 0) {
+        strcmp(mode, "subscriber-no-commit") == 0 ||
+        strcmp(mode, "subscriber-owner") == 0 ||
+        (strcmp(mode, "subscriber-owner-mtls") == 0 || strcmp(mode, "subscriber-owner-native") == 0)) {
         identity = "svc-consumer";
         password = getenv("MYGAMES_TEST_CONSUMER_SECRET");
         client_id = "mygames-consumer-v1";
@@ -236,6 +400,29 @@ int main(int argc, char **argv) {
         client_id = "mygames-outbox-v1";
     } else return 2;
     if (!password || !password[0]) return 2;
+    p.owner = NULL;
+    p.projection = NULL;
+    p.mqtt_ticket = (mygames_owner_ticket){0};
+#if defined(MYGAMES_FLOWIE_OWNER_NATIVE_HTTP)
+    p.native_http = NULL;
+    atomic_init(&p.overlapped_http_request, false);
+#endif
+    if (strcmp(mode, "subscriber-owner") == 0 ||
+        (strcmp(mode, "subscriber-owner-mtls") == 0 || strcmp(mode, "subscriber-owner-native") == 0)) {
+        const char *db = getenv("MYGAMES_TEST_PROJECTION_DB");
+        const char *driver = getenv("MYGAMES_TEST_PROJECTION_DRIVER");
+        const char *ns = getenv("MYGAMES_TEST_SOURCE_NAMESPACE");
+        if (!db || !driver || !ns ||
+            mygames_consumer_projection_open(
+                driver, db, &p.projection) != MYGAMES_CONSUMER_APPLIED)
+            return 2;
+        if (mygames_consumer_owner_open(
+                p.projection, ns, "backend-projection-v1",
+                &p.owner) != MYGAMES_OWNER_OK) {
+            mygames_consumer_projection_close(p.projection);
+            return 2;
+        }
+    }
     atomic_init(&p.connect_done, false);
     atomic_init(&p.connect_allowed, false);
     atomic_init(&p.operation_done, false);
@@ -254,7 +441,9 @@ int main(int argc, char **argv) {
     config.on_publish = on_publish;
     config.user_data = &p;
     if ((strcmp(mode, "subscriber-listen") == 0 ||
-         strcmp(mode, "subscriber-no-commit") == 0)) {
+         strcmp(mode, "subscriber-no-commit") == 0 ||
+         strcmp(mode, "subscriber-owner") == 0 ||
+         (strcmp(mode, "subscriber-owner-mtls") == 0 || strcmp(mode, "subscriber-owner-native") == 0))) {
         handler.filter = (flowie_mqtt_span_t){
             (const uint8_t *)TOPIC, sizeof(TOPIC) - 1u};
         handler.on_message = on_message;
@@ -310,12 +499,69 @@ int main(int argc, char **argv) {
         if (atomic_load_explicit(&p.operation_allowed, memory_order_acquire) !=
             (strcmp(mode, "subscriber") == 0 ||
              strcmp(mode, "subscriber-listen") == 0 ||
-             strcmp(mode, "subscriber-no-commit") == 0))
+             strcmp(mode, "subscriber-no-commit") == 0 ||
+             strcmp(mode, "subscriber-owner") == 0 ||
+             (strcmp(mode, "subscriber-owner-mtls") == 0 || strcmp(mode, "subscriber-owner-native") == 0)))
             goto cleanup;
         if ((strcmp(mode, "subscriber-listen") == 0 ||
-         strcmp(mode, "subscriber-no-commit") == 0)) {
+         strcmp(mode, "subscriber-no-commit") == 0 ||
+         strcmp(mode, "subscriber-owner") == 0 ||
+         (strcmp(mode, "subscriber-owner-mtls") == 0 || strcmp(mode, "subscriber-owner-native") == 0))) {
             puts("FLOWIE_ACL_SUBSCRIBER_READY");
             fflush(stdout);
+#if defined(MYGAMES_FLOWIE_OWNER_NATIVE_HTTP)
+            if (strcmp(mode, "subscriber-owner-native") == 0) {
+                const char *port_s = getenv("MYGAMES_TEST_RECOVERY_PORT");
+                const char *ca = getenv("MYGAMES_TEST_RECOVERY_CA");
+                const char *crt = getenv("MYGAMES_TEST_RECOVERY_CERT");
+                const char *key = getenv("MYGAMES_TEST_RECOVERY_KEY");
+                const char *ns = getenv("MYGAMES_TEST_SOURCE_NAMESPACE");
+                uint64_t after = 0u, effects = 0u;
+                unsigned long parsed_port;
+                char *end = NULL;
+                if (!p.owner || !p.projection || !port_s || !ca || !crt ||
+                    !key || !ns ||
+                    mygames_consumer_projection_snapshot(
+                        p.projection, ns, "backend-projection-v1",
+                        &after, &effects) != MYGAMES_CONSUMER_APPLIED ||
+                    after != effects || after != 0u)
+                    goto cleanup;
+                parsed_port = strtoul(port_s, &end, 10);
+                if (!end || *end || parsed_port == 0ul ||
+                    parsed_port > 65535ul) goto cleanup;
+                native_http.owner = p.owner;
+                native_http.port = (uint16_t)parsed_port;
+                native_http.ca_file = ca;
+                native_http.client_cert = crt;
+                native_http.client_key = key;
+                native_http.committed_after = after;
+                p.native_http = &native_http;
+                if (mygames_test_owner_http_start(&native_http) != SALTS_OK)
+                    goto cleanup;
+                puts("FLOWIE_OWNER_NATIVE_HTTP_STARTED");
+                fflush(stdout);
+                if (!wait_bool(&p.received, 9000u)) goto cleanup;
+                if (mygames_test_owner_http_join(&native_http) != SALTS_OK)
+                    goto cleanup;
+                if (!atomic_load_explicit(
+                        &p.overlapped_http_request, memory_order_acquire))
+                    goto cleanup;
+                if (!project_real_history_and_flowie_owner(&p))
+                    goto cleanup;
+                puts("FLOWIE_OWNER_NATIVE_CHTTP_AND_MQTT_PASS");
+                fflush(stdout);
+                goto subscription_finished;
+            }
+#endif
+            if (strcmp(mode, "subscriber-owner-mtls") == 0) {
+                if (!accept_real_history_stdin(&p) ||
+                    !wait_bool(&p.received, 9000u) ||
+                    !project_real_history_and_flowie_owner(&p))
+                    goto cleanup;
+                /* No duplicate projection and no MQTT ACK control here:
+                 * Flowie 1.0.4 auto-PUBACK is still pre-COMMIT. */
+                goto subscription_finished;
+            }
             if (!wait_bool(&p.received, 9000u)) goto cleanup;
             if (strcmp(mode, "subscriber-no-commit") == 0) {
                 /* Explicitly simulate a crash window after Flowie's
@@ -329,6 +575,7 @@ int main(int argc, char **argv) {
             if (!project_received_event(&p)) goto cleanup;
         }
     }
+subscription_finished:
     if (expect_publish) {
         item.qos = 1u;
         {
@@ -352,8 +599,19 @@ int main(int argc, char **argv) {
     }
     rc = 0;
 cleanup:
+#if defined(MYGAMES_FLOWIE_OWNER_NATIVE_HTTP)
+    if (native_http.started &&
+        mygames_test_owner_http_join(&native_http) != SALTS_OK)
+        rc = 1;
+#endif
     if (client && flowie_mqtt_client_try_destroy(client, 5000u) != SALTS_OK)
         return 5;
+    /* Flowie callback borrows the Owner pointer; stop/join Flowie before
+     * freeing Owner and its private consumer DB connection. */
+    if (p.owner &&
+        mygames_consumer_owner_destroy(p.owner) != MYGAMES_OWNER_OK)
+        return 5;
+    mygames_consumer_projection_close(p.projection);
     if (!rc)
         printf("FLOWIE_ACL_TEST_PASS %s\n", mode);
     else

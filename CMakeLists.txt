@@ -25,7 +25,8 @@ add_library(mygames_recovery_gate STATIC
   games/doudizhu/src/recovery_gate.c)
 add_library(MyGames::RecoveryGate ALIAS mygames_recovery_gate)
 add_library(mygames_recovery_wire STATIC
-  games/doudizhu/src/recovery_wire.c)
+  games/doudizhu/src/recovery_wire.c
+  games/doudizhu/src/recovery_decode.c)
 add_library(MyGames::RecoveryWire ALIAS mygames_recovery_wire)
 target_compile_features(mygames_recovery_wire PUBLIC c_std_11)
 target_include_directories(mygames_recovery_wire PUBLIC games/doudizhu/include)
@@ -150,6 +151,9 @@ if(BUILD_TESTING)
   add_executable(mygames_recovery_wire_test tests/recovery_wire_test.c)
   target_link_libraries(mygames_recovery_wire_test PRIVATE MyGames::RecoveryWire)
   add_test(NAME mygames.recovery_wire COMMAND mygames_recovery_wire_test)
+  add_executable(mygames_recovery_decode_test tests/recovery_decode_test.c)
+  target_link_libraries(mygames_recovery_decode_test PRIVATE MyGames::RecoveryWire)
+  add_test(NAME mygames.recovery_decode COMMAND mygames_recovery_decode_test)
   add_executable(mygames_recovery_gate_test tests/recovery_gate_test.c)
   target_link_libraries(mygames_recovery_gate_test PRIVATE MyGames::RecoveryGate)
   add_test(NAME mygames.recovery_gate COMMAND mygames_recovery_gate_test)
@@ -182,6 +186,75 @@ if(MYGAMES_ENABLE_FLOWIE)
   target_compile_features(mygames_outbox PUBLIC c_std_11)
   target_include_directories(mygames_outbox PUBLIC games/doudizhu/include)
   target_link_libraries(mygames_outbox PUBLIC MyGames::Store)
+
+  # Optional M4.3 consumer-OWNER step: accepts only already-authenticated
+  # bounded HTTP page bytes. It cannot open a source archive, send PUBACK,
+  # or make another worker concurrently own the ledger.
+  add_library(mygames_recovery_consumer STATIC
+    games/doudizhu/src/recovery_consumer.c)
+  add_library(MyGames::RecoveryConsumer ALIAS mygames_recovery_consumer)
+  target_compile_features(mygames_recovery_consumer PUBLIC c_std_11)
+  target_include_directories(mygames_recovery_consumer PUBLIC
+    games/doudizhu/include)
+  target_link_libraries(mygames_recovery_consumer
+    PUBLIC MyGames::ConsumerProjection MyGames::RecoveryWire
+    PRIVATE MyGames::Outbox Salts::Core)
+  if(MSVC)
+    target_compile_options(mygames_recovery_consumer PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_recovery_consumer PRIVATE
+      -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  if(BUILD_TESTING)
+    add_executable(mygames_recovery_consumer_test
+      tests/recovery_consumer_test.c)
+    target_compile_definitions(mygames_recovery_consumer_test PRIVATE
+      MYGAMES_CONSUMER_FAULT_TESTING=1)
+    target_link_libraries(mygames_recovery_consumer_test PRIVATE
+      MyGames::RecoveryConsumer MyGames::Outbox Orm::C)
+    add_test(NAME mygames.recovery_consumer
+      COMMAND mygames_recovery_consumer_test
+        "${TurboDB_DRIVER_DIR}/turbodb_driver_sqlite${CMAKE_SHARED_MODULE_SUFFIX}"
+        "${CMAKE_CURRENT_BINARY_DIR}/mygames-recovery-consumer-ci.sqlite")
+  endif()
+
+  # M4.4 in-process Consumer Owner: thread-safe bounded borrowed-event
+  # handoff; only one Owner thread ever touches the TurboDB projection.
+  # No native MQTT ACK capability is inferred from admission.
+  add_library(mygames_consumer_owner STATIC
+    games/doudizhu/src/consumer_owner.c)
+  add_library(MyGames::ConsumerOwner ALIAS mygames_consumer_owner)
+  target_compile_features(mygames_consumer_owner PUBLIC c_std_11)
+  target_include_directories(mygames_consumer_owner PUBLIC games/doudizhu/include)
+  target_link_libraries(mygames_consumer_owner PRIVATE
+    MyGames::ConsumerProjection MyGames::RecoveryWire MyGames::Outbox
+    Salts::Core Salts::Platform)
+  if(MSVC)
+    target_compile_options(mygames_consumer_owner PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_consumer_owner PRIVATE
+      -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  if(BUILD_TESTING)
+    # The TAKEN/COMMIT barrier is test-only; no hook exists in the default
+    # published library ABI or in builds with BUILD_TESTING disabled.
+    target_compile_definitions(mygames_consumer_owner PRIVATE
+      MYGAMES_CONSUMER_OWNER_TESTING=1)
+    add_executable(mygames_consumer_owner_test tests/consumer_owner_test.c)
+    target_compile_features(mygames_consumer_owner_test PRIVATE c_std_11)
+    target_compile_definitions(mygames_consumer_owner_test PRIVATE
+      MYGAMES_CONSUMER_FAULT_TESTING=1
+      MYGAMES_CONSUMER_OWNER_TESTING=1)
+    target_link_libraries(mygames_consumer_owner_test PRIVATE
+      MyGames::ConsumerOwner MyGames::RecoveryWire
+      MyGames::ConsumerProjection MyGames::Outbox
+      Salts::Core Salts::Platform Orm::C)
+    add_test(NAME mygames.consumer_owner
+      COMMAND mygames_consumer_owner_test
+        "${TurboDB_DRIVER_DIR}/turbodb_driver_sqlite${CMAKE_SHARED_MODULE_SUFFIX}"
+        "${CMAKE_CURRENT_BINARY_DIR}/mygames-consumer-owner-ci.sqlite")
+  endif()
+
   add_executable(mygames_outbox_publisher apps/publisher/main.c)
   target_compile_features(mygames_outbox_publisher PRIVATE c_std_11)
   target_link_libraries(mygames_outbox_publisher PRIVATE
@@ -212,6 +285,25 @@ if(MYGAMES_ENABLE_FLOWIE)
         -Wall -Wextra -Wpedantic -Werror)
     endif()
   endif()
+  if(MYGAMES_ENABLE_GATEWAY AND BUILD_TESTING)
+    # Qualification-only remote consumer; application runtime installation
+    # and Flowie live-input concurrency are NOT enabled by this target.
+    add_executable(mygames_recovery_remote_consumer_test
+      apps/consumer/recovery_remote_consumer.c
+      games/doudizhu/src/consumer_owner_guard.c)
+    target_compile_features(mygames_recovery_remote_consumer_test PRIVATE c_std_11)
+    target_compile_definitions(mygames_recovery_remote_consumer_test PRIVATE
+      MYGAMES_RECOVERY_FAULT_TESTING=1)
+    target_link_libraries(mygames_recovery_remote_consumer_test PRIVATE
+      MyGames::RecoveryConsumer MyGames::Outbox CHttp::Client
+      Salts::Platform Orm::C)
+    if(MSVC)
+      target_compile_options(mygames_recovery_remote_consumer_test PRIVATE /W4 /WX)
+    else()
+      target_compile_options(mygames_recovery_remote_consumer_test PRIVATE
+        -Wall -Wextra -Wpedantic -Werror)
+    endif()
+  endif()
   if(BUILD_TESTING)
     target_compile_definitions(mygames_outbox_publisher PRIVATE MYGAMES_OUTBOX_TEST_FAULTS=1)
     add_executable(mygames_outbox_contract_test tests/outbox_contract_test.c)
@@ -225,7 +317,18 @@ if(MYGAMES_ENABLE_FLOWIE)
     target_compile_features(mygames_flowie_consumer_projection_audit PRIVATE c_std_11)
     add_executable(mygames_flowie_acl_client_test tests/flowie_acl_client.c)
     target_link_libraries(mygames_flowie_acl_client_test PRIVATE
-      Flowie::Client MyGames::ConsumerProjection MyGames::Outbox Salts::Core Orm::C)
+      Flowie::Client MyGames::ConsumerProjection MyGames::ConsumerOwner
+      MyGames::RecoveryWire MyGames::Outbox Salts::Core Orm::C)
+    if(MYGAMES_ENABLE_GATEWAY)
+      # Native CHttp and Flowie work concurrently within this one test
+      # process, copying events into the same Consumer Owner. Flowie-only
+      # published-SDK CI does not add a new HTTP dependency.
+      target_sources(mygames_flowie_acl_client_test PRIVATE
+        tests/flowie_owner_http_worker.c)
+      target_compile_definitions(mygames_flowie_acl_client_test PRIVATE
+        MYGAMES_FLOWIE_OWNER_NATIVE_HTTP=1)
+      target_link_libraries(mygames_flowie_acl_client_test PRIVATE CHttp::Client)
+    endif()
     target_compile_features(mygames_flowie_acl_client_test PRIVATE c_std_11)
     add_executable(mygames_archive_corrupt_test tests/flowie_archive_corrupt_test.c)
     target_compile_features(mygames_archive_corrupt_test PRIVATE c_std_11)
