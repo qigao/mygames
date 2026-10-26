@@ -8,6 +8,9 @@ name: M5c real TurboDB private Game ACK transaction
       - 'games/doudizhu/src/ddz_match_checkpoint.c'
       - 'games/doudizhu/include/mygames/ddz_match_checkpoint.h'
       - 'tests/ddz_turbodb_game_commit_test.c'
+      - 'games/doudizhu/src/ddz_game_owner.c'
+      - 'games/doudizhu/include/mygames/ddz_game_owner.h'
+      - 'tests/ddz_game_owner_integration_test.c'
       - 'CMakeLists.txt'
       - '.github/workflows/ddz-m5c-game-store.yml'
   workflow_dispatch:
@@ -47,7 +50,7 @@ jobs:
             -DMYGAMES_ENABLE_TURBODB=ON -DMYGAMES_ENABLE_FLOWIE=OFF \
             -DCMAKE_PREFIX_PATH="$SDK_PREFIX_PATH"
           cmake --build build/game-store --parallel 2 \
-            --target mygames_game_store_test mygames_turbodb_store_test
+            --target mygames_game_owner_test mygames_game_store_test mygames_turbodb_store_test
 
       - name: Assert genuine installed ORM and SQLite driver closure
         shell: bash
@@ -63,7 +66,7 @@ jobs:
           set -euo pipefail
           ctest --test-dir build/game-store -C Release \
             --no-tests=error --output-on-failure --timeout 120 \
-            -R '^mygames[.](game_store|turbodb_store)$'
+            -R '^mygames[.](game_owner|game_store|turbodb_store)$'
 
       - name: Repeat committed game and actual separate SQLite reopen
         shell: bash
@@ -71,7 +74,7 @@ jobs:
           set -euo pipefail
           ctest --test-dir build/game-store -C Release \
             --no-tests=error --output-on-failure --timeout 120 \
-            --repeat until-fail:5 -R '^mygames[.]game_store$'
+            --repeat until-fail:5 -R '^mygames[.](game_owner|game_store)$'
 
       - name: Preserve exact physical datastore test evidence
         if: always()
