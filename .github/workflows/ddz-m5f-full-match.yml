@@ -1,0 +1,102 @@
+name: M5f complete native three-player match and rematch
+
+'on':
+  pull_request:
+    paths:
+      - 'scripts/ddz_m5f_full_match.mjs'
+      - 'scripts/ci/ci_ddz_m5f_full_match.py'
+      - 'apps/cocos/assets/scripts/state/GameStore.ts'
+      - 'apps/cocos/assets/scripts/ui/GameTableView.ts'
+      - 'tests/cocos_gameplay.test.mjs'
+      - 'games/doudizhu/src/ddz_round.c'
+      - 'games/doudizhu/src/ddz_match.c'
+      - 'games/doudizhu/src/ddz_game_owner.c'
+      - 'apps/server/main.c'
+      - '.github/workflows/ddz-m5f-full-match.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mygames-m5f-full-match-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  full-game-acceptance:
+    name: Three real players 20-card winner, rematch, and two cold SQL reopens
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact immutable candidate HEAD
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Node 22 actual WebSocket clients
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Restore coherent Salts/CHttp/TurboDB Native SDKs with SHA256
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/ci/restore-native-sdks.sh "$RUNNER_TEMP/mygames-sdk"
+          test -f "$RUNNER_TEMP/mygames-sdk/turbodb/sdk/linux-x64/lib/turbodb/drivers/turbodb_driver_sqlite.so"
+      - name: Restore pinned CHttp-compatible GmSSL native dependency
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/mygames-gmssl/installed/x64-linux
+          key: mygames-gmssl-3.2.0-port12-linux-x64-v1
+      - name: Build/verify pinned GmSSL static SDK without Mono
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/ci/restore-gmssl.sh "$RUNNER_TEMP/mygames-gmssl"
+      - name: Configure actual CHttp/CFlow and SQLite WAL/FULL application
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build/m5f-gateway -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=ON -DMYGAMES_ENABLE_GATEWAY=ON \
+            -DMYGAMES_ENABLE_TURBODB=ON -DMYGAMES_ENABLE_FLOWIE=OFF \
+            -DCMAKE_PREFIX_PATH="$SDK_PREFIX_PATH"
+      - name: Build real Game Owner, Router and TurboDB consumer sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build build/m5f-gateway --parallel 2 --target \
+            mygames_server mygames_game_owner_test \
+            mygames_game_store_test mygames_turbodb_store_test \
+            mygames_ddz_game_wire_test
+      - name: Audit actual linked CHttp/ORM/Salts dynamic libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          ldd build/m5f-gateway/mygames_server | tee build/m5f-gateway/m5f-native-ldd.txt
+          ! grep -q 'not found' build/m5f-gateway/m5f-native-ldd.txt
+          test -f "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so"
+      - name: Real private GameStore and durable Game ACK unit contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          ctest --test-dir build/m5f-gateway -C Release --output-on-failure \
+            --no-tests=error --timeout 120 \
+            -R '^mygames[.](game_owner|game_store|turbodb_store|ddz_game_wire)$'
+      - name: Real complete landlord victory, rematch with farmer landlord and cold restarts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/ci_ddz_m5f_full_match.py \
+            build/m5f-gateway/mygames_server \
+            "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so"
+      - name: Preserve only public dependency and test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m5f-native-full-match-${{ github.run_id }}
+          retention-days: 14
+          if-no-files-found: ignore
+          path: |
+            build/m5f-gateway/m5f-native-ldd.txt
+            build/m5f-gateway/Testing/Temporary/LastTest.log
