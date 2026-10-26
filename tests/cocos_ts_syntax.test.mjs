@@ -8,6 +8,8 @@ const scripts = [
     'net/Protocol.ts',
     'net/GameSocket.ts',
     'state/RoomStore.ts',
+    'state/GameStore.ts',
+    'ui/GameTableView.ts',
     'ui/ConnectionPanel.ts',
     'ui/LobbyBootstrap.ts'
 ];

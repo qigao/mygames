@@ -70,6 +70,23 @@ test('scene __id__ references resolve and roots are consistently owned', () => {
     }
 });
 
+test('existing Lobby.scene mounts the authoritative Cocos game table at runtime', () => {
+    const bootstrap = readFileSync(new URL('scripts/ui/LobbyBootstrap.ts', ROOT),'utf8');
+    const table = readFileSync(new URL('scripts/ui/GameTableView.ts', ROOT),'utf8');
+    const store = readFileSync(new URL('scripts/state/GameStore.ts', ROOT),'utf8');
+    assert.match(bootstrap,/new GameTableView\(root,/);
+    assert.match(bootstrap,/this\.games\.applyPrivateHand\(frame\)/);
+    assert.match(bootstrap,/this\.socket\?\.canPlayGames/);
+    assert.match(table,/self-card-/);
+    assert.match(table,/actions\.toggleCard\(id\)/);
+    assert.match(table,/this\.enable\('play'/);
+    assert.match(table,/this\.enable\('bid3'/);
+    assert.match(store,/this\.awaitingHand\?\.requestId/);
+    assert.match(store,/this\.privateHand = null/);
+    const scene = read('scenes/Lobby.scene');
+    assert.equal(scene[0].__type__, 'cc.SceneAsset');
+});
+
 test('project targets Creator 3.8 and a 2D runtime scene', () => {
     const packageJson = JSON.parse(readFileSync(new URL('../apps/cocos/package.json', import.meta.url),'utf8'));
     assert.equal(packageJson.type, '2d');
