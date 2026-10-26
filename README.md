@@ -17,6 +17,26 @@ A server-authoritative multiplayer game platform, initially for Dou Dizhu (斗�
 Flowie integration and KFCore/DouZero. Hashed bearer-based restart recovery is
 available only in the optional local TurboDB development mode.
 
+## M5a — actual Dou Dizhu gameplay rules (stacked Draft)
+
+A new independent `MyGames::DouDizhuRound` pure-C11 module provides real
+54-card move legality, 14 gameplay move patterns, bomb/rocket comparison,
+validated landlord opening deal, three-player turn order, two-pass trick
+clearing, exact `turn_id` replay fencing and winner determination. Invalid
+actions do not mutate authoritative round state or result data.
+
+The full game state contains **private hands** and must stay inside the
+Room/Game Owner; it is **not** a public room snapshot or MQTT event.
+The module requires an externally shuffled secret deck and already selected
+landlord, and does not authorize network input, persist outcomes or return
+a post-COMMIT Game ACK by itself.
+
+Run the cross-platform no-SDK test with
+`ctest --test-dir build -R mygames.ddz_round --output-on-failure`.
+See [M5a gameplay contract](docs/ddz-round-v1.md). This is not yet a
+playable network game: bidding, durable turn journal, room integration,
+member-scoped card snapshots, game UI and KFCore/DouZero proposals are next.
+
 ## Core-only tests
 
     cmake -S . -B build/core -DBUILD_TESTING=ON
