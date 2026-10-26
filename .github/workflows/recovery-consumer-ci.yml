@@ -1,0 +1,42 @@
+name: M4.3 recovery cursor and wire qualification
+
+on:
+  push:
+    branches:
+      - feature/recovery-consumer-durable-cursor
+  pull_request:
+    paths:
+      - "games/doudizhu/include/mygames/recovery_wire.h"
+      - "games/doudizhu/src/recovery_decode.c"
+      - "games/doudizhu/src/recovery_wire.c"
+      - "tests/recovery_decode_test.c"
+      - "CMakeLists.txt"
+      - ".github/workflows/recovery-consumer-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: recovery-consumer-c11-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  strict-page:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, macos-15, windows-2025]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout exact qualification HEAD
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Configure pure C11 decoder without application SDK
+        run: cmake -S . -B build/m43 -DBUILD_TESTING=ON -DMYGAMES_ENABLE_GATEWAY=OFF -DMYGAMES_ENABLE_TURBODB=OFF -DMYGAMES_ENABLE_FLOWIE=OFF
+      - name: Build C11 contract tests
+        run: cmake --build build/m43 --config Debug --parallel 2 --target mygames_recovery_gate_test mygames_recovery_wire_test mygames_recovery_decode_test
+      - name: Verify strict wire and durable cursor page boundaries
+        run: ctest --test-dir build/m43 -C Debug --output-on-failure --no-tests=error -R 'mygames[.](recovery_gate|recovery_wire|recovery_decode)$'
