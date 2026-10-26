@@ -244,6 +244,12 @@ mygames_ddz_match_status mygames_ddz_match_validate(const mygames_ddz_match *mat
         const mygames_ddz_round empty = {0};
         if (memcmp(&match->round, &empty, sizeof(empty)) != 0)
             return MYGAMES_DDZ_MATCH_INVALID_STATE;
+        /* Pre-landlord state has accepted no card actions, so there
+         * cannot be a multiplier/spring carried from another match. */
+        if (match->scoring.bombs_rockets != 0u ||
+            match->scoring.landlord_nonpass != 0u ||
+            match->scoring.farmers_nonpass != 0u)
+            return MYGAMES_DDZ_MATCH_INVALID_STATE;
         if (match->phase == MYGAMES_DDZ_MATCH_BIDDING) {
             if (match->bid_count >= 3u ||
                 match->highest_bid == 3u ||
@@ -268,7 +274,89 @@ mygames_ddz_match_status mygames_ddz_match_validate(const mygames_ddz_match *mat
         if ((match->round.hands[i] & ~original) != 0u)
             return MYGAMES_DDZ_MATCH_INVALID_STATE;
     }
+    {
+        const uint64_t landlord_cards =
+            initial[match->highest_seat] | kitty;
+        const unsigned int landlord_played = ddz_count_bits(
+            match->round.played_cards & landlord_cards);
+        const unsigned int farmers_played = ddz_count_bits(
+            match->round.played_cards & ~landlord_cards);
+        const mygames_ddz_score_counters counters = match->scoring;
+        const unsigned int nonpass =
+            (unsigned int)counters.landlord_nonpass + counters.farmers_nonpass;
+        if (counters.landlord_nonpass > landlord_played ||
+            counters.farmers_nonpass > farmers_played ||
+            counters.bombs_rockets > 14u ||
+            (unsigned int)counters.bombs_rockets * 2u >
+                landlord_played + farmers_played ||
+            nonpass > landlord_played + farmers_played ||
+            counters.landlord_nonpass == 0u ||
+            nonpass >= match->round.turn_id)
+            return MYGAMES_DDZ_MATCH_INVALID_STATE;
+        if (match->phase == MYGAMES_DDZ_MATCH_FINISHED) {
+            mygames_ddz_settlement settlement = {0};
+            if (mygames_ddz_score_compute(match->highest_bid, counters,
+                    match->highest_seat, match->round.winner_seat,
+                    &settlement) != MYGAMES_DDZ_MATCH_OK)
+                return MYGAMES_DDZ_MATCH_INVALID_STATE;
+        }
+    }
     return MYGAMES_DDZ_MATCH_OK;
+}
+
+/* Only admitted legal cards contribute. A pass, attempted play or receipt
+ * replay never increments multipliers. 54 physical cards bound accepted
+ * scoring events and the maximum possible base*2^15 fits int32. */
+mygames_ddz_match_status mygames_ddz_score_compute(
+    uint8_t bid_base, mygames_ddz_score_counters counters,
+    uint8_t landlord_seat, uint8_t winner_seat,
+    mygames_ddz_settlement *out_settlement) {
+    mygames_ddz_settlement result = {0};
+    unsigned int seat, exponent;
+    bool landlord_won;
+    if (!out_settlement || bid_base < 1u || bid_base > 3u ||
+        landlord_seat >= MYGAMES_DDZ_SEATS || winner_seat >= MYGAMES_DDZ_SEATS ||
+        counters.bombs_rockets > 14u ||
+        counters.landlord_nonpass < 1u || counters.landlord_nonpass > 20u ||
+        counters.farmers_nonpass > 34u ||
+        counters.bombs_rockets >
+            (unsigned int)counters.landlord_nonpass + counters.farmers_nonpass)
+        return MYGAMES_DDZ_MATCH_INVALID_ARGUMENT;
+    landlord_won = winner_seat == landlord_seat;
+    if (!landlord_won && counters.farmers_nonpass == 0u)
+        return MYGAMES_DDZ_MATCH_INVALID_ARGUMENT;
+    result.spring = landlord_won && counters.farmers_nonpass == 0u ?
+        MYGAMES_DDZ_SPRING_LANDLORD :
+        (!landlord_won && counters.landlord_nonpass == 1u ?
+         MYGAMES_DDZ_SPRING_FARMERS : MYGAMES_DDZ_SPRING_NONE);
+    exponent = (unsigned int)counters.bombs_rockets +
+               (result.spring != MYGAMES_DDZ_SPRING_NONE ? 1u : 0u);
+    result.multiplier = UINT32_C(1) << exponent;
+    result.unit = (uint32_t)bid_base * result.multiplier;
+    result.bid_base = bid_base;
+    result.bombs_rockets = counters.bombs_rockets;
+    result.landlord_seat = landlord_seat;
+    result.winner_seat = winner_seat;
+    result.delta[landlord_seat] = landlord_won ?
+        (int32_t)(result.unit * 2u) : -(int32_t)(result.unit * 2u);
+    for (seat = 0u; seat < MYGAMES_DDZ_SEATS; ++seat) {
+        if (seat != landlord_seat)
+            result.delta[seat] = landlord_won ?
+                -(int32_t)result.unit : (int32_t)result.unit;
+    }
+    *out_settlement = result;
+    return MYGAMES_DDZ_MATCH_OK;
+}
+
+mygames_ddz_match_status mygames_ddz_match_settlement(
+    const mygames_ddz_match *match, mygames_ddz_settlement *out_settlement) {
+    if (!out_settlement || !match) return MYGAMES_DDZ_MATCH_INVALID_ARGUMENT;
+    if (mygames_ddz_match_validate(match) != MYGAMES_DDZ_MATCH_OK)
+        return MYGAMES_DDZ_MATCH_INVALID_STATE;
+    if (match->phase != MYGAMES_DDZ_MATCH_FINISHED)
+        return MYGAMES_DDZ_MATCH_WRONG_PHASE;
+    return mygames_ddz_score_compute(match->highest_bid, match->scoring,
+            match->highest_seat, match->round.winner_seat, out_settlement);
 }
 
 static mygames_ddz_match_status ddz_scope(const mygames_ddz_match *match,
@@ -371,6 +459,23 @@ mygames_ddz_match_status mygames_ddz_match_play(
         return MYGAMES_DDZ_MATCH_NOT_YOUR_TURN;
     if (rules != MYGAMES_DDZ_OK)
         return MYGAMES_DDZ_MATCH_ILLEGAL_PLAY;
+    if (event.played_cards != UINT64_C(0)) {
+        if (seat == next.highest_seat) {
+            if (next.scoring.landlord_nonpass >= 20u)
+                return MYGAMES_DDZ_MATCH_INVALID_STATE;
+            ++next.scoring.landlord_nonpass;
+        } else {
+            if (next.scoring.farmers_nonpass >= 34u)
+                return MYGAMES_DDZ_MATCH_INVALID_STATE;
+            ++next.scoring.farmers_nonpass;
+        }
+        if (event.move.kind == MYGAMES_DDZ_MOVE_BOMB ||
+            event.move.kind == MYGAMES_DDZ_MOVE_ROCKET) {
+            if (next.scoring.bombs_rockets >= 14u)
+                return MYGAMES_DDZ_MATCH_INVALID_STATE;
+            ++next.scoring.bombs_rockets;
+        }
+    }
     if (next.round.finished) next.phase = MYGAMES_DDZ_MATCH_FINISHED;
     if (mygames_ddz_match_validate(&next) != MYGAMES_DDZ_MATCH_OK)
         return MYGAMES_DDZ_MATCH_INVALID_STATE;
@@ -418,6 +523,12 @@ mygames_ddz_match_status mygames_ddz_match_public_view(
             MYGAMES_DDZ_OK) return MYGAMES_DDZ_MATCH_INVALID_STATE;
         view.has_round = true;
         view.revealed_kitty = match->secret_kitty;
+        if (match->phase == MYGAMES_DDZ_MATCH_FINISHED) {
+            if (mygames_ddz_match_settlement(match, &view.settlement) !=
+                MYGAMES_DDZ_MATCH_OK)
+                return MYGAMES_DDZ_MATCH_INVALID_STATE;
+            view.has_settlement = true;
+        }
     }
     *out_view = view;
     return MYGAMES_DDZ_MATCH_OK;

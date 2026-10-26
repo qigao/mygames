@@ -36,6 +36,39 @@ typedef enum mygames_ddz_match_status {
     MYGAMES_DDZ_MATCH_GAME_FINISHED
 } mygames_ddz_match_status;
 
+/* M5g v1 scoring is one explicit (non-monetary) three-player house rule:
+ * bid 1..3 points; every 4-card BOMB or both-joker ROCKET doubles; a
+ * landlord victory with ZERO farmer non-pass plays is a spring; a farmer
+ * victory after EXACTLY one landlord non-pass play is a counter-spring.
+ * No client-supplied settlement, user money or hidden game history.
+ * This aggregate is incremented ONLY after M5a accepts a real move and
+ * is written with the private Game checkpoint in the SAME TurboDB COMMIT. */
+typedef enum mygames_ddz_spring_kind {
+    MYGAMES_DDZ_SPRING_NONE = 0,
+    MYGAMES_DDZ_SPRING_LANDLORD = 1,
+    MYGAMES_DDZ_SPRING_FARMERS = 2
+} mygames_ddz_spring_kind;
+
+typedef struct mygames_ddz_score_counters {
+    uint8_t bombs_rockets;
+    uint8_t landlord_nonpass;
+    uint8_t farmers_nonpass;
+} mygames_ddz_score_counters;
+
+/* Public terminal-only scores. Values are integer game points, not cash.
+ * Landlord victory: landlord +2*unit, each farmer -unit. Farmer victory:
+ * landlord -2*unit, each farmer +unit. Always sum(delta)=0. */
+typedef struct mygames_ddz_settlement {
+    uint8_t bid_base;
+    uint8_t bombs_rockets;
+    mygames_ddz_spring_kind spring;
+    uint8_t landlord_seat;
+    uint8_t winner_seat;
+    uint32_t multiplier;
+    uint32_t unit;
+    int32_t delta[MYGAMES_DDZ_SEATS];
+} mygames_ddz_settlement;
+
 /* PRIVATE: secret shuffled deck, undealt kitty, and ALL player hands are
  * Owner-only state. Never serialize this struct to MQTT, Cocos, logs, a
  * shared room snapshot or a public API. Do not print it for diagnostics.
@@ -55,6 +88,7 @@ typedef struct mygames_ddz_match {
     uint8_t bid_count;
     uint8_t highest_bid;
     uint8_t highest_seat;
+    mygames_ddz_score_counters scoring;
 } mygames_ddz_match;
 
 /* A PUBLIC snapshot contains no hand masks, deck, hidden kitty or ticket.
@@ -73,6 +107,8 @@ typedef struct mygames_ddz_match_public {
     uint64_t revealed_kitty;
     bool has_round;
     mygames_ddz_public_view round;
+    bool has_settlement;
+    mygames_ddz_settlement settlement;
 } mygames_ddz_match_public;
 
 typedef struct mygames_ddz_bid_result {
@@ -85,6 +121,13 @@ typedef struct mygames_ddz_bid_result {
     uint8_t landlord_seat;
     mygames_ddz_match_phase phase;
 } mygames_ddz_bid_result;
+
+/* Pure checked zero-sum calculation, no game state mutation. Output is
+ * unchanged on failure, including on malformed winner/counter combination. */
+mygames_ddz_match_status mygames_ddz_score_compute(
+    uint8_t bid_base, mygames_ddz_score_counters counters,
+    uint8_t landlord_seat, uint8_t winner_seat,
+    mygames_ddz_settlement *out_settlement);
 
 /* OS CSPRNG only: Linux getrandom, Windows BCryptGenRandom, Apple
  * arc4random_buf. Unbiased rejection-sampled Fisher-Yates. Fails closed
@@ -122,6 +165,12 @@ mygames_ddz_match_status mygames_ddz_match_play(
 mygames_ddz_match_status mygames_ddz_match_private_hand(
     const mygames_ddz_match *match, uint64_t room_epoch, uint64_t game_id,
     mygames_player_id authenticated_player, uint64_t *out_cards);
+/* Returns only after the authoritative game reached FINISHED.
+ * All displayed points derive from the persisted legal move counters.
+ * Never accept a client-provided score or claim settlement before COMMIT. */
+mygames_ddz_match_status mygames_ddz_match_settlement(
+    const mygames_ddz_match *match, mygames_ddz_settlement *out_settlement);
+
 mygames_ddz_match_status mygames_ddz_match_public_view(
     const mygames_ddz_match *match, mygames_ddz_match_public *out_view);
 
