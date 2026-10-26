@@ -105,6 +105,9 @@ endif()
 include(CTest)
 if(MYGAMES_ENABLE_TURBODB)
   find_package(TurboDB CONFIG REQUIRED)
+  # The durable CFlow Game Owner hashes normalized actions with Salts::Core.
+  # No separate or mixed native SDK is brought in.
+  find_package(Salts CONFIG REQUIRED)
   add_library(mygames_room_store STATIC
     games/doudizhu/src/room_store_turbodb.c)
   add_library(MyGames::Store ALIAS mygames_room_store)
@@ -151,6 +154,21 @@ if(MYGAMES_ENABLE_TURBODB)
     games/doudizhu/include)
   target_link_libraries(mygames_room_store PUBLIC
     MyGames::Room MyGames::DouDizhuCheckpoint PRIVATE Orm::C)
+
+  # Production candidate: the same thread-affine CFlow Room Owner drives
+  # these stage->TurboDB COMMIT->Game ACK operations. No worker or network
+  # callback is created by this library itself.
+  add_library(mygames_ddz_game_owner STATIC
+    games/doudizhu/src/ddz_game_owner.c)
+  add_library(MyGames::DouDizhuGameOwner ALIAS mygames_ddz_game_owner)
+  target_compile_features(mygames_ddz_game_owner PUBLIC c_std_11)
+  target_include_directories(mygames_ddz_game_owner PUBLIC games/doudizhu/include)
+  target_link_libraries(mygames_ddz_game_owner PUBLIC MyGames::Store PRIVATE Salts::Core)
+  if(MSVC)
+    target_compile_options(mygames_ddz_game_owner PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_ddz_game_owner PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  endif()
   if(MSVC)
     target_compile_options(mygames_room_store PRIVATE /W4 /WX)
   else()
@@ -170,6 +188,22 @@ if(MYGAMES_ENABLE_TURBODB)
         tests/room_idle_expiry_probe.c)
       target_link_libraries(mygames_idle_expiry_probe PRIVATE MyGames::Store)
     endif()
+    add_executable(mygames_game_owner_test
+      tests/ddz_game_owner_integration_test.c)
+    target_compile_features(mygames_game_owner_test PRIVATE c_std_11)
+    target_compile_definitions(mygames_game_owner_test PRIVATE MYGAMES_STORE_FAULT_TESTING=1)
+    target_link_libraries(mygames_game_owner_test PRIVATE
+      MyGames::DouDizhuGameOwner MyGames::Store Salts::Core)
+    if(MSVC)
+      target_compile_options(mygames_game_owner_test PRIVATE /W4 /WX)
+    else()
+      target_compile_options(mygames_game_owner_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME mygames.game_owner
+      COMMAND mygames_game_owner_test
+        "${TurboDB_DRIVER_DIR}/turbodb_driver_sqlite${CMAKE_SHARED_MODULE_SUFFIX}"
+        "${CMAKE_CURRENT_BINARY_DIR}/mygames-game-owner-ci.sqlite")
+
     add_executable(mygames_game_store_test
       tests/ddz_turbodb_game_commit_test.c)
     target_compile_definitions(mygames_game_store_test PRIVATE
