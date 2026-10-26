@@ -113,12 +113,17 @@ static void ordered_deck(uint8_t deck[MYGAMES_DDZ_CARDS]) {
 static void test_round_and_rejections(void) {
     mygames_ddz_round round = {0}, prior;
     mygames_ddz_action_result result = {0}, original_result;
+    mygames_ddz_public_view public_view = {0}, previous_view;
     uint8_t deck[MYGAMES_DDZ_CARDS];
     const uint64_t seat0 = UINT64_C(1) << 0u;
     const uint64_t seat1 = UINT64_C(1) << 4u;
     ordered_deck(deck);
     REQUIRE(mygames_ddz_round_deal(&round, deck, 0u) == MYGAMES_DDZ_OK);
     REQUIRE(mygames_ddz_round_validate(&round) == MYGAMES_DDZ_OK);
+    REQUIRE(mygames_ddz_round_public_view(&round, &public_view) == MYGAMES_DDZ_OK);
+    REQUIRE(public_view.turn_id == 1u && public_view.last_cards == 0u &&
+            public_view.remaining[0] == 20u && public_view.remaining[1] == 17u &&
+            public_view.remaining[2] == 17u && public_view.turn_seat == 0u);
     REQUIRE(round.remaining[0] == 20u && round.remaining[1] == 17u &&
             round.remaining[2] == 17u && round.turn_seat == 0u && round.turn_id == 1u);
     prior = round;
@@ -132,7 +137,11 @@ static void test_round_and_rejections(void) {
     REQUIRE(mygames_ddz_round_submit(&round, 0u, 1u, UINT64_C(1) << 1u, &result) ==
             MYGAMES_DDZ_CARDS_NOT_OWNED);
     REQUIRE(mygames_ddz_round_submit(&round, 0u, 1u, seat0, &result) == MYGAMES_DDZ_OK);
-    REQUIRE(result.next_turn_id == 2u && result.remaining[0] == 19u);
+    REQUIRE(result.next_turn_id == 2u && result.remaining[0] == 19u &&
+            result.played_cards == seat0);
+    REQUIRE(mygames_ddz_round_public_view(&round, &public_view) == MYGAMES_DDZ_OK);
+    REQUIRE(public_view.last_cards == seat0 && public_view.last_seat == 0u);
+    REQUIRE(public_view.last_move.kind == MYGAMES_DDZ_MOVE_SINGLE);
     prior = round;
     REQUIRE(mygames_ddz_round_submit(&round, 1u, 1u, seat1, &result) ==
             MYGAMES_DDZ_STALE_TURN);
@@ -142,10 +151,21 @@ static void test_round_and_rejections(void) {
     REQUIRE(mygames_ddz_round_submit(&round, 1u, 2u, seat1, &result) == MYGAMES_DDZ_OK);
     REQUIRE(round.last_move.high_rank == 1u && round.turn_seat == 2u);
     REQUIRE(mygames_ddz_round_submit(&round, 2u, 3u, 0u, &result) == MYGAMES_DDZ_OK);
-    REQUIRE(result.passed && !result.trick_cleared);
+    REQUIRE(result.passed && !result.trick_cleared && result.played_cards == 0u);
     REQUIRE(mygames_ddz_round_submit(&round, 0u, 4u, 0u, &result) == MYGAMES_DDZ_OK);
-    REQUIRE(result.trick_cleared && round.turn_seat == 1u &&
-            round.last_move.kind == MYGAMES_DDZ_MOVE_NONE);
+    REQUIRE(result.trick_cleared && result.played_cards == 0u &&
+            round.turn_seat == 1u && round.last_move.kind == MYGAMES_DDZ_MOVE_NONE);
+    REQUIRE(mygames_ddz_round_public_view(&round, &public_view) == MYGAMES_DDZ_OK);
+    REQUIRE(public_view.last_cards == 0u &&
+            public_view.last_move.kind == MYGAMES_DDZ_MOVE_NONE);
+    previous_view = public_view;
+    {   /* Public projection must reject corrupt private state atomically. */
+        mygames_ddz_round invalid = round;
+        invalid.hands[0] |= (UINT64_C(1) << 4u);
+        REQUIRE(mygames_ddz_round_public_view(&invalid, &public_view) ==
+                MYGAMES_DDZ_INVALID_STATE);
+        REQUIRE(memcmp(&public_view, &previous_view, sizeof(public_view)) == 0);
+    }
     REQUIRE(mygames_ddz_round_validate(&round) == MYGAMES_DDZ_OK);
     prior = round;
     REQUIRE(mygames_ddz_round_submit(&round, 1u, 5u, 0u, &result) ==
@@ -160,6 +180,7 @@ static void test_round_and_rejections(void) {
 static void test_landlord_wins(void) {
     mygames_ddz_round round = {0}, prior;
     mygames_ddz_action_result result = {0};
+    mygames_ddz_public_view view = {0};
     uint8_t deck[MYGAMES_DDZ_CARDS], landlord[20], outsiders[34];
     uint64_t winning = 0u;
     unsigned i, nlandlord = 0u, nothers = 0u;
@@ -187,7 +208,11 @@ static void test_landlord_wins(void) {
     REQUIRE(round.finished && round.winner_seat == 0u &&
             round.turn_seat == MYGAMES_DDZ_NO_SEAT);
     REQUIRE(result.finished && result.winner_seat == 0u &&
-            result.remaining[0] == 0u && result.next_turn_id == 2u);
+            result.remaining[0] == 0u && result.next_turn_id == 2u &&
+            result.played_cards == winning);
+    REQUIRE(mygames_ddz_round_public_view(&round, &view) == MYGAMES_DDZ_OK);
+    REQUIRE(view.finished && view.winner_seat == 0u && view.turn_id == 2u &&
+            view.last_cards == winning && view.remaining[0] == 0u);
     prior = round;
     REQUIRE(mygames_ddz_round_submit(&round, 1u, 2u,
                                      UINT64_C(1) << deck[1], &result) ==
