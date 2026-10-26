@@ -334,6 +334,12 @@ def run(binary: Path, seed: Path, sqlite_driver: Path,
                             f"mode={mode} rc={result.returncode} expected="
                             f"{expected_exit} stdout={result.stdout[-550:]} "
                             f"stderr={result.stderr[-850:]}")
+                    if expected_exit == 5 and (
+                        "ledger Owner unavailable" not in result.stderr
+                    ):
+                        raise AssertionError(
+                            "concurrent process was not refused at explicit "
+                            "consumer Ledger Owner admission")
 
                 def kill_at_commit_boundary(
                     mode: str, stage: str, expected_cursor: int
@@ -372,6 +378,11 @@ def run(binary: Path, seed: Path, sqlite_driver: Path,
                             raise AssertionError(
                                 f"{mode}: no exact durable crash marker, "
                                 f"line={line!r}, diagnostics={stderr_text}")
+                        # A separate process must be refused by the live
+                        # Owner's nonblocking OS advisory lock, BEFORE any
+                        # source GET or local projection mutation. No "wait
+                        # until lock free" hidden fallback.
+                        run_remote("normal", 1, 5)
                         child.kill()  # actual Linux SIGKILL, no C cleanup
                         child.wait(timeout=8)
                         if child.returncode != -signal.SIGKILL:
@@ -407,8 +418,9 @@ def run(binary: Path, seed: Path, sqlite_driver: Path,
                            identity=(extra_cert, extra_key))
                 audit_cursor(3)  # CA-trusted, unpinned client cannot affect DB
                 print("mygames.remote_recovery: PASS actual mTLS GET, "
-                      "real SIGKILL before COMMIT and after one COMMIT, "
-                      "cold process restart from durable cursor, "
+                      "single-host concurrent owner BUSY, real SIGKILL "
+                      "before COMMIT and after one COMMIT, cold process "
+                      "restart with released OS Owner lock, "
                       "wrong-service identity denied", flush=True)
 
             print("mygames.recovery_mtls: PASS real TLS client auth, "
