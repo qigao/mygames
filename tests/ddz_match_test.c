@@ -259,6 +259,9 @@ static void test_live_os_shuffle_and_gameplay(void) {
     REQUIRE(mygames_ddz_match_play(&match, 42u, 607u, 101u, 1u, bit,
                                    &next, &play) == MYGAMES_DDZ_MATCH_OK);
     REQUIRE(play.played_cards == bit && play.next_turn_id == 2u);
+    REQUIRE(next.scoring.landlord_nonpass == 1u &&
+            next.scoring.farmers_nonpass == 0u &&
+            next.scoring.bombs_rockets == 0u);
     REQUIRE(mygames_ddz_match_validate(&next) == MYGAMES_DDZ_MATCH_OK);
     match = next;
     REQUIRE(mygames_ddz_match_public_view(&match, &public_view) ==
@@ -268,6 +271,8 @@ static void test_live_os_shuffle_and_gameplay(void) {
     REQUIRE(mygames_ddz_match_play(&match, 42u, 607u, 202u, 2u, 0u,
                                    &next, &play) == MYGAMES_DDZ_MATCH_OK);
     REQUIRE(play.passed && play.played_cards == 0u);
+    REQUIRE(next.scoring.landlord_nonpass == 1u &&
+            next.scoring.farmers_nonpass == 0u);
     match = next;
     REQUIRE(mygames_ddz_match_play(&match, 42u, 607u, 303u, 3u, 0u,
                                    &next, &play) == MYGAMES_DDZ_MATCH_OK);
@@ -321,8 +326,68 @@ static void test_winning_game_through_authored_fixture(void) {
     REQUIRE(mygames_ddz_match_public_view(&match, &public_view) ==
             MYGAMES_DDZ_MATCH_OK);
     REQUIRE(public_view.round.finished &&
-            public_view.round.winner_seat == 0u);
+            public_view.round.winner_seat == 0u &&
+            public_view.has_settlement &&
+            public_view.settlement.bid_base == 3u &&
+            public_view.settlement.bombs_rockets == 0u &&
+            public_view.settlement.spring == MYGAMES_DDZ_SPRING_LANDLORD &&
+            public_view.settlement.multiplier == 2u &&
+            public_view.settlement.unit == 6u &&
+            public_view.settlement.delta[0] == 12 &&
+            public_view.settlement.delta[1] == -6 &&
+            public_view.settlement.delta[2] == -6);
     (void)others;
+}
+
+static void test_authoritative_zero_sum_scoring(void) {
+    mygames_ddz_settlement score = {0};
+    mygames_ddz_settlement sentinel = {0};
+    const mygames_ddz_score_counters spring = {0u, 1u, 0u};
+    const mygames_ddz_score_counters ordinary_farmer = {1u, 3u, 2u};
+    const mygames_ddz_score_counters reverse_spring = {2u, 1u, 3u};
+    const mygames_ddz_score_counters bounded = {14u, 20u, 0u};
+
+    REQUIRE(mygames_ddz_score_compute(3u, spring, 0u, 0u, &score) ==
+            MYGAMES_DDZ_MATCH_OK);
+    REQUIRE(score.spring == MYGAMES_DDZ_SPRING_LANDLORD &&
+            score.multiplier == 2u && score.unit == 6u);
+    REQUIRE(score.delta[0] == 12 && score.delta[1] == -6 &&
+            score.delta[2] == -6);
+    REQUIRE(score.delta[0] + score.delta[1] + score.delta[2] == 0);
+
+    REQUIRE(mygames_ddz_score_compute(2u, ordinary_farmer, 1u, 0u,
+                                     &score) == MYGAMES_DDZ_MATCH_OK);
+    REQUIRE(score.spring == MYGAMES_DDZ_SPRING_NONE &&
+            score.bombs_rockets == 1u && score.multiplier == 2u &&
+            score.unit == 4u);
+    REQUIRE(score.delta[0] == 4 && score.delta[1] == -8 &&
+            score.delta[2] == 4);
+
+    REQUIRE(mygames_ddz_score_compute(3u, reverse_spring, 2u, 0u,
+                                     &score) == MYGAMES_DDZ_MATCH_OK);
+    REQUIRE(score.spring == MYGAMES_DDZ_SPRING_FARMERS &&
+            score.multiplier == 8u && score.unit == 24u);
+    REQUIRE(score.delta[0] == 24 && score.delta[1] == 24 &&
+            score.delta[2] == -48);
+
+    REQUIRE(mygames_ddz_score_compute(3u, bounded, 1u, 1u,
+                                     &score) == MYGAMES_DDZ_MATCH_OK);
+    REQUIRE(score.multiplier == 32768u && score.unit == 98304u &&
+            score.delta[0] == -98304 && score.delta[1] == 196608 &&
+            score.delta[2] == -98304);
+
+    sentinel = score;
+    REQUIRE(mygames_ddz_score_compute(0u, spring, 0u, 0u, &score) ==
+            MYGAMES_DDZ_MATCH_INVALID_ARGUMENT);
+    REQUIRE(mygames_ddz_score_compute(3u,
+            (mygames_ddz_score_counters){15u, 20u, 0u},
+            0u, 0u, &score) == MYGAMES_DDZ_MATCH_INVALID_ARGUMENT);
+    REQUIRE(mygames_ddz_score_compute(3u,
+            (mygames_ddz_score_counters){0u, 0u, 1u},
+            0u, 1u, &score) == MYGAMES_DDZ_MATCH_INVALID_ARGUMENT);
+    REQUIRE(mygames_ddz_score_compute(3u, spring, 3u, 0u, &score) ==
+            MYGAMES_DDZ_MATCH_INVALID_ARGUMENT);
+    REQUIRE(memcmp(&sentinel, &score, sizeof(score)) == 0);
 }
 
 int main(void) {
@@ -330,6 +395,7 @@ int main(void) {
     test_early_three_all_pass_and_faults();
     test_live_os_shuffle_and_gameplay();
     test_winning_game_through_authored_fixture();
+    test_authoritative_zero_sum_scoring();
     puts("mygames.ddz_match: PASS");
     return 0;
 }
