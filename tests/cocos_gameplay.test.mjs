@@ -50,6 +50,8 @@ const playing=(turn='1',count=20)=>({...base,type:'game.snapshot',request_id:'br
   last_cards_hex:'00000000000000',last_seat:3,
   remaining:[count,17,17],winner_seat:3
 });
+const springScore={base:3,bombs:0,spring:'landlord',multiplier:2,
+                   unit:6,delta:[12,-6,-6]};
 const privateHand=(id,game=gameId,mask='00000000000003')=>({
   v:1,type:'game.hand',request_id:id,room_id:'room-1',
   game_id:game,cards_hex:mask
@@ -94,6 +96,9 @@ test('public game frames reject secret/extra fields and imprecise identifiers',(
   assert.deepEqual(parseServerFrame(JSON.stringify(startAck)),startAck);
   assert.equal(parseServerFrame(JSON.stringify(bidding())).phase,'bidding');
   assert.equal(parseServerFrame(JSON.stringify(playing())).turn_id,'1');
+  const terminal={...playing('59',0),phase:'finished',
+                  turn_seat:3,last_seat:0,winner_seat:0,score:springScore};
+  assert.equal(parseServerFrame(JSON.stringify(terminal)).score.unit,6);
   assert.equal(parseServerFrame(JSON.stringify(privateHand('x'))).cards_hex,'00000000000003');
   assert.equal(parseServerFrame(JSON.stringify({
     v:1,type:'game.error',request_id:'err-1',code:'stale_generation_or_turn'
@@ -109,6 +114,12 @@ test('public game frames reject secret/extra fields and imprecise identifiers',(
     {...playing(),last_cards_hex:'40000000000000'},
     {...playing(),turn_id:'01'},
     {...playing(),phase:'finished',turn_seat:0,winner_seat:0},
+    {...terminal,score:{...springScore,delta:[13,-6,-6]}},
+    {...terminal,score:{...springScore,multiplier:4}},
+    {...terminal,score:{...springScore,spring:'farmers'}},
+    {...terminal,score:{...springScore,unit:100000}},
+    {...terminal,secret_hand:'private'},
+    {...playing(),score:springScore},
     {...privateHand('x'),room_epoch:epoch},
     {...privateHand('x'),cards_hex:'ffffffffffffff'},
     {v:1,type:'game.hand',request_id:'a',room_id:'room-1',
@@ -195,7 +206,7 @@ test('confirmed end-game ACK fences out-of-order turns and authentic rematch',()
   assert.equal(store.applySnapshot(playing('58',1)),false);
   const finish={...playing('59',0),phase:'finished',turn_seat:3,
                 last_seat:0,last_cards_hex:'00000000000002',
-                winner_seat:0};
+                winner_seat:0,score:springScore};
   assert.equal(store.applySnapshot(finish),true);
   assert.equal(store.isMyTurn,false);
   assert.equal(store.selected.length,0);
