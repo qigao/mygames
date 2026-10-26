@@ -280,6 +280,21 @@ jobs:
             build/recovery-port14/mygames_recovery_service \
             "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so"
 
+      - name: Native CHttp Client and Flowie MQTT overlap in one Owner process
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/ci_flowie_owner_live_mtls.py \
+            build/recovery-port14/mygames_flowie_broker_test \
+            build/recovery-port14/mygames_flowie_acl_client_test \
+            build/recovery-port14/mygames_outbox_publisher \
+            build/recovery-port14/mygames_outbox_seed_test \
+            build/recovery-port14/mygames_outbox_audit_test \
+            build/recovery-port14/mygames_flowie_consumer_projection_audit \
+            build/recovery-port14/mygames_recovery_service \
+            "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so" \
+            --native
+
       - name: Preserve source-only recovery qualification evidence
         if: always()
         uses: actions/upload-artifact@v4
