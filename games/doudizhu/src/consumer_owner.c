@@ -35,6 +35,9 @@ struct mygames_consumer_owner {
     bool processing;
     bool closed;
     bool quarantined;
+    bool fetch_active;
+    uint64_t fetch_generation;
+    uint64_t fetch_after;
 #ifdef MYGAMES_CONSUMER_OWNER_TESTING
     mygames_owner_test_taken_hook test_taken_hook;
     void *test_taken_user;
@@ -230,6 +233,78 @@ done:
     return rc;
 }
 
+mygames_owner_result mygames_consumer_owner_begin_fetch(
+    mygames_consumer_owner *owner,
+    mygames_owner_fetch_ticket *out_ticket) {
+    uint64_t cursor = 0u, effects = 0u;
+    mygames_consumer_status status;
+    mygames_owner_result rc = MYGAMES_OWNER_INVALID;
+    if (out_ticket) memset(out_ticket, 0, sizeof(*out_ticket));
+    if (!owner || !out_ticket ||
+        cmeta_thread_affine_check(&owner->thread, owner) != SALTS_OK)
+        return MYGAMES_OWNER_INVALID;
+
+    /* The Owner-creating thread alone reads the durable cursor; the
+     * asynchronous HTTP worker only receives the copied bounded ticket. */
+    cmeta_mutex_lock(&owner->lock);
+    if (owner->closed) rc = MYGAMES_OWNER_CLOSED;
+    else if (owner->quarantined) rc = MYGAMES_OWNER_QUARANTINED;
+    else if (owner->processing || owner->fetch_active ||
+             owner->fetch_generation == UINT64_MAX)
+        rc = MYGAMES_OWNER_BUSY;
+    else rc = MYGAMES_OWNER_OK;
+    cmeta_mutex_unlock(&owner->lock);
+    if (rc != MYGAMES_OWNER_OK) return rc;
+
+    status = mygames_consumer_projection_snapshot(
+        owner->ledger, owner->source_namespace, owner->consumer_id,
+        &cursor, &effects);
+    if (status != MYGAMES_CONSUMER_APPLIED ||
+        effects != cursor || cursor > (uint64_t)INT64_MAX) {
+        cmeta_mutex_lock(&owner->lock);
+        owner->quarantined = true;
+        cmeta_mutex_unlock(&owner->lock);
+        return MYGAMES_OWNER_QUARANTINED;
+    }
+
+    cmeta_mutex_lock(&owner->lock);
+    if (owner->closed) rc = MYGAMES_OWNER_CLOSED;
+    else if (owner->quarantined) rc = MYGAMES_OWNER_QUARANTINED;
+    else if (owner->processing || owner->fetch_active ||
+             owner->fetch_generation == UINT64_MAX)
+        rc = MYGAMES_OWNER_BUSY;
+    else {
+        ++owner->fetch_generation;
+        owner->fetch_active = true;
+        owner->fetch_after = cursor;
+        out_ticket->generation = owner->fetch_generation;
+        out_ticket->committed_after = cursor;
+        rc = MYGAMES_OWNER_OK;
+    }
+    cmeta_mutex_unlock(&owner->lock);
+    return rc;
+}
+
+mygames_owner_result mygames_consumer_owner_finish_fetch(
+    mygames_consumer_owner *owner, mygames_owner_fetch_ticket ticket) {
+    mygames_owner_result result;
+    if (!owner || !ticket.generation ||
+        ticket.committed_after > (uint64_t)INT64_MAX)
+        return MYGAMES_OWNER_INVALID;
+    cmeta_mutex_lock(&owner->lock);
+    if (!owner->fetch_active ||
+        ticket.generation != owner->fetch_generation ||
+        ticket.committed_after != owner->fetch_after)
+        result = MYGAMES_OWNER_STALE;
+    else {
+        owner->fetch_active = false;
+        owner->fetch_after = 0u;
+        result = MYGAMES_OWNER_OK;
+    }
+    cmeta_mutex_unlock(&owner->lock);
+    return result;
+}
+
 mygames_owner_result mygames_consumer_owner_cancel(
     mygames_consumer_owner *owner, mygames_owner_ticket ticket) {
     mygames_owner_result rc;
@@ -400,7 +475,9 @@ mygames_owner_result mygames_consumer_owner_begin_close(
     for (i = 0u; i < MYGAMES_OWNER_TOTAL_SLOTS; ++i)
         if (owner->slots[i].state == SLOT_QUEUED)
             owner_clear_event(owner, &owner->slots[i]);
-    busy = owner->processing;
+    /* Closing cancels QUEUED work, but never frees the Owner while a
+     * native HTTP worker still holds a generation-fenced fetch retain. */
+    busy = owner->processing || owner->fetch_active;
     cmeta_mutex_unlock(&owner->lock);
     return busy ? MYGAMES_OWNER_BUSY : MYGAMES_OWNER_OK;
 }
