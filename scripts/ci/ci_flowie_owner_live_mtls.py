@@ -178,7 +178,11 @@ def main() -> int:
                             sub.wait(timeout=5)
                 run([consumer_audit, plugin, str(ledger_db), namespace,
                      "1", "1"], env)
-                run([audit, plugin, str(source_db), "0"], env)
+                # The --seed fixture has at least events 1 and 2.
+                # Publishing --once settles seq1, leaving seq2 pending.
+                # Never interpret "one successful publish" as an empty
+                # authoritative Outbox archive.
+                run([audit, plugin, str(source_db), "2"], env)
                 broker_log.flush()
                 broker_log.seek(0)
                 accepted = broker_log.read().count("BROKER_EVENT_ACCEPTED")
