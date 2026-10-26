@@ -5,6 +5,7 @@
  * advances a cursor because a page was merely read from a socket.
  */
 #include "mygames/recovery_consumer.h"
+#include "mygames/consumer_owner_guard.h"
 #include "mygames/recovery_wire.h"
 #include "mygames/outbox_dispatch.h"
 
@@ -127,6 +128,7 @@ static int fetch_page(chttp_client *client, const chttp_tls_profile *tls,
 int main(int argc, char **argv) {
     static const char *const alpn[] = {"http/1.1"};
     mygames_consumer_projection *ledger = NULL;
+    mygames_consumer_owner_guard guard = {0};
     cnet_tls_client_config tls_cfg = {0};
     chttp_tls_profile profile = {0};
     chttp_client client = {0};
@@ -166,6 +168,20 @@ int main(int argc, char **argv) {
         strlen(uri) >= sizeof(uri))
         return 2;
 
+    /* A nonblocking, per-Ledger advisory guard is a conservative single-host
+     * process gate: one cooperating recovery process owns this consumer DB
+     * across HTTP GET, per-event COMMIT, shutdown and crash recovery.
+     * It is NOT cross-host lease fencing or a substitute for a shared
+     * Flowie-MQTT/HTTP in-process Consumer Owner (MyGames #8). */
+    {
+        const mygames_consumer_guard_status admitted =
+            mygames_consumer_owner_guard_acquire(argv[2], &guard);
+        if (admitted != MYGAMES_CONSUMER_GUARD_ACQUIRED) {
+            fprintf(stderr, "remote recovery: ledger Owner unavailable (%d)\n",
+                    (int)admitted);
+            return admitted == MYGAMES_CONSUMER_GUARD_INVALID ? 2 : 5;
+        }
+    }
     if (mygames_consumer_projection_open(argv[1], argv[2], &ledger) !=
         MYGAMES_CONSUMER_APPLIED)
         goto done;
@@ -297,5 +313,6 @@ done:
     if (tls_ready && chttp_tls_profile_destroy(&profile) != SALTS_OK)
         result = EXIT_FAILURE;
     mygames_consumer_projection_close(ledger);
+    mygames_consumer_owner_guard_release(&guard);
     return result;
 }
