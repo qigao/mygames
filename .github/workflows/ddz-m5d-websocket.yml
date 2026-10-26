@@ -73,6 +73,16 @@ jobs:
           set -euo pipefail
           bash scripts/ci/restore-native-sdks.sh "$RUNNER_TEMP/mygames-sdk"
           test -f "$RUNNER_TEMP/mygames-sdk/turbodb/sdk/linux-x64/lib/turbodb/drivers/turbodb_driver_sqlite.so"
+      - name: Cache pinned GmSSL native static SDK
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/mygames-gmssl/installed/x64-linux
+          key: mygames-gmssl-3.2.0-port12-linux-x64-v1
+      - name: Restore exact CHttp-compatible GmSSL port 12
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/ci/restore-gmssl.sh "$RUNNER_TEMP/mygames-gmssl"
       - name: Configure actual released CHttp/CFlow/TurboDB native consumer
         shell: bash
         run: |
