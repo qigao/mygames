@@ -21,6 +21,17 @@
 
 #define RECOVERY_REMOTE_TIMEOUT_MS 7000u
 #define RECOVERY_REMOTE_MAX_PAGES 16u
+/* Kill barriers are NEVER included in the production binary. The test
+ * supervisor observes a flushed marker then delivers a real SIGKILL.
+ * A lost supervisor or closed stdin fails closed without another commit. */
+#ifdef MYGAMES_RECOVERY_FAULT_TESTING
+static void kill_barrier(const char *stage, uint64_t committed_cursor) {
+    printf("mygames.remote_recovery: FAULT_READY_%s cursor=%" PRIu64 "\n",
+           stage, committed_cursor);
+    fflush(stdout);
+    (void)getchar(); /* CI keeps stdin open, sends SIGKILL, never newline */
+}
+#endif
 
 static native_io_backend_kind backend(void) {
 #if defined(_WIN32)
@@ -130,13 +141,22 @@ int main(int argc, char **argv) {
     if (argc != 11 && argc != 12) {
         fputs("usage: remote-consumer sqlite-driver consumer-db TLS-port "
               "ca.pem client.pem client.key source-namespace consumer-id "
-              "page-limit max-pages [normal|before-commit|commit-one]\n", stderr);
+              "page-limit max-pages [normal|before-commit|commit-one" 
+#ifdef MYGAMES_RECOVERY_FAULT_TESTING
+              "|sigkill-before-commit|sigkill-after-one"
+#endif
+              "]\n", stderr);
         return 2;
     }
     if (argc == 12) mode = argv[11];
     if (strcmp(mode, "normal") != 0 &&
         strcmp(mode, "before-commit") != 0 &&
-        strcmp(mode, "commit-one") != 0)
+        strcmp(mode, "commit-one") != 0
+#ifdef MYGAMES_RECOVERY_FAULT_TESTING
+        && strcmp(mode, "sigkill-before-commit") != 0
+        && strcmp(mode, "sigkill-after-one") != 0
+#endif
+       )
         return 2;
     if (!decimal(argv[3], UINT16_MAX, &port) ||
         !decimal(argv[9], MYGAMES_STORE_ARCHIVE_PAGE_MAX, &limit) ||
@@ -219,9 +239,27 @@ int main(int argc, char **argv) {
             goto done;
         }
 
+#ifdef MYGAMES_RECOVERY_FAULT_TESTING
+        if (strcmp(mode, "sigkill-before-commit") == 0) {
+            mygames_store_archive_page verified = {0};
+            const mygames_recovery_wire_status ws =
+                mygames_recovery_decode_page(
+                    response.body, response.body_size, argv[7], argv[8],
+                    cursor, mygames_outbox_public_event_validate, &verified);
+            chttp_response_destroy(&response);
+            if (ws != MYGAMES_RECOVERY_WIRE_OK || verified.count == 0u)
+                goto done;
+            kill_barrier("BEFORE_COMMIT", cursor);
+            goto done; /* no positive disposition if not actually killed */
+        }
+#endif
         st = mygames_recovery_consumer_apply_response(
             ledger, argv[7], argv[8], response.body, response.body_size,
-            strcmp(mode, "commit-one") == 0 ? 1u : limit, &report);
+            (strcmp(mode, "commit-one") == 0
+#ifdef MYGAMES_RECOVERY_FAULT_TESTING
+              || strcmp(mode, "sigkill-after-one") == 0
+#endif
+              ) ? 1u : limit, &report);
         chttp_response_destroy(&response);
         if (st != MYGAMES_RECOVERY_CONSUMER_OK &&
             st != MYGAMES_RECOVERY_CONSUMER_MORE) {
@@ -229,6 +267,14 @@ int main(int argc, char **argv) {
             fprintf(stderr, "remote recovery: refused page, status=%d\n", (int)st);
             goto done;
         }
+#ifdef MYGAMES_RECOVERY_FAULT_TESTING
+        if (strcmp(mode, "sigkill-after-one") == 0) {
+            if (report.newly_committed != 1u ||
+                report.committed_after != cursor + 1u) goto done;
+            kill_barrier("AFTER_ONE_COMMIT", report.committed_after);
+            goto done; /* never issue another GET without a supervisor */
+        }
+#endif
         printf("mygames.remote_recovery: COMMITTED before=%" PRIu64
                " after=%" PRIu64 " new=%" PRIu64 "\n",
                report.committed_before, report.committed_after,
