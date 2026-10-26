@@ -123,9 +123,14 @@ export class GameTableView {
             (view.phase === 'playing' || view.phase === 'finished') ? view : null;
         const mySeat = store.localSeat;
         const hasGame = view !== null;
+        const finished = playView?.phase === 'finished' ? playView : null;
+        const landlordWon = finished ?
+            finished.winner_seat === finished.landlord_seat : false;
+        const teamWon = finished && mySeat !== null ?
+            (mySeat === finished.landlord_seat ? landlordWon : !landlordWon) : false;
         this.header.string = !view ? '斗地主 · 等待发牌' :
             '斗地主 · Game ' + view.game_id +
-            (phase === 'finished' ? ' · 已结算胜负' : '');
+            (finished ? ' · ' + (landlordWon ? '地主获胜' : '农民获胜') : '');
         this.phase.string = !canPlay ? '本地网关未开放持久化游戏能力' :
             !view ? '房主可开始新局' :
             phase === 'bidding' ?
@@ -135,8 +140,10 @@ export class GameTableView {
             phase === 'redeal_required' ? '全部不叫 · 房主重新开局' :
             phase === 'playing' ?
                 '出牌轮次 ' + view.turn_id + ' · 轮到座位 ' + (view.turn_seat + 1) :
-                '对局结束 · 获胜座位 ' +
-                (view.phase === 'finished' ? view.winner_seat + 1 : '—');
+                finished ? '对局结束 · ' + (teamWon ? '你的队伍获胜' : '本队惜败') +
+                           ' · 座位 ' + (finished.winner_seat + 1) +
+                           ' 率先出完（尚未计分）' :
+                           '等待开始新局';
         this.seats.string = !view ? '请等待其他玩家加入并准备' :
             !playView ?
                 '座位 ' + (mySeat === null ? '?' : mySeat + 1) +
@@ -161,6 +168,7 @@ export class GameTableView {
         const bidding = phase === 'bidding' && store.isMyTurn;
         const playing = phase === 'playing' && store.isMyTurn;
         this.hint.string = !store.hydrated ? '重新连接后需同步公共状态与本人手牌' :
+            finished ? '本局已结束 · 房主可以开始下一局（积分尚未实现）' :
             !hasGame ? '只有房主可以开始游戏，服务器决定牌局 ID' :
             store.hand.length === 0 ?
                 '正在获取本玩家手牌 / 等待私有同步' :
