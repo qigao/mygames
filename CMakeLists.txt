@@ -236,10 +236,15 @@ if(MYGAMES_ENABLE_FLOWIE)
       -Wall -Wextra -Wpedantic -Werror)
   endif()
   if(BUILD_TESTING)
+    # The TAKEN/COMMIT barrier is test-only; no hook exists in the default
+    # published library ABI or in builds with BUILD_TESTING disabled.
+    target_compile_definitions(mygames_consumer_owner PRIVATE
+      MYGAMES_CONSUMER_OWNER_TESTING=1)
     add_executable(mygames_consumer_owner_test tests/consumer_owner_test.c)
     target_compile_features(mygames_consumer_owner_test PRIVATE c_std_11)
     target_compile_definitions(mygames_consumer_owner_test PRIVATE
-      MYGAMES_CONSUMER_FAULT_TESTING=1)
+      MYGAMES_CONSUMER_FAULT_TESTING=1
+      MYGAMES_CONSUMER_OWNER_TESTING=1)
     target_link_libraries(mygames_consumer_owner_test PRIVATE
       MyGames::ConsumerOwner MyGames::RecoveryWire
       MyGames::ConsumerProjection MyGames::Outbox
