@@ -96,6 +96,18 @@ mygames_owner_result mygames_consumer_owner_begin_close(
 mygames_owner_result mygames_consumer_owner_destroy(
     mygames_consumer_owner *owner);
 
+#ifdef MYGAMES_CONSUMER_OWNER_TESTING
+/* Test-only Owner-thread hook after SLOT_TAKEN has been published under
+ * lock, and BEFORE the borrowed ledger is accessed for SHA256/COMMIT.
+ * Must NOT be compiled into production/installed ConsumerOwner ABI.
+ * Allows a separate callback thread to overlap cancel+begin_close with
+ * a real TurboDB commit without sleeps/racy readiness guesses. */
+typedef void (*mygames_owner_test_taken_hook)(void *user);
+mygames_owner_result mygames_consumer_owner_test_set_taken_hook(
+    mygames_consumer_owner *owner,
+    mygames_owner_test_taken_hook hook, void *user);
+#endif
+
 #ifdef __cplusplus
 }
 #endif
