@@ -49,6 +49,9 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/ci/restore-native-sdks.sh "$RUNNER_TEMP/mygames-deferred-sdk"
+          # GITHUB_ENV is available only in the NEXT step, not this shell.
+          # restore-gmssl.sh reads SDK_PREFIX_PATH with set -u.
+          export SDK_PREFIX_PATH="$RUNNER_TEMP/mygames-deferred-sdk/flowie/sdk/linux-x64;$RUNNER_TEMP/mygames-deferred-sdk/chttp/sdk/linux-x64;$RUNNER_TEMP/mygames-deferred-sdk/turbodb/sdk/linux-x64;$RUNNER_TEMP/mygames-deferred-sdk/salts/sdk/linux-x64;$RUNNER_TEMP/mygames-deferred-sdk/saltsutils/sdk/linux-x64"
           bash scripts/ci/restore-gmssl.sh "$RUNNER_TEMP/mygames-deferred-gmssl"
       - name: Restore exact-baseline ancillary Flowie dependencies without provider replacement
         shell: bash
