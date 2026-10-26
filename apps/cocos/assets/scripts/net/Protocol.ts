@@ -92,6 +92,15 @@ export interface GameBiddingSnapshot extends WireEnvelope {
     highest_bid: number;
     highest_seat: number;
 }
+/* Exact public settlement. Zero-sum game points, never money. */
+export interface GameScore {
+    base: number;
+    bombs: number;
+    spring: 'none' | 'landlord' | 'farmers';
+    multiplier: number;
+    unit: number;
+    delta: [number, number, number];
+}
 export interface GamePlayingSnapshot extends WireEnvelope {
     v: 1;
     type: 'game.snapshot';
@@ -109,6 +118,7 @@ export interface GamePlayingSnapshot extends WireEnvelope {
     last_seat: number;
     remaining: [number, number, number];
     winner_seat: number;
+    score?: GameScore; // Required ONLY for FINISHED
 }
 export type GameSnapshot = GameBiddingSnapshot | GamePlayingSnapshot;
 export interface GameHand extends WireEnvelope {
@@ -319,7 +329,8 @@ function parseGameFrame(value: Record<string, unknown>): GameFrame {
             if (!exactFields(value, [...common,'phase','highest_bid','landlord_seat',
                                       'revealed_kitty_hex','turn_id','turn_seat',
                                       'last_cards_hex','last_seat','remaining',
-                                      'winner_seat']) ||
+                                      'winner_seat',
+                                      ...(value.phase === 'finished' ? ['score'] : [])]) ||
                 !canonicalU64(value.turn_id) ||
                 !Number.isInteger(value.highest_bid) ||
                 (value.highest_bid as number) < 1 || (value.highest_bid as number) > 3 ||
@@ -338,6 +349,43 @@ function parseGameFrame(value: Record<string, unknown>): GameFrame {
                 (value.phase === 'finished' &&
                  (value.winner_seat === 3 || value.turn_seat !== 3)))
                 throw new Error('Invalid playing snapshot');
+            if (value.phase === 'finished') {
+                const score = value.score;
+                if (!record(score) ||
+                    !exactFields(score,
+                        ['base','bombs','spring','multiplier','unit','delta']) ||
+                    !Number.isInteger(score.base) || score.base !== value.highest_bid ||
+                    !Number.isInteger(score.bombs) ||
+                    (score.bombs as number) < 0 || (score.bombs as number) > 14 ||
+                    (score.spring !== 'none' &&
+                     score.spring !== 'landlord' && score.spring !== 'farmers') ||
+                    !Number.isInteger(score.multiplier) ||
+                    !Number.isInteger(score.unit) ||
+                    !Array.isArray(score.delta) || score.delta.length !== 3 ||
+                    !score.delta.every((x: unknown) =>
+                        typeof x === 'number' && Number.isSafeInteger(x)) ||
+                    (score.delta as number[]).reduce(
+                        (a: number,b: number) => a + b, 0) !== 0 ||
+                    score.multiplier !== 2 ** ((score.bombs as number) +
+                        (score.spring !== 'none' ? 1 : 0)) ||
+                    score.unit !== (score.base as number) *
+                                    (score.multiplier as number) ||
+                    (score.spring === 'landlord' &&
+                     value.winner_seat !== value.landlord_seat) ||
+                    (score.spring === 'farmers' &&
+                     value.winner_seat === value.landlord_seat))
+                    throw new Error('Invalid authoritative score');
+                const landlord = value.landlord_seat as number;
+                const winner = value.winner_seat as number;
+                const unit = score.unit as number;
+                const deltas = score.delta as number[];
+                if (deltas[landlord] !==
+                        (winner === landlord ? unit * 2 : -unit * 2) ||
+                    deltas.some((x: number,i: number) =>
+                        i !== landlord &&
+                        x !== (winner === landlord ? -unit : unit)))
+                    throw new Error('Invalid zero-sum score');
+            }
             return value as unknown as GamePlayingSnapshot;
         }
         throw new Error('Invalid game phase');

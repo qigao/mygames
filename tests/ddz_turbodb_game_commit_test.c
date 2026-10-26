@@ -71,8 +71,8 @@ static void public_only_event(mygames_room_store *store, uint64_t after,
 
 static void same_match(const mygames_ddz_match *left,
                        const mygames_ddz_match *right) {
-    uint8_t a[MYGAMES_DDZ_CHECKPOINT_V1_BYTES];
-    uint8_t b[MYGAMES_DDZ_CHECKPOINT_V1_BYTES];
+    uint8_t a[MYGAMES_DDZ_CHECKPOINT_V2_BYTES];
+    uint8_t b[MYGAMES_DDZ_CHECKPOINT_V2_BYTES];
     size_t alen = 0u, blen = 0u;
     assert(mygames_ddz_checkpoint_encode(left, a, sizeof(a), &alen) ==
            MYGAMES_DDZ_CHECKPOINT_OK);
@@ -109,7 +109,7 @@ static void corrupt_private_image_with_real_orm(const char *plugin,
     conn.option_count = 1u;
     assert(orm_runtime_connect(runtime, &conn, &connection, &error) == ORM_STATUS_OK);
     assert(orm_raw(connection,
-        orm_view("update mg_game_state set private_image=zeroblob(216) "
+        orm_view("update mg_game_state set private_image=zeroblob(224) "
                  "where room_id='room-1'"), &query, &error) == ORM_STATUS_OK);
     assert(orm_query_execute(query, &result, &error) == ORM_STATUS_OK);
     assert(orm_result_affected_rows(result, &affected, &error) == ORM_STATUS_OK);

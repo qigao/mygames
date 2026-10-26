@@ -1,7 +1,7 @@
 #include "mygames/ddz_match_checkpoint.h"
 #include <string.h>
 
-enum { DDZ_CKPT_HEADER_BYTES = 32, DDZ_CKPT_PAYLOAD_BYTES = 184 };
+enum { DDZ_CKPT_HEADER_BYTES = 32, DDZ_CKPT_PAYLOAD_BYTES = 192 };
 
 static void put_u32(unsigned char *buffer, size_t at, uint32_t value) {
     size_t i;
@@ -32,7 +32,7 @@ static uint32_t canonical_checksum(const unsigned char *data) {
     uint32_t hash = UINT32_C(2166136261);
     size_t i;
     /* Checksum itself is normalized to four zeros, not skipped. */
-    for (i = 0u; i < MYGAMES_DDZ_CHECKPOINT_V1_BYTES; ++i) {
+    for (i = 0u; i < MYGAMES_DDZ_CHECKPOINT_V2_BYTES; ++i) {
         const unsigned char value = (i >= 28u && i < 32u) ? 0u : data[i];
         hash = (hash ^ (uint32_t)value) * UINT32_C(16777619);
     }
@@ -42,7 +42,7 @@ static uint32_t canonical_checksum(const unsigned char *data) {
 mygames_ddz_checkpoint_status mygames_ddz_checkpoint_encode(
     const mygames_ddz_match *source,
     void *out_bytes, size_t capacity, size_t *out_size) {
-    unsigned char image[MYGAMES_DDZ_CHECKPOINT_V1_BYTES] = {0};
+    unsigned char image[MYGAMES_DDZ_CHECKPOINT_V2_BYTES] = {0};
     size_t offset = DDZ_CKPT_HEADER_BYTES;
     size_t i;
     const mygames_ddz_round *round;
@@ -53,7 +53,7 @@ mygames_ddz_checkpoint_status mygames_ddz_checkpoint_encode(
     if (capacity < sizeof(image)) return MYGAMES_DDZ_CHECKPOINT_CAPACITY;
 
     image[0] = 'M'; image[1] = 'G'; image[2] = 'D'; image[3] = 'G';
-    image[4] = 1u;
+    image[4] = 2u;
     image[5] = (unsigned char)source->phase;
     put_u64(image, &(size_t){8u}, source->room_epoch);
     put_u64(image, &(size_t){16u}, source->game_id);
@@ -92,6 +92,13 @@ mygames_ddz_checkpoint_status mygames_ddz_checkpoint_encode(
     image[offset++] = source->bid_count;
     image[offset++] = source->highest_bid;
     image[offset++] = source->highest_seat;
+    /* Terminal scoring counters persist with the exact PRIVATE card state
+     * and command receipt. Reserved bytes must stay canonical zero.
+     * Do not revive v1 blobs: there is no production migration yet. */
+    image[offset++] = source->scoring.bombs_rockets;
+    image[offset++] = source->scoring.landlord_nonpass;
+    image[offset++] = source->scoring.farmers_nonpass;
+    offset += 5u; /* Reserved and zero-initialized until a new version. */
     if (offset != sizeof(image)) return MYGAMES_DDZ_CHECKPOINT_INVALID;
     put_u32(image, 28u, canonical_checksum(image));
     memcpy(out_bytes, image, sizeof(image));
@@ -106,11 +113,11 @@ mygames_ddz_checkpoint_status mygames_ddz_checkpoint_decode(
     mygames_ddz_round *round = &next.round;
     size_t offset = DDZ_CKPT_HEADER_BYTES, i;
     if (!bytes || !out_match) return MYGAMES_DDZ_CHECKPOINT_INVALID;
-    if (size != MYGAMES_DDZ_CHECKPOINT_V1_BYTES)
+    if (size != MYGAMES_DDZ_CHECKPOINT_V2_BYTES)
         return MYGAMES_DDZ_CHECKPOINT_CORRUPT;
     if (memcmp(image, "MGDG", 4u) != 0)
         return MYGAMES_DDZ_CHECKPOINT_UNSUPPORTED;
-    if (image[4] != 1u)
+    if (image[4] != 2u)
         return MYGAMES_DDZ_CHECKPOINT_UNSUPPORTED;
     if (image[6] != 0u || image[7] != 0u ||
         get_u32(image, 24u) != DDZ_CKPT_PAYLOAD_BYTES ||
@@ -150,7 +157,13 @@ mygames_ddz_checkpoint_status mygames_ddz_checkpoint_decode(
     next.bid_count = image[offset++];
     next.highest_bid = image[offset++];
     next.highest_seat = image[offset++];
-    if (offset != MYGAMES_DDZ_CHECKPOINT_V1_BYTES ||
+    next.scoring.bombs_rockets = image[offset++];
+    next.scoring.landlord_nonpass = image[offset++];
+    next.scoring.farmers_nonpass = image[offset++];
+    for (i = 0u; i < 5u; ++i) {
+        if (image[offset++] != 0u) return MYGAMES_DDZ_CHECKPOINT_CORRUPT;
+    }
+    if (offset != MYGAMES_DDZ_CHECKPOINT_V2_BYTES ||
         mygames_ddz_match_validate(&next) != MYGAMES_DDZ_MATCH_OK)
         return MYGAMES_DDZ_CHECKPOINT_CORRUPT;
     *out_match = next;

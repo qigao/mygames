@@ -1,0 +1,90 @@
+name: M5g authoritative score, bombs, springs and private v2 checkpoint
+
+'on':
+  pull_request:
+    paths:
+      - 'games/doudizhu/src/ddz_match.c'
+      - 'games/doudizhu/include/mygames/ddz_match.h'
+      - 'games/doudizhu/src/ddz_match_checkpoint.c'
+      - 'games/doudizhu/include/mygames/ddz_match_checkpoint.h'
+      - 'games/doudizhu/src/room_store_turbodb.c'
+      - 'tests/ddz_match_test.c'
+      - 'tests/ddz_match_checkpoint_test.c'
+      - 'tests/ddz_turbodb_game_commit_test.c'
+      - 'apps/server/main.c'
+      - 'apps/cocos/assets/scripts/net/Protocol.ts'
+      - 'apps/cocos/assets/scripts/ui/GameTableView.ts'
+      - 'tests/cocos_gameplay.test.mjs'
+      - 'scripts/ddz_m5f_full_match.mjs'
+      - '.github/workflows/ddz-m5g-scoring.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mygames-m5g-native-score-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-c11:
+    name: Versioned zero-sum C11 match/score / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Configure actual C11 match/checkpoint no network SDK
+        run: >-
+          cmake -S . -B build/m5g-c11 -DBUILD_TESTING=ON
+          -DMYGAMES_ENABLE_GATEWAY=OFF -DMYGAMES_ENABLE_TURBODB=OFF
+          -DMYGAMES_ENABLE_FLOWIE=OFF
+      - name: Build all C11 modules with warnings as errors
+        run: cmake --build build/m5g-c11 --config Debug --parallel 2
+      - name: Run complete native rules + private checkpoint + room CTests
+        run: >-
+          ctest --test-dir build/m5g-c11 -C Debug
+          --no-tests=error --output-on-failure --timeout 90
+      - name: Repeat real bomb/rocket and canonical private scoring image
+        run: >-
+          ctest --test-dir build/m5g-c11 -C Debug
+          --no-tests=error --output-on-failure --timeout 90
+          --repeat until-fail:20 -R '^mygames[.]ddz_(match|checkpoint)$'
+
+  native-source-sanitizers:
+    name: M5g true C11 score/checkpoint ASan+UBSan / Linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Build actual game score, M5a rules and private v2 images
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build/m5g-sanitized \
+            -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON \
+            -DMYGAMES_ENABLE_GATEWAY=OFF -DMYGAMES_ENABLE_TURBODB=OFF \
+            -DMYGAMES_ENABLE_FLOWIE=OFF \
+            -DCMAKE_C_FLAGS='-fsanitize=address,undefined -g -fno-omit-frame-pointer -Wall -Wextra -Wpedantic -Werror' \
+            -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=address,undefined'
+          cmake --build build/m5g-sanitized --parallel 2 \
+            --target mygames_ddz_match_test mygames_ddz_checkpoint_test
+      - name: Repeat real accepted play and v2 corrupt-checkpoint tests
+        shell: bash
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          set -euo pipefail
+          ctest --test-dir build/m5g-sanitized --no-tests=error \
+            --output-on-failure --timeout 90 --repeat until-fail:20 \
+            -R '^mygames[.]ddz_(match|checkpoint)$'
