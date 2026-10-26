@@ -279,7 +279,8 @@ function parseGameFrame(value: Record<string, unknown>): GameFrame {
             !safeText(value.request_id) || !safeText(value.room_id, 39) ||
             !canonicalU64(value.room_epoch) || !canonicalU64(value.game_id) ||
             !canonicalU64(value.turn_id) || !canonicalU64(value.seq) ||
-            !['start','bid','play','pass'].includes(String(value.action)) ||
+            (typeof value.action !== 'string' ||
+             !['start','bid','play','pass'].includes(value.action)) ||
             !Number.isInteger(value.phase) ||
             ![1,2,3,4].includes(value.phase as number))
             throw new Error('Invalid durable game ACK');
