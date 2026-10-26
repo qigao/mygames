@@ -339,6 +339,80 @@ static void test_winning_game_through_authored_fixture(void) {
     (void)others;
 }
 
+static void test_real_bomb_and_rocket_only_after_legal_play(void) {
+    mygames_ddz_match match = begin_test_match(), next = {0};
+    mygames_ddz_bid_result bid = {0};
+    mygames_ddz_action_result action = {0};
+    mygames_ddz_match_public public_view = {0};
+    mygames_ddz_settlement unchanged = {0};
+    uint8_t landlord[20], farmers[34];
+    uint64_t selected = rank_cards(0u, 4u) |
+        (UINT64_C(1) << 52u) | (UINT64_C(1) << 53u);
+    unsigned int i, own = 0u, other = 0u;
+    const uint64_t four = rank_cards(0u, 4u);
+    const uint64_t rocket = (UINT64_C(1) << 52u) | (UINT64_C(1) << 53u);
+    for (i = 0u; i < MYGAMES_DDZ_CARDS && own < 20u; ++i) {
+        if ((selected & (UINT64_C(1) << i)) == 0u) {
+            selected |= UINT64_C(1) << i;
+        }
+    }
+    REQUIRE(count_cards(selected) == 20u);
+    for (i = 0u; i < MYGAMES_DDZ_CARDS; ++i) {
+        if (selected & (UINT64_C(1) << i))
+            landlord[own++] = (uint8_t)i;
+        else farmers[other++] = (uint8_t)i;
+    }
+    REQUIRE(own == 20u && other == 34u);
+    own = 0u; other = 0u;
+    memset(match.initial_hands, 0, sizeof(match.initial_hands));
+    match.secret_kitty = UINT64_C(0);
+    for (i = 0u; i < 51u; ++i) {
+        const uint8_t card = (i % 3u == 0u) ?
+            landlord[own++] : farmers[other++];
+        match.secret_deck[i] = card;
+        match.initial_hands[i % 3u] |= UINT64_C(1) << card;
+    }
+    for (i = 51u; i < MYGAMES_DDZ_CARDS; ++i) {
+        const uint8_t card = landlord[own++];
+        match.secret_deck[i] = card;
+        match.secret_kitty |= UINT64_C(1) << card;
+    }
+    REQUIRE(mygames_ddz_match_validate(&match) == MYGAMES_DDZ_MATCH_OK);
+    REQUIRE(mygames_ddz_match_bid(&match, 42u, 500u, 101u, 1u, 3u,
+                                   &next, &bid) == MYGAMES_DDZ_MATCH_OK);
+    match = next;
+    REQUIRE((match.round.hands[0] & four) == four);
+    REQUIRE((match.round.hands[0] & rocket) == rocket);
+    REQUIRE(mygames_ddz_match_settlement(&match, &unchanged) ==
+            MYGAMES_DDZ_MATCH_WRONG_PHASE);
+    REQUIRE(mygames_ddz_match_play(&match, 42u, 500u, 101u, 1u, four,
+                                   &next, &action) == MYGAMES_DDZ_MATCH_OK);
+    REQUIRE(action.move.kind == MYGAMES_DDZ_MOVE_BOMB);
+    REQUIRE(next.scoring.bombs_rockets == 1u &&
+            next.scoring.landlord_nonpass == 1u);
+    match = next;
+    REQUIRE(mygames_ddz_match_play(&match, 42u, 500u, 202u, 2u, 0u,
+                                   &next, &action) == MYGAMES_DDZ_MATCH_OK);
+    match = next;
+    REQUIRE(mygames_ddz_match_play(&match, 42u, 500u, 303u, 3u, 0u,
+                                   &next, &action) == MYGAMES_DDZ_MATCH_OK);
+    REQUIRE(next.scoring.bombs_rockets == 1u);
+    match = next;
+    REQUIRE(mygames_ddz_match_play(&match, 42u, 500u, 101u, 4u, rocket,
+                                   &next, &action) == MYGAMES_DDZ_MATCH_OK);
+    REQUIRE(action.move.kind == MYGAMES_DDZ_MOVE_ROCKET);
+    REQUIRE(next.scoring.bombs_rockets == 2u &&
+            next.scoring.landlord_nonpass == 2u &&
+            next.scoring.farmers_nonpass == 0u);
+    REQUIRE(mygames_ddz_match_public_view(&next, &public_view) ==
+            MYGAMES_DDZ_MATCH_OK);
+    REQUIRE(!public_view.has_settlement);
+    match = next;
+    REQUIRE(mygames_ddz_match_play(&match, 42u, 500u, 101u, 4u, rocket,
+                                   &next, &action) == MYGAMES_DDZ_MATCH_STALE_TURN);
+    REQUIRE(match.scoring.bombs_rockets == 2u);
+}
+
 static void test_authoritative_zero_sum_scoring(void) {
     mygames_ddz_settlement score = {0};
     mygames_ddz_settlement sentinel = {0};
@@ -396,6 +470,7 @@ int main(void) {
     test_live_os_shuffle_and_gameplay();
     test_winning_game_through_authored_fixture();
     test_authoritative_zero_sum_scoring();
+    test_real_bomb_and_rocket_only_after_legal_play();
     puts("mygames.ddz_match: PASS");
     return 0;
 }
