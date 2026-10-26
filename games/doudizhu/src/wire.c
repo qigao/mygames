@@ -90,6 +90,7 @@ static mygames_wire_status finish(const char *type, unsigned int fields,
         return MYGAMES_WIRE_OK;
     }
     if (strcmp(type, "room.create") == 0 ||
+        strcmp(type, "room.start") == 0 ||
         strcmp(type, "room.leave") == 0 ||
         strcmp(type, "room.snapshot.get") == 0) {
         return fields == (V | T | ID) && cmd->request_id[0]
@@ -169,6 +170,7 @@ mygames_wire_status mygames_wire_decode_command(const void *bytes, size_t size,
     else if (!strcmp(type, "room.create")) out->kind = MYGAMES_COMMAND_CREATE_ROOM;
     else if (!strcmp(type, "room.join")) out->kind = MYGAMES_COMMAND_JOIN_ROOM;
     else if (!strcmp(type, "room.ready")) out->kind = MYGAMES_COMMAND_READY;
+    else if (!strcmp(type, "room.start")) out->kind = MYGAMES_COMMAND_START_ROOM;
     else if (!strcmp(type, "room.leave")) out->kind = MYGAMES_COMMAND_LEAVE_ROOM;
     else if (!strcmp(type, "session.resume")) out->kind = MYGAMES_COMMAND_RESUME_SESSION;
     else out->kind = MYGAMES_COMMAND_GET_SNAPSHOT;
