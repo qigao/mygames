@@ -312,7 +312,8 @@ if(MYGAMES_ENABLE_FLOWIE)
     target_compile_features(mygames_flowie_consumer_projection_audit PRIVATE c_std_11)
     add_executable(mygames_flowie_acl_client_test tests/flowie_acl_client.c)
     target_link_libraries(mygames_flowie_acl_client_test PRIVATE
-      Flowie::Client MyGames::ConsumerProjection MyGames::Outbox Salts::Core Orm::C)
+      Flowie::Client MyGames::ConsumerProjection MyGames::ConsumerOwner
+      MyGames::RecoveryWire MyGames::Outbox Salts::Core Orm::C)
     target_compile_features(mygames_flowie_acl_client_test PRIVATE c_std_11)
     add_executable(mygames_archive_corrupt_test tests/flowie_archive_corrupt_test.c)
     target_compile_features(mygames_archive_corrupt_test PRIVATE c_std_11)
