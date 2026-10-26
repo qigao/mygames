@@ -644,6 +644,23 @@ static bool encode_game_snapshot(const mygames_ddz_game_owner *owner,
             view.bid_turn_id, (unsigned)view.bid_turn_seat,
             (unsigned)view.highest_bid, (unsigned)view.highest_seat);
     } else {
+        char score_json[190] = {0};
+        if (view.phase == MYGAMES_DDZ_MATCH_FINISHED) {
+            const mygames_ddz_settlement *p = &view.settlement;
+            const char *spring =
+                p->spring == MYGAMES_DDZ_SPRING_LANDLORD ? "landlord" :
+                p->spring == MYGAMES_DDZ_SPRING_FARMERS ? "farmers" : "none";
+            int sn;
+            if (!view.has_settlement) return false;
+            sn = snprintf(score_json, sizeof(score_json),
+                ",\"score\":{\"base\":%u,\"bombs\":%u,\"spring\":\"%s\","
+                "\"multiplier\":%" PRIu32 ",\"unit\":%" PRIu32 ","
+                "\"delta\":[%" PRId32 ",%" PRId32 ",%" PRId32 "]}",
+                (unsigned)p->bid_base, (unsigned)p->bombs_rockets,
+                spring, p->multiplier, p->unit,
+                p->delta[0], p->delta[1], p->delta[2]);
+            if (sn <= 0 || (size_t)sn >= sizeof(score_json)) return false;
+        }
         length = snprintf(out, capacity,
             "{\"v\":1,\"type\":\"game.snapshot\",\"request_id\":\"%s\","
             "\"room_id\":\"%s\",\"room_epoch\":\"%" PRIu64 "\","
@@ -652,14 +669,15 @@ static bool encode_game_snapshot(const mygames_ddz_game_owner *owner,
             "\"revealed_kitty_hex\":\"%014" PRIx64 "\","
             "\"turn_id\":\"%" PRIu64 "\",\"turn_seat\":%u,"
             "\"last_cards_hex\":\"%014" PRIx64 "\",\"last_seat\":%u,"
-            "\"remaining\":[%u,%u,%u],\"winner_seat\":%u}",
+            "\"remaining\":[%u,%u,%u],\"winner_seat\":%u%s}",
             request_id, owner->room_id, view.room_epoch, view.game_id, phase,
             (unsigned)view.highest_bid, (unsigned)view.highest_seat,
             view.revealed_kitty, view.round.turn_id,
             (unsigned)view.round.turn_seat, view.round.last_cards,
             (unsigned)view.round.last_seat,
             (unsigned)view.round.remaining[0], (unsigned)view.round.remaining[1],
-            (unsigned)view.round.remaining[2], (unsigned)view.round.winner_seat);
+            (unsigned)view.round.remaining[2], (unsigned)view.round.winner_seat,
+            score_json);
     }
     return length > 0 && (size_t)length < capacity;
 }
