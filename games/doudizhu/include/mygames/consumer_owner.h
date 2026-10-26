@@ -77,6 +77,30 @@ mygames_owner_result mygames_consumer_owner_admit_history(
 /* Cancel affects QUEUED only. TAKEN might already be committing; return
  * BUSY and let the sole Owner observe terminal state. Stale tickets cannot
  * cancel a newer occupant reusing a slot. */
+/* Single active native HTTP recovery request per logical consumer Owner.
+ * Only the Owner creator may begin a fetch, taking its authoritative
+ * last_seq from the borrowed ConsumerProjection before any network I/O.
+ * A second concurrent fetch returns BUSY before opening a socket.
+ *
+ * The returned generation+cursor are copied into an independent CHttp
+ * worker; only that generation may relinquish the in-flight retain.
+ * finish_fetch() is thread-safe and works after begin_close() to drain
+ * shutdown. No network thread may read the ConsumerProjection pointer.
+ * `admit_history` validates the canonical page; admission is NEVER a
+ * consumer COMMIT or Flowie QoS1 wire ACK.
+ */
+typedef struct mygames_owner_fetch_ticket {
+    uint64_t generation;
+    uint64_t committed_after;
+} mygames_owner_fetch_ticket;
+
+mygames_owner_result mygames_consumer_owner_begin_fetch(
+    mygames_consumer_owner *owner,
+    mygames_owner_fetch_ticket *out_ticket);
+mygames_owner_result mygames_consumer_owner_finish_fetch(
+    mygames_consumer_owner *owner,
+    mygames_owner_fetch_ticket ticket);
+
 mygames_owner_result mygames_consumer_owner_cancel(
     mygames_consumer_owner *owner, mygames_owner_ticket ticket);
 
