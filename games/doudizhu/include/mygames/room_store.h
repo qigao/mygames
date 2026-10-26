@@ -1,6 +1,7 @@
 #ifndef MYGAMES_ROOM_STORE_H
 #define MYGAMES_ROOM_STORE_H
 #include "mygames/room_checkpoint.h"
+#include "mygames/ddz_match_checkpoint.h"
 #include <stddef.h>
 #include <stdint.h>
 #ifdef __cplusplus
@@ -52,7 +53,8 @@ typedef enum mygames_store_status {
      * do not replay the operation without independent reconciliation. */
     MYGAMES_STORE_COMMIT_UNKNOWN,
     MYGAMES_STORE_QUARANTINED,
-    MYGAMES_STORE_READ_ONLY
+    MYGAMES_STORE_READ_ONLY,
+    MYGAMES_STORE_STALE_GAME
 } mygames_store_status;
 
 /* One writer: call only from the unique Room Owner, not a CHttp callback.
@@ -190,6 +192,48 @@ mygames_store_status mygames_room_store_commit(
     const void *response, size_t response_bytes,
     const void *event_payload, size_t event_bytes,
     uint64_t *out_committed_sequence);
+
+/* M5c -- PRIVATE game/room/receipt/Outbox single TurboDB transaction.
+ * A non-NULL expected_previous_match must match the *exact canonical bytes*
+ * stored for this room. NULL is accepted only for its first ever match.
+ * A later fresh match requires the previous private game to have finished
+ * or require an all-pass redeal and a larger game_id.
+ *
+ * post_command_rooms must contain the STARTING room with exactly the three
+ * authoritative match players in their original seats. An in-memory CFlow
+ * Owner computes the candidate using mygames_ddz_match_bid/play first;
+ * a network callback/model proposal MUST NOT call this API.
+ *
+ * All DB work, including private game bytes, room checkpoint, exact command
+ * outcome and PUBLIC-only sanitized Outbox event, commits atomically.
+ * Only STORE_OK means the caller can replace its live match and send Game
+ * ACK. STORE_REPLAY returns an earlier committed sequence; load the exact
+ * original response with get_outcome, never send the candidate result.
+ * STORE_COMMIT_UNKNOWN quarantines admission without guessing/retrying.
+ */
+mygames_store_status mygames_room_store_commit_game(
+    mygames_room_store *store, mygames_player_id authenticated_player,
+    const mygames_room_directory *post_command_rooms,
+    const char *room_id,
+    const mygames_ddz_match *expected_previous_match,
+    const mygames_ddz_match *candidate_match,
+    uint64_t expected_epoch, uint64_t expected_sequence,
+    const char *request_id,
+    const uint8_t command_digest[MYGAMES_STORE_COMMAND_DIGEST_BYTES],
+    const void *response, size_t response_bytes,
+    const void *sanitized_event, size_t event_bytes,
+    uint64_t *out_committed_sequence);
+
+/* Loads one verified private match from the SAME TurboDB store and checks
+ * its epoch/game/sequence against the checkpoint. The caller must ensure
+ * secret bytes stay inside its unique, authenticated Game Owner; never
+ * serialize this private POD into MQTT/public WebSocket or logs.
+ * No durable game for the room returns STORE_NOT_FOUND.
+ * Invalid outputs remain unchanged on errors.
+ */
+mygames_store_status mygames_room_store_load_game(
+    mygames_room_store *store, const char *room_id,
+    mygames_ddz_match *out_match, uint64_t *out_sequence);
 
 /* One authoritative, journalled timeout command for an expired WAITING
  * room participant. Atomically removes the detached hashed lease, applies
