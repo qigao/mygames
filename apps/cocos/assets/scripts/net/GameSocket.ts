@@ -208,8 +208,10 @@ export class GameSocket {
             this.playerId = frame.player_id;
             this.provisional = null;
             this.transition('ready');
+            // If the recovered peer temporarily cannot advertise games,
+            // retain unresolved original receipt IDs but do NOT dispatch
+            // them. A later compatible durable Owner may still reconcile.
             if (this.gamesAvailable) this.retryPendingGameActions();
-            else this.pendingGameActions.clear();
             this.onFrame(frame);
             return;
         }
@@ -230,8 +232,17 @@ export class GameSocket {
         }
         if (this.status !== 'ready')
             throw new Error('Event received before session handshake');
-        if (frame.type === 'game.ack' || frame.type === 'game.error')
+        if (frame.type === 'game.ack')
             this.pendingGameActions.delete(frame.request_id);
+        if (frame.type === 'game.error' &&
+            frame.code !== 'storage_unavailable' &&
+            frame.code !== 'durable_game_unavailable') {
+            // Deterministic gameplay rejection is terminal. A storage error
+            // is NOT: COMMIT_UNKNOWN may already have changed the database.
+            // Retain that exact request_id/body for trusted recovery, never
+            // guess success or replace it with a new request.
+            this.pendingGameActions.delete(frame.request_id);
+        }
         this.onFrame(frame);
     }
 
