@@ -62,7 +62,7 @@ const rack=id=>m=>m.type==='room.ack' && m.request_id===id;
 const rerr=id=>m=>m.type==='room.error' && m.request_id===id;
 const gameSnapshot=id=>m=>m.type==='game.snapshot' && m.request_id===id;
 const hand=id=>m=>m.type==='game.hand' && m.request_id===id;
-const cardCount=mask=>{let n=0;for(let k=BigInt(mask);k>0n;k&=k-1n)n++;return n;};
+const cardCount=mask=>{let n=0;for(let k=BigInt('0x'+mask);k>0n;k&=k-1n)n++;return n;};
 const lowBit=hex=>{const x=BigInt('0x'+hex);return (x & -x).toString(16).padStart(14,'0');};
 
 async function initial() {
