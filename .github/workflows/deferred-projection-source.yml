@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     env:
-      EXPECTED_FLOWIE: 5c8afa025cd1dd8f4f06b3557e10cee2e75ff4ed
+      EXPECTED_FLOWIE: 5b6e8770de321872b933f732bb94cbfb81cef5e0
     steps:
       - uses: actions/checkout@v4
         with:
@@ -34,7 +34,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: qigao/flowie
-          ref: 5c8afa025cd1dd8f4f06b3557e10cee2e75ff4ed
+          ref: 5b6e8770de321872b933f732bb94cbfb81cef5e0
           path: build/deferred/flowie-src
           persist-credentials: false
       - name: Pin exact candidate and prepare host
