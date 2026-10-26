@@ -40,6 +40,28 @@ static void test_directory(void) {
     assert(mygames_room_directory_leave(&service, 202u) == MYGAMES_ROOM_NOT_FOUND);
 }
 
+static void test_authoritative_start(void) {
+    mygames_room_directory directory;
+    const mygames_room *room = NULL;
+    unsigned int seat = 99u;
+    mygames_room_directory_init(&directory);
+    assert(mygames_room_directory_start(&directory, 1u) ==
+           MYGAMES_ROOM_NOT_FOUND);
+    assert(mygames_room_directory_create(&directory, 11u, &room) == MYGAMES_ROOM_OK);
+    assert(mygames_room_directory_start(&directory, 11u) == MYGAMES_ROOM_NOT_READY);
+    assert(mygames_room_directory_join(&directory, room->id, 22u, &seat) == MYGAMES_ROOM_OK);
+    assert(mygames_room_directory_join(&directory, room->id, 33u, &seat) == MYGAMES_ROOM_OK);
+    assert(mygames_room_directory_start(&directory, 22u) == MYGAMES_ROOM_NOT_OWNER);
+    assert(mygames_room_directory_start(&directory, 11u) == MYGAMES_ROOM_NOT_READY);
+    assert(mygames_room_directory_ready(&directory, 11u, true) == MYGAMES_ROOM_OK);
+    assert(mygames_room_directory_ready(&directory, 22u, true) == MYGAMES_ROOM_OK);
+    assert(mygames_room_directory_ready(&directory, 33u, true) == MYGAMES_ROOM_OK);
+    assert(mygames_room_directory_start(&directory, 11u) == MYGAMES_ROOM_OK);
+    assert(room->phase == MYGAMES_ROOM_STARTING);
+    assert(mygames_room_directory_start(&directory, 11u) == MYGAMES_ROOM_WRONG_PHASE);
+    assert(mygames_room_directory_leave(&directory, 22u) == MYGAMES_ROOM_WRONG_PHASE);
+}
+
 static void test_capacity_and_recycle(void) {
     mygames_room_directory service;
     const mygames_room *room;
@@ -60,6 +82,7 @@ static void test_capacity_and_recycle(void) {
 }
 
 int main(void) {
+    test_authoritative_start();
     test_directory();
     test_capacity_and_recycle();
     puts("mygames.room_directory: PASS");
