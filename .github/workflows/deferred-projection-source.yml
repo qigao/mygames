@@ -9,6 +9,7 @@ name: M4.5 Flowie deferred COMMIT-PUBACK integration
       - 'tests/flowie_deferred_consumer.c'
       - 'tests/flowie_local_broker.c'
       - 'scripts/ci/ci_flowie_deferred_broker_restart.py'
+      - 'scripts/ci/ci_flowie_receive_maximum.py'
       - 'scripts/ci/ci_flowie_deferred_projection.py'
       - 'games/doudizhu/src/consumer_owner.c'
   workflow_dispatch:
@@ -25,7 +26,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     env:
-      EXPECTED_FLOWIE: 05373656d91dbc3ea0c434f1fbf9ee64cdb4e70c
+      EXPECTED_FLOWIE: 5c8afa025cd1dd8f4f06b3557e10cee2e75ff4ed
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,7 +34,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: qigao/flowie
-          ref: 05373656d91dbc3ea0c434f1fbf9ee64cdb4e70c
+          ref: 5c8afa025cd1dd8f4f06b3557e10cee2e75ff4ed
           path: build/deferred/flowie-src
           persist-credentials: false
       - name: Pin exact candidate and prepare host
@@ -141,6 +142,20 @@ jobs:
             build/deferred/mygames-build/mygames_outbox_audit_test \
             build/deferred/mygames-build/mygames_flowie_consumer_projection_audit \
             "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so"
+      - name: Receive Maximum=1 wire window and two actual TurboDB consumer COMMITs
+        shell: bash
+        env:
+          MYGAMES_RECEIVE_WINDOW_EVIDENCE_DIR: build/deferred/receive-window-evidence
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/ci_flowie_receive_maximum.py \
+            build/deferred/mygames-build/mygames_flowie_broker_test \
+            build/deferred/mygames-build/mygames_flowie_deferred_consumer_test \
+            build/deferred/mygames-build/mygames_outbox_publisher \
+            build/deferred/mygames-build/mygames_outbox_seed_test \
+            build/deferred/mygames-build/mygames_outbox_audit_test \
+            build/deferred/mygames-build/mygames_flowie_consumer_projection_audit \
+            "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so"
       - name: Preserve evidence (not production approval)
         if: always()
         uses: actions/upload-artifact@v4
@@ -153,4 +168,5 @@ jobs:
             build/deferred/consumer-ldd.txt
             build/deferred/evidence/
             build/deferred/broker-restart-evidence/
+            build/deferred/receive-window-evidence/
             build/deferred/mygames-build/Testing/Temporary/LastTest.log
