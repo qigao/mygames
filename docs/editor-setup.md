@@ -22,14 +22,32 @@ not depend on external textures or copy any third-party assets.
 7. Save the scene from the **same Editor** and examine any metadata migration before
    claiming Web build acceptance.
 
-## UI boundaries
+## M5e UI boundaries
 
-Buttons: Connect, Create Room, Join Room, Ready, Cancel Ready, Refresh, Leave.
-The UI is a development lobby/room view, not a complete game table. There is no
-card rendering, game timer, bidding, authentication or reconnect. `LobbyBootstrap`
-defaults to the loopback server. Android/iOS/simulator or remote browser sessions
-cannot reach another machine's localhost; external network access is intentionally
-unsupported until authentication and TLS are added.
+Buttons: Connect, Create Room, Join Room, Ready, Cancel Ready, Refresh, Leave,
+**Room Start** (three ready players, owner only), and game-level **Start,
+Bid 0/1/2/3, select own cards, Play, Pass, Refresh, Retry original request**.
+
+The existing scene's `LobbyBootstrap` dynamically constructs
+`GameTableView`, a 54-physical-card Cocos Graphics/Node/Label/Buttons
+implementation. It is shown only in the durable STARTING room, and only
+offers actions when the CHttp hello explicitly advertises `games`.
+Card shapes and turn selection are still validated by the native
+TurboDB-backed CFlow Room Owner, never trusted from UI state.
+
+`GameStore` displays only the current bound session's hand; an
+unverified/old/foreign private-hand frame is ignored, and a transient
+disconnect clears displayed cards until a verified rotated bearer
+resume, public game snapshot and fresh member-only hand. The server
+proactively sends a **PUBLIC game.snapshot** after validated resume
+so a restarted Creator client can learn a server-minted game ID.
+The original command ID is replayed after recovery, never silently
+minted again.
+
+This is a development loopback UI with no public IAM, WSS/Origin,
+rate limits, verified remote clients, optional gameplay timeout or
+commercial Cocos build acceptance. Android/iOS/simulator or remote
+browser sessions cannot reach another machine's localhost.
 
 ## Automated vs. manual evidence
 
