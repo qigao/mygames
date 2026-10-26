@@ -64,6 +64,6 @@ jobs:
             -DMYGAMES_ENABLE_TURBODB=ON -DMYGAMES_ENABLE_FLOWIE=ON \
             -DCMAKE_PREFIX_PATH="$SDK_PREFIX_PATH"
       - name: Build bounded transactional consumer and TurboDB fault test
-        run: cmake --build build/consumer-ledger --parallel 2 --target mygames_recovery_consumer_test
+        run: cmake --build build/consumer-ledger --parallel 2 --target mygames_recovery_consumer_test mygames_consumer_owner_test
       - name: Verify partial commits, restart, rollback and cursor fencing
-        run: ctest --test-dir build/consumer-ledger -C Debug --output-on-failure --no-tests=error -R 'mygames[.]recovery_consumer'
+        run: ctest --test-dir build/consumer-ledger -C Debug --output-on-failure --no-tests=error -R 'mygames[.](recovery_consumer|consumer_owner)'
