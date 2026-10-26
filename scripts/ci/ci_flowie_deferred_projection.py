@@ -55,11 +55,13 @@ def successful_round(client: str, mode: str, marker: str, paths: list[str],
         p = subprocess.Popen([client, mode, *paths], stdout=log,
                              stderr=subprocess.STDOUT, env=env)
         try:
-            require_marker(p, log, marker)
-            p.wait(timeout=10)
+            # Unlike SIGKILL boundaries, a successful subscriber is
+            # permitted to finish before the parent observes its marker.
+            # Requiring poll() is None here creates a false negative.
+            p.wait(timeout=12)
             log.seek(0)
             output = log.read()
-            if p.returncode != 0:
+            if p.returncode != 0 or marker not in output:
                 raise AssertionError(
                     f"Consumer {mode} failed rc={p.returncode}\n{output[-2400:]}")
         finally:
