@@ -150,7 +150,7 @@ if(MYGAMES_ENABLE_TURBODB)
   target_include_directories(mygames_room_store PUBLIC
     games/doudizhu/include)
   target_link_libraries(mygames_room_store PUBLIC
-    MyGames::Room PRIVATE Orm::C)
+    MyGames::Room MyGames::DouDizhuCheckpoint PRIVATE Orm::C)
   if(MSVC)
     target_compile_options(mygames_room_store PRIVATE /W4 /WX)
   else()
@@ -170,6 +170,21 @@ if(MYGAMES_ENABLE_TURBODB)
         tests/room_idle_expiry_probe.c)
       target_link_libraries(mygames_idle_expiry_probe PRIVATE MyGames::Store)
     endif()
+    add_executable(mygames_game_store_test
+      tests/ddz_turbodb_game_commit_test.c)
+    target_compile_features(mygames_game_store_test PRIVATE c_std_11)
+    target_link_libraries(mygames_game_store_test PRIVATE
+      MyGames::Store MyGames::DouDizhuCheckpoint Orm::C)
+    if(MSVC)
+      target_compile_options(mygames_game_store_test PRIVATE /W4 /WX)
+    else()
+      target_compile_options(mygames_game_store_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME mygames.game_store
+      COMMAND mygames_game_store_test
+        "${TurboDB_DRIVER_DIR}/turbodb_driver_sqlite${CMAKE_SHARED_MODULE_SUFFIX}"
+        "${CMAKE_CURRENT_BINARY_DIR}/mygames-game-store-ci.sqlite")
+
     add_executable(mygames_turbodb_store_test
       tests/room_store_turbodb_test.c)
     target_compile_definitions(mygames_turbodb_store_test PRIVATE
