@@ -1,9 +1,11 @@
 #include "mygames/room_store.h"
+#include "mygames/ddz_match_checkpoint.h"
 
 #include <orm.h>
 #include <orm_runtime.h>
 
 #include <stdbool.h>
+#include <inttypes.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -298,7 +300,13 @@ static mygames_store_status create_schema(mygames_room_store *s) {
         "ticket_sha256 blob not null unique check(length(ticket_sha256)=32),"
         "generation integer not null check(generation>0),"
         "attached integer not null check(attached in (0,1)),"
-        "expires_at_ms integer not null check(expires_at_ms>=0))"
+        "expires_at_ms integer not null check(expires_at_ms>=0))",
+        "create table if not exists mg_game_state ("
+        "room_id text primary key,"
+        "epoch integer not null check(epoch>0),"
+        "game_id integer not null check(game_id>0),"
+        "seq integer not null check(seq>0),"
+        "private_image blob not null check(length(private_image)=216))"
     };
     orm_transaction_t *tx = NULL;
     mygames_store_status st = begin_transaction(s, &tx);
@@ -843,6 +851,206 @@ mygames_store_status mygames_room_store_player_high_watermark(
     return status;
 }
 
+/* M5c: private game image is versioned C11 bytes, never a native C
+ * struct or SQLite file opened by the application. All access stays on the
+ * unique ORM Room Owner; SQL credentials are NOT client-visible. */
+typedef struct stored_private_game {
+    bool found;
+    uint64_t epoch;
+    uint64_t game_id;
+    uint64_t sequence;
+    uint8_t image[MYGAMES_DDZ_CHECKPOINT_V1_BYTES];
+    mygames_ddz_match match;
+} stored_private_game;
+
+static bool game_room_id_valid(const char *name) {
+    size_t i;
+    if (!name) return false;
+    for (i = 0u; i < MYGAMES_ROOM_ID_CAPACITY; ++i) {
+        const unsigned char ch = (unsigned char)name[i];
+        if (!ch) return i != 0u;
+        if (!((ch >= 'a' && ch <= 'z') ||
+              (ch >= 'A' && ch <= 'Z') ||
+              (ch >= '0' && ch <= '9') || ch == '-' || ch == '_'))
+            return false;
+    }
+    return false;
+}
+
+static bool game_matches_room(const mygames_ddz_match *match,
+                              const mygames_room *room) {
+    size_t i;
+    if (!match || !room || room->phase != MYGAMES_ROOM_STARTING ||
+        room->players != MYGAMES_DDZ_SEATS) return false;
+    for (i = 0u; i < MYGAMES_DDZ_SEATS; ++i)
+        if (!room->seats[i].player || !room->seats[i].ready ||
+            room->seats[i].player != match->players[i])
+            return false;
+    return true;
+}
+
+static mygames_store_status private_game_read(
+    mygames_room_store *store, orm_transaction_t *tx,
+    const char *room_id, stored_private_game *out) {
+    const char *sql =
+        "select epoch,game_id,seq,private_image "
+        "from mg_game_state where room_id=?1";
+    orm_value_t arg;
+    orm_result_t *result = NULL;
+    orm_error_t error;
+    orm_blob_t blob = {0};
+    orm_status_t rc;
+    mygames_store_status st;
+    stored_private_game game = {0};
+    uint64_t count = 0u;
+    int64_t epoch = 0, game_id = 0, sequence = 0;
+    if (!store || !game_room_id_valid(room_id) || !out)
+        return MYGAMES_STORE_INVALID;
+    arg = orm_text(room_id);
+    st = backend_query(store, tx, sql, &arg, 1u, &result);
+    if (st != MYGAMES_STORE_OK) return st;
+    orm_error_init(&error);
+    rc = orm_result_row_count(result, &count, &error);
+    if (rc != ORM_STATUS_OK) {
+        st = error_from_orm(store, rc, &error);
+        goto done;
+    }
+    if (count == 0u) goto done;
+    if (count != 1u) { st = MYGAMES_STORE_CORRUPT; goto done; }
+    rc = orm_result_get_int64(result, 0u, 0u, &epoch, &error);
+    if (rc == ORM_STATUS_OK)
+        rc = orm_result_get_int64(result, 0u, 1u, &game_id, &error);
+    if (rc == ORM_STATUS_OK)
+        rc = orm_result_get_int64(result, 0u, 2u, &sequence, &error);
+    if (rc == ORM_STATUS_OK)
+        rc = orm_result_get_blob(result, 0u, 3u, &blob, &error);
+    if (rc != ORM_STATUS_OK) {
+        st = error_from_orm(store, rc, &error);
+        goto done;
+    }
+    if (epoch <= 0 || game_id <= 0 || sequence <= 0 || !blob.data ||
+        blob.size != sizeof(game.image)) {
+        st = MYGAMES_STORE_CORRUPT;
+        goto done;
+    }
+    memcpy(game.image, blob.data, sizeof(game.image));
+    if (mygames_ddz_checkpoint_decode(game.image, sizeof(game.image),
+                                     &game.match) != MYGAMES_DDZ_CHECKPOINT_OK ||
+        game.match.room_epoch != (uint64_t)epoch ||
+        game.match.game_id != (uint64_t)game_id) {
+        st = MYGAMES_STORE_CORRUPT;
+        goto done;
+    }
+    game.epoch = (uint64_t)epoch;
+    game.game_id = (uint64_t)game_id;
+    game.sequence = (uint64_t)sequence;
+    game.found = true;
+done:
+    orm_result_destroy(result);
+    if (st == MYGAMES_STORE_OK) *out = game;
+    return st;
+}
+
+/* Claiming a new Room Owner Epoch fences EVERY durable game in the same
+ * transaction, alongside the public room checkpoint and leases. Do not
+ * revive stale game epochs after restart or let a partial migration commit.
+ * At most 32 private game images exist in this bounded process. */
+static mygames_store_status rebind_private_games(
+    mygames_room_store *store, orm_transaction_t *tx,
+    const mygames_room_directory *rooms, uint64_t old_epoch) {
+    struct game_rebind {
+        char room_id[MYGAMES_ROOM_ID_CAPACITY];
+        uint8_t image[MYGAMES_DDZ_CHECKPOINT_V1_BYTES];
+        uint64_t sequence;
+    } games[MYGAMES_ROOM_DIRECTORY_CAPACITY];
+    orm_result_t *result = NULL;
+    orm_error_t error;
+    orm_status_t rc;
+    mygames_store_status st;
+    uint64_t count = 0u;
+    size_t i;
+    st = backend_query(store, tx,
+        "select room_id,epoch,game_id,seq,private_image "
+        "from mg_game_state order by room_id", NULL, 0u, &result);
+    if (st != MYGAMES_STORE_OK) return st;
+    orm_error_init(&error);
+    rc = orm_result_row_count(result, &count, &error);
+    if (rc != ORM_STATUS_OK) {
+        st = error_from_orm(store, rc, &error);
+        goto done;
+    }
+    if (count > MYGAMES_ROOM_DIRECTORY_CAPACITY) {
+        st = MYGAMES_STORE_CORRUPT;
+        goto done;
+    }
+    for (i = 0u; i < (size_t)count; ++i) {
+        orm_string_view_t name = {0};
+        orm_blob_t blob = {0};
+        int64_t epoch = 0, id = 0, sequence = 0;
+        mygames_ddz_match game = {0};
+        size_t output = 0u;
+        rc = orm_result_get_text(result, i, 0u, &name, &error);
+        if (rc == ORM_STATUS_OK)
+            rc = orm_result_get_int64(result, i, 1u, &epoch, &error);
+        if (rc == ORM_STATUS_OK)
+            rc = orm_result_get_int64(result, i, 2u, &id, &error);
+        if (rc == ORM_STATUS_OK)
+            rc = orm_result_get_int64(result, i, 3u, &sequence, &error);
+        if (rc == ORM_STATUS_OK)
+            rc = orm_result_get_blob(result, i, 4u, &blob, &error);
+        if (rc != ORM_STATUS_OK) {
+            st = error_from_orm(store, rc, &error);
+            goto done;
+        }
+        if (!name.data || name.len == 0u ||
+            name.len >= MYGAMES_ROOM_ID_CAPACITY ||
+            !blob.data || blob.size != MYGAMES_DDZ_CHECKPOINT_V1_BYTES ||
+            epoch <= 0 || (uint64_t)epoch != old_epoch ||
+            id <= 0 || sequence <= 0) {
+            st = MYGAMES_STORE_CORRUPT;
+            goto done;
+        }
+        memcpy(games[i].room_id, name.data, name.len);
+        games[i].room_id[name.len] = '\0';
+        if (!game_room_id_valid(games[i].room_id) ||
+            mygames_ddz_checkpoint_decode(blob.data, blob.size, &game) !=
+                MYGAMES_DDZ_CHECKPOINT_OK ||
+            game.room_epoch != old_epoch || game.game_id != (uint64_t)id ||
+            !game_matches_room(&game,
+                mygames_room_directory_get(rooms, games[i].room_id))) {
+            st = MYGAMES_STORE_CORRUPT;
+            goto done;
+        }
+        game.room_epoch = old_epoch + 1u;
+        if (mygames_ddz_checkpoint_encode(&game, games[i].image,
+                sizeof(games[i].image), &output) != MYGAMES_DDZ_CHECKPOINT_OK ||
+            output != sizeof(games[i].image)) {
+            st = MYGAMES_STORE_CORRUPT;
+            goto done;
+        }
+        games[i].sequence = (uint64_t)sequence;
+    }
+done:
+    orm_result_destroy(result);
+    if (st != MYGAMES_STORE_OK) return st;
+    for (i = 0u; i < (size_t)count; ++i) {
+        orm_value_t args[5];
+        uint64_t affected = 0u;
+        args[0] = orm_i64((int64_t)(old_epoch + 1u));
+        args[1] = orm_blob(games[i].image, sizeof(games[i].image));
+        args[2] = orm_text(games[i].room_id);
+        args[3] = orm_i64((int64_t)old_epoch);
+        args[4] = orm_i64((int64_t)games[i].sequence);
+        st = execute(store, tx,
+            "update mg_game_state set epoch=?1,private_image=?2 "
+            "where room_id=?3 and epoch=?4 and seq=?5",
+            args, 5u, &affected);
+        if (st != MYGAMES_STORE_OK) return st;
+        if (affected != 1u) return MYGAMES_STORE_STALE_EPOCH;
+    }
+    return MYGAMES_STORE_OK;
+}
+
 static mygames_store_status claim_epoch_internal(
     mygames_room_store *store, uint64_t expected_epoch,
     uint64_t recovery_deadline, uint64_t *out_claimed_epoch) {
@@ -883,6 +1091,11 @@ static mygames_store_status claim_epoch_internal(
     if (st != MYGAMES_STORE_OK) return rollback(store, tx, st);
     if (rows != 1u)
         return rollback(store, tx, MYGAMES_STORE_STALE_EPOCH);
+    /* Never claim an epoch while leaving an older process's private game
+     * checkpoint bound to a stale Owner generation. This shares the SAME
+     * atomic transaction with public Room checkpoint and lease fencing. */
+    st = rebind_private_games(store, tx, &decoded, expected_epoch);
+    if (st != MYGAMES_STORE_OK) return rollback(store, tx, st);
     if (recovery_deadline) {
         orm_value_t deadline = orm_i64((int64_t)recovery_deadline);
         st = execute(store, tx,
@@ -1005,6 +1218,148 @@ mygames_store_status mygames_room_store_get_outcome(
     return MYGAMES_STORE_OK;
 }
 
+typedef struct optional_game_commit {
+    const char *room_id;
+    const mygames_ddz_match *previous;
+    const mygames_ddz_match *candidate;
+} optional_game_commit;
+
+/* Validate actual move/bid transition by REEXECUTING the canonical M5b
+ * immutable rule function, rather than trusting a client-supplied or
+ * model-authored candidate. Reject every forged private-hand transition.
+ * A totally fresh game requires either no prior game row, or a finished /
+ * all-pass round with a strictly newer game ID and server CSPRNG deck. */
+static bool game_transition_authorized(
+    const mygames_ddz_match *prior, const mygames_ddz_match *candidate,
+    mygames_player_id player) {
+    mygames_ddz_match derived = {0};
+    mygames_ddz_action_result move = {0};
+    mygames_ddz_bid_result bid = {0};
+    uint8_t expected[MYGAMES_DDZ_CHECKPOINT_V1_BYTES];
+    uint8_t actual[MYGAMES_DDZ_CHECKPOINT_V1_BYTES];
+    size_t expected_size = 0u, actual_size = 0u;
+    unsigned int seat;
+    if (!candidate || player == 0u ||
+        mygames_ddz_match_validate(candidate) != MYGAMES_DDZ_MATCH_OK)
+        return false;
+    for (seat = 0u; seat < MYGAMES_DDZ_SEATS; ++seat)
+        if (candidate->players[seat] == player) break;
+    if (seat == MYGAMES_DDZ_SEATS) return false;
+
+    if (!prior || candidate->game_id != prior->game_id) {
+        if (candidate->phase != MYGAMES_DDZ_MATCH_BIDDING ||
+            candidate->bid_count != 0u || candidate->bid_turn_id != 1u ||
+            candidate->bid_start_seat != seat)
+            return false;
+        if (prior && (candidate->room_epoch != prior->room_epoch ||
+            candidate->game_id <= prior->game_id ||
+            (prior->phase != MYGAMES_DDZ_MATCH_FINISHED &&
+             prior->phase != MYGAMES_DDZ_MATCH_REDEAL_REQUIRED)))
+            return false;
+        return true;
+    }
+
+    if (candidate->room_epoch != prior->room_epoch ||
+        candidate->bid_start_seat != prior->bid_start_seat ||
+        memcmp(candidate->players, prior->players, sizeof(prior->players)) != 0 ||
+        memcmp(candidate->secret_deck, prior->secret_deck,
+               sizeof(prior->secret_deck)) != 0 ||
+        memcmp(candidate->initial_hands, prior->initial_hands,
+               sizeof(prior->initial_hands)) != 0 ||
+        candidate->secret_kitty != prior->secret_kitty)
+        return false;
+    if (prior->phase == MYGAMES_DDZ_MATCH_BIDDING) {
+        const uint8_t score = candidate->highest_bid > prior->highest_bid ?
+            candidate->highest_bid : 0u;
+        if (seat != prior->bid_turn_seat ||
+            mygames_ddz_match_bid(prior, prior->room_epoch, prior->game_id,
+                                  player, prior->bid_turn_id, score,
+                                  &derived, &bid) != MYGAMES_DDZ_MATCH_OK)
+            return false;
+    } else if (prior->phase == MYGAMES_DDZ_MATCH_PLAYING) {
+        const uint64_t cards = candidate->round.played_cards &
+                               ~prior->round.played_cards;
+        if (seat != prior->round.turn_seat ||
+            mygames_ddz_match_play(prior, prior->room_epoch, prior->game_id,
+                                   player, prior->round.turn_id, cards,
+                                   &derived, &move) != MYGAMES_DDZ_MATCH_OK)
+            return false;
+    } else return false;
+    if (mygames_ddz_checkpoint_encode(&derived, expected,
+            sizeof(expected), &expected_size) != MYGAMES_DDZ_CHECKPOINT_OK ||
+        mygames_ddz_checkpoint_encode(candidate, actual,
+            sizeof(actual), &actual_size) != MYGAMES_DDZ_CHECKPOINT_OK)
+        return false;
+    return expected_size == actual_size &&
+           memcmp(expected, actual, expected_size) == 0;
+}
+
+static mygames_store_status game_store_candidate(
+    mygames_room_store *store, orm_transaction_t *tx,
+    const optional_game_commit *game,
+    const mygames_room_directory *rooms,
+    uint64_t epoch, uint64_t expected_sequence, uint64_t next_sequence,
+    mygames_player_id authenticated_player) {
+    stored_private_game existing = {0};
+    uint8_t candidate_image[MYGAMES_DDZ_CHECKPOINT_V1_BYTES];
+    uint8_t prior_image[MYGAMES_DDZ_CHECKPOINT_V1_BYTES];
+    size_t size = 0u, previous_size = 0u;
+    orm_value_t args[6];
+    mygames_store_status st;
+    const mygames_room *room;
+    uint64_t affected = 0u;
+    if (!game || !game_room_id_valid(game->room_id) ||
+        !game->candidate || !rooms ||
+        epoch != game->candidate->room_epoch ||
+        game->candidate->game_id > (uint64_t)INT64_MAX)
+        return MYGAMES_STORE_INVALID;
+    room = mygames_room_directory_get(rooms, game->room_id);
+    if (!game_matches_room(game->candidate, room) ||
+        !game_transition_authorized(game->previous, game->candidate,
+                                    authenticated_player))
+        return MYGAMES_STORE_INVALID;
+    if (mygames_ddz_checkpoint_encode(game->candidate, candidate_image,
+            sizeof(candidate_image), &size) != MYGAMES_DDZ_CHECKPOINT_OK ||
+        size != sizeof(candidate_image))
+        return MYGAMES_STORE_INVALID;
+
+    st = private_game_read(store, tx, game->room_id, &existing);
+    if (st != MYGAMES_STORE_OK) return st;
+    if (existing.found) {
+        if (!game->previous || existing.epoch != epoch ||
+            existing.sequence > expected_sequence ||
+            game->previous->game_id != existing.game_id ||
+            mygames_ddz_checkpoint_encode(game->previous, prior_image,
+                sizeof(prior_image), &previous_size) != MYGAMES_DDZ_CHECKPOINT_OK ||
+            previous_size != sizeof(existing.image) ||
+            memcmp(prior_image, existing.image, sizeof(existing.image)) != 0)
+            return MYGAMES_STORE_STALE_GAME;
+        args[0] = orm_i64((int64_t)epoch);
+        args[1] = orm_i64((int64_t)game->candidate->game_id);
+        args[2] = orm_i64((int64_t)next_sequence);
+        args[3] = orm_blob(candidate_image, sizeof(candidate_image));
+        args[4] = orm_text(game->room_id);
+        args[5] = orm_i64((int64_t)existing.sequence);
+        st = execute(store, tx,
+            "update mg_game_state set epoch=?1,game_id=?2,seq=?3,private_image=?4 "
+            "where room_id=?5 and seq=?6",
+            args, 6u, &affected);
+    } else {
+        if (game->previous != NULL)
+            return MYGAMES_STORE_STALE_GAME;
+        args[0] = orm_text(game->room_id);
+        args[1] = orm_i64((int64_t)epoch);
+        args[2] = orm_i64((int64_t)game->candidate->game_id);
+        args[3] = orm_i64((int64_t)next_sequence);
+        args[4] = orm_blob(candidate_image, sizeof(candidate_image));
+        st = execute(store, tx,
+            "insert into mg_game_state(room_id,epoch,game_id,seq,private_image) "
+            "values(?1,?2,?3,?4,?5)", args, 5u, &affected);
+    }
+    if (st != MYGAMES_STORE_OK) return st;
+    return affected == 1u ? MYGAMES_STORE_OK : MYGAMES_STORE_STALE_GAME;
+}
+
 typedef struct optional_seated_expiry {
     mygames_player_id player;
     uint64_t generation;
@@ -1020,7 +1375,8 @@ static mygames_store_status commit_room_internal(
     const void *response, size_t response_bytes,
     const void *event_payload, size_t event_bytes,
     uint64_t *out_committed_sequence,
-    const optional_seated_expiry *expired) {
+    const optional_seated_expiry *expired,
+    const optional_game_commit *game) {
     orm_transaction_t *tx = NULL;
     persisted_head head = {0};
     recorded_outcome prior = {0};
@@ -1105,6 +1461,13 @@ static mygames_store_status commit_room_internal(
     }
 #endif
 
+    if (game) {
+        status = game_store_candidate(store, tx, game, post_command_rooms,
+                                      expected_epoch, expected_sequence,
+                                      next_seq, player_id);
+        if (status != MYGAMES_STORE_OK) return rollback(store, tx, status);
+    }
+
     if (expired) {
         /* Atomic with Checkpoint+command+Outbox: a recovered or active
          * lease cannot be deleted by stale timer work. */
@@ -1165,7 +1528,82 @@ mygames_store_status mygames_room_store_commit(
     return commit_room_internal(
         store, player_id, post_command_rooms, expected_epoch, expected_sequence,
         request_id, command_digest, response, response_bytes,
-        event_payload, event_bytes, out_committed_sequence, NULL);
+        event_payload, event_bytes, out_committed_sequence, NULL, NULL);
+}
+
+/* This is a trusted Owner-only staging API. The public Outbox event is
+ * derived solely from public scalar fields, not supplied as arbitrary JSON.
+ * Private full-deck checkpoint, game receipt, Room checkpoint and public
+ * Outbox are in the SAME SQLite WAL/FULL transaction. */
+mygames_store_status mygames_room_store_commit_game(
+    mygames_room_store *store, mygames_player_id player_id,
+    const mygames_room_directory *post_command_rooms,
+    const char *room_id,
+    const mygames_ddz_match *expected_previous_match,
+    const mygames_ddz_match *candidate_match,
+    uint64_t expected_epoch, uint64_t expected_sequence,
+    const char *request_id,
+    const uint8_t command_digest[MYGAMES_STORE_COMMAND_DIGEST_BYTES],
+    const void *response, size_t response_bytes,
+    uint64_t *out_committed_sequence) {
+    char event[MYGAMES_STORE_EVENT_MAX];
+    const optional_game_commit game = {
+        room_id, expected_previous_match, candidate_match
+    };
+    uint64_t visible_turn;
+    int count;
+    if (!game_room_id_valid(room_id) || !candidate_match ||
+        expected_sequence >= (uint64_t)INT64_MAX ||
+        mygames_ddz_match_validate(candidate_match) != MYGAMES_DDZ_MATCH_OK)
+        return MYGAMES_STORE_INVALID;
+    visible_turn = candidate_match->phase == MYGAMES_DDZ_MATCH_BIDDING ||
+                   candidate_match->phase == MYGAMES_DDZ_MATCH_REDEAL_REQUIRED ?
+                   candidate_match->bid_turn_id : candidate_match->round.turn_id;
+    count = snprintf(event, sizeof(event),
+        "{\"v\":1,\"type\":\"game.state_committed\","
+        "\"room_id\":\"%s\",\"room_epoch\":%" PRIu64 ","
+        "\"game_id\":%" PRIu64 ",\"phase\":%u,"
+        "\"turn_id\":%" PRIu64 ",\"seq\":%" PRIu64 "}",
+        room_id, expected_epoch, candidate_match->game_id,
+        (unsigned int)candidate_match->phase, visible_turn,
+        expected_sequence + 1u);
+    if (count <= 0 || (size_t)count >= sizeof(event))
+        return MYGAMES_STORE_INVALID;
+    return commit_room_internal(
+        store, player_id, post_command_rooms,
+        expected_epoch, expected_sequence, request_id, command_digest,
+        response, response_bytes, event, (size_t)count,
+        out_committed_sequence, NULL, &game);
+}
+
+mygames_store_status mygames_room_store_load_game(
+    mygames_room_store *store, const char *room_id,
+    mygames_ddz_match *out_match, uint64_t *out_sequence) {
+    mygames_room_directory rooms;
+    stored_private_game game = {0};
+    persisted_head head = {0};
+    mygames_store_status st;
+    bool exists = false;
+    if (!store || !game_room_id_valid(room_id) ||
+        !out_match || !out_sequence) return MYGAMES_STORE_INVALID;
+    if (!owner_valid(store)) return MYGAMES_STORE_QUARANTINED;
+    st = head_read(store, NULL, &head, &exists);
+    if (st != MYGAMES_STORE_OK) return st;
+    if (!exists) return MYGAMES_STORE_UNINITIALIZED;
+    st = verify_head(&head, &rooms);
+    if (st != MYGAMES_STORE_OK) return st;
+    st = validate_journal(store, NULL, head.seq);
+    if (st != MYGAMES_STORE_OK) return st;
+    st = private_game_read(store, NULL, room_id, &game);
+    if (st != MYGAMES_STORE_OK) return st;
+    if (!game.found) return MYGAMES_STORE_NOT_FOUND;
+    if (game.epoch != head.epoch || game.sequence > head.seq ||
+        !game_matches_room(&game.match,
+            mygames_room_directory_get(&rooms, room_id)))
+        return MYGAMES_STORE_CORRUPT;
+    *out_match = game.match;
+    *out_sequence = game.sequence;
+    return MYGAMES_STORE_OK;
 }
 
 mygames_store_status mygames_room_store_expire_seated(
@@ -1185,7 +1623,7 @@ mygames_store_status mygames_room_store_expire_seated(
         store, expired_player, post_expiry_rooms,
         expected_epoch, expected_sequence,
         system_request_id, command_digest, outcome, outcome_bytes,
-        sanitized_event, event_bytes, out_committed_sequence, &expiry);
+        sanitized_event, event_bytes, out_committed_sequence, &expiry, NULL);
 }
 
 mygames_store_status mygames_room_store_next_event(

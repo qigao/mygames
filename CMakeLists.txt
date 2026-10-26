@@ -51,6 +51,20 @@ else()
   target_compile_options(mygames_ddz_match PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
 
+# M5c: portable, fixed-size canonical PRIVATE match state codec. No native
+# file persistence and no public game-state serialization API is provided.
+add_library(mygames_ddz_checkpoint STATIC
+  games/doudizhu/src/ddz_match_checkpoint.c)
+add_library(MyGames::DouDizhuCheckpoint ALIAS mygames_ddz_checkpoint)
+target_compile_features(mygames_ddz_checkpoint PUBLIC c_std_11)
+target_include_directories(mygames_ddz_checkpoint PUBLIC games/doudizhu/include)
+target_link_libraries(mygames_ddz_checkpoint PUBLIC MyGames::DouDizhuMatch)
+if(MSVC)
+  target_compile_options(mygames_ddz_checkpoint PRIVATE /W4 /WX)
+else()
+  target_compile_options(mygames_ddz_checkpoint PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+
 # The recovery admission core is pure C11; no network, database or
 # fallback implementation is linked into this policy target.
 add_library(mygames_recovery_gate STATIC
@@ -91,6 +105,9 @@ endif()
 include(CTest)
 if(MYGAMES_ENABLE_TURBODB)
   find_package(TurboDB CONFIG REQUIRED)
+  # The durable CFlow Game Owner hashes normalized actions with Salts::Core.
+  # No separate or mixed native SDK is brought in.
+  find_package(Salts CONFIG REQUIRED)
   add_library(mygames_room_store STATIC
     games/doudizhu/src/room_store_turbodb.c)
   add_library(MyGames::Store ALIAS mygames_room_store)
@@ -136,7 +153,22 @@ if(MYGAMES_ENABLE_TURBODB)
   target_include_directories(mygames_room_store PUBLIC
     games/doudizhu/include)
   target_link_libraries(mygames_room_store PUBLIC
-    MyGames::Room PRIVATE Orm::C)
+    MyGames::Room MyGames::DouDizhuCheckpoint PRIVATE Orm::C)
+
+  # Production candidate: the same thread-affine CFlow Room Owner drives
+  # these stage->TurboDB COMMIT->Game ACK operations. No worker or network
+  # callback is created by this library itself.
+  add_library(mygames_ddz_game_owner STATIC
+    games/doudizhu/src/ddz_game_owner.c)
+  add_library(MyGames::DouDizhuGameOwner ALIAS mygames_ddz_game_owner)
+  target_compile_features(mygames_ddz_game_owner PUBLIC c_std_11)
+  target_include_directories(mygames_ddz_game_owner PUBLIC games/doudizhu/include)
+  target_link_libraries(mygames_ddz_game_owner PUBLIC MyGames::Store PRIVATE Salts::Core)
+  if(MSVC)
+    target_compile_options(mygames_ddz_game_owner PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_ddz_game_owner PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  endif()
   if(MSVC)
     target_compile_options(mygames_room_store PRIVATE /W4 /WX)
   else()
@@ -156,6 +188,39 @@ if(MYGAMES_ENABLE_TURBODB)
         tests/room_idle_expiry_probe.c)
       target_link_libraries(mygames_idle_expiry_probe PRIVATE MyGames::Store)
     endif()
+    add_executable(mygames_game_owner_test
+      tests/ddz_game_owner_integration_test.c)
+    target_compile_features(mygames_game_owner_test PRIVATE c_std_11)
+    target_compile_definitions(mygames_game_owner_test PRIVATE MYGAMES_STORE_FAULT_TESTING=1)
+    target_link_libraries(mygames_game_owner_test PRIVATE
+      MyGames::DouDizhuGameOwner MyGames::Store Salts::Core)
+    if(MSVC)
+      target_compile_options(mygames_game_owner_test PRIVATE /W4 /WX)
+    else()
+      target_compile_options(mygames_game_owner_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME mygames.game_owner
+      COMMAND mygames_game_owner_test
+        "${TurboDB_DRIVER_DIR}/turbodb_driver_sqlite${CMAKE_SHARED_MODULE_SUFFIX}"
+        "${CMAKE_CURRENT_BINARY_DIR}/mygames-game-owner-ci.sqlite")
+
+    add_executable(mygames_game_store_test
+      tests/ddz_turbodb_game_commit_test.c)
+    target_compile_definitions(mygames_game_store_test PRIVATE
+      MYGAMES_STORE_FAULT_TESTING=1)
+    target_compile_features(mygames_game_store_test PRIVATE c_std_11)
+    target_link_libraries(mygames_game_store_test PRIVATE
+      MyGames::Store MyGames::DouDizhuCheckpoint Orm::C)
+    if(MSVC)
+      target_compile_options(mygames_game_store_test PRIVATE /W4 /WX)
+    else()
+      target_compile_options(mygames_game_store_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME mygames.game_store
+      COMMAND mygames_game_store_test
+        "${TurboDB_DRIVER_DIR}/turbodb_driver_sqlite${CMAKE_SHARED_MODULE_SUFFIX}"
+        "${CMAKE_CURRENT_BINARY_DIR}/mygames-game-store-ci.sqlite")
+
     add_executable(mygames_turbodb_store_test
       tests/room_store_turbodb_test.c)
     target_compile_definitions(mygames_turbodb_store_test PRIVATE
@@ -171,6 +236,15 @@ endif()
 
 
 if(BUILD_TESTING)
+  add_executable(mygames_ddz_checkpoint_test tests/ddz_match_checkpoint_test.c)
+  target_compile_features(mygames_ddz_checkpoint_test PRIVATE c_std_11)
+  target_link_libraries(mygames_ddz_checkpoint_test PRIVATE MyGames::DouDizhuCheckpoint)
+  if(MSVC)
+    target_compile_options(mygames_ddz_checkpoint_test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_ddz_checkpoint_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME mygames.ddz_checkpoint COMMAND mygames_ddz_checkpoint_test)
   # A deterministic entropy provider exists ONLY in CTest-linked source
   # builds, not in a production/installed match binary or network API.
   target_compile_definitions(mygames_ddz_match PRIVATE MYGAMES_DDZ_MATCH_TESTING=1)

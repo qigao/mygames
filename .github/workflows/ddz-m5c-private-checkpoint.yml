@@ -1,0 +1,82 @@
+name: M5c private game checkpoint C11 qualification
+
+'on':
+  pull_request:
+    paths:
+      - 'games/doudizhu/src/ddz_match_checkpoint.c'
+      - 'games/doudizhu/include/mygames/ddz_match_checkpoint.h'
+      - 'tests/ddz_match_checkpoint_test.c'
+      - 'games/doudizhu/src/ddz_match.c'
+      - 'games/doudizhu/src/ddz_round.c'
+      - 'CMakeLists.txt'
+      - '.github/workflows/ddz-m5c-private-checkpoint.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mygames-m5c-checkpoint-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host-c11:
+    name: Private checkpoint / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Configure pure C11; do not restore network or database SDK
+        run: >-
+          cmake -S . -B build/m5c -DBUILD_TESTING=ON
+          -DMYGAMES_ENABLE_TURBODB=OFF -DMYGAMES_ENABLE_FLOWIE=OFF
+          -DMYGAMES_ENABLE_GATEWAY=OFF
+      - name: Build full host-native game core with warnings as errors
+        run: cmake --build build/m5c --config Debug --parallel 2
+      - name: Run entire prior and current C11 suite
+        run: >-
+          ctest --test-dir build/m5c -C Debug --output-on-failure --timeout 90
+          --no-tests=error
+      - name: Repeat private state codec and corruption oracle
+        run: >-
+          ctest --test-dir build/m5c -C Debug --output-on-failure --timeout 90
+          --no-tests=error --repeat until-fail:20
+          -R '^mygames[.]ddz_checkpoint$'
+
+  source-asan:
+    name: Private checkpoint / Linux ASan+UBSan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Compile actual C11 card/deal/codec source with sanitizers
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build/m5c-asan \
+            -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON \
+            -DMYGAMES_ENABLE_GATEWAY=OFF -DMYGAMES_ENABLE_TURBODB=OFF \
+            -DMYGAMES_ENABLE_FLOWIE=OFF \
+            -DCMAKE_C_FLAGS='-fsanitize=address,undefined -g -fno-omit-frame-pointer -Wall -Wextra -Wpedantic -Werror' \
+            -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=address,undefined'
+          cmake --build build/m5c-asan --parallel 2 --target mygames_ddz_checkpoint_test
+      - name: Repeat genuine private game checkpoint tests
+        shell: bash
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          set -euo pipefail
+          ctest --test-dir build/m5c-asan --no-tests=error \
+            --output-on-failure --timeout 90 --repeat until-fail:20 \
+            -R '^mygames[.]ddz_checkpoint$'
