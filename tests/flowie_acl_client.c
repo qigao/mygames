@@ -148,6 +148,79 @@ static bool read_positive_field(const char *json, const char *field,
     return true;
 }
 
+/* An explicitly test-only overlap of one genuine Flowie MQTT callback and
+ * an independently validated canonical HISTORY page with the same seq.
+ * No CHttp transport is faked here: the actual separate port14 HTTPS tests
+ * qualify remote transport; this test qualifies one in-process ledger Owner.
+ * Flowie #22 native delayed PUBACK remains NOT IMPLEMENTED. */
+static bool project_received_owner(const probe *p, const char *namespace_id,
+                                   const char *expected,
+                                   uint64_t owner_epoch, uint64_t seq) {
+    mygames_store_archive_page page = {0};
+    mygames_recovery_grant grant = {0};
+    mygames_owner_ticket history[MYGAMES_STORE_ARCHIVE_PAGE_MAX];
+    char encoded[MYGAMES_RECOVERY_RESPONSE_MAX];
+    uint64_t cursor = 0u, effects = 0u;
+    size_t used = 0u, admitted = 0u;
+    mygames_owner_result first, second;
+    bool valid;
+    int n;
+    if (!p || !p->owner || !p->projection || !namespace_id ||
+        !owner_epoch || !seq || seq > (uint64_t)INT64_MAX)
+        return false;
+    if (mygames_consumer_projection_snapshot(
+            p->projection, namespace_id, "backend-projection-v1",
+            &cursor, &effects) != MYGAMES_CONSUMER_APPLIED ||
+        cursor != effects ||
+        (cursor != seq && cursor + 1u != seq))
+        return false;
+    grant.generation = 1u;
+    grant.after_committed_seq = seq - 1u;
+    grant.page_limit = 1u;
+    n = snprintf(grant.source_namespace, sizeof(grant.source_namespace),
+                 "%s", namespace_id);
+    if (n <= 0 || (size_t)n >= sizeof(grant.source_namespace)) return false;
+    n = snprintf(grant.consumer_id, sizeof(grant.consumer_id),
+                 "%s", "backend-projection-v1");
+    if (n <= 0 || (size_t)n >= sizeof(grant.consumer_id)) return false;
+    page.epoch = owner_epoch;
+    page.checkpoint_sequence = seq;
+    page.retained_from_sequence = 1u;
+    page.resume_after_sequence = seq;
+    page.count = 1u;
+    page.items[0].sequence = seq;
+    page.items[0].size = p->received_size;
+    memcpy(page.items[0].payload, p->received_payload, p->received_size);
+    if (mygames_recovery_encode_page(
+            &grant, &page, mygames_outbox_public_event_validate,
+            encoded, sizeof(encoded), &used) != MYGAMES_RECOVERY_WIRE_OK ||
+        mygames_consumer_owner_admit_history(
+            p->owner, encoded, used, seq - 1u,
+            history, MYGAMES_STORE_ARCHIVE_PAGE_MAX, &admitted) !=
+            MYGAMES_OWNER_OK || admitted != 1u)
+        return false;
+
+    first = mygames_consumer_owner_pump_one(p->owner, &cursor);
+    second = mygames_consumer_owner_pump_one(p->owner, &cursor);
+    if ((first != MYGAMES_OWNER_APPLIED &&
+         first != MYGAMES_OWNER_REPLAY) ||
+        second != MYGAMES_OWNER_REPLAY ||
+        mygames_consumer_projection_snapshot(
+            p->projection, namespace_id, "backend-projection-v1",
+            &cursor, &effects) != MYGAMES_CONSUMER_APPLIED ||
+        cursor != seq || effects != seq)
+        return false;
+    valid = (expected && strcmp(expected, "applied") == 0 &&
+             first == MYGAMES_OWNER_APPLIED) ||
+            (expected && strcmp(expected, "replay") == 0 &&
+             first == MYGAMES_OWNER_REPLAY);
+    if (valid)
+        printf("FLOWIE_ACL_PROJECTION_%s count=%llu seq=%llu\n",
+               first == MYGAMES_OWNER_REPLAY ? "REPLAY" : "APPLIED",
+               (unsigned long long)effects, (unsigned long long)cursor);
+    return valid;
+}
+
 static bool project_received_event(const probe *p) {
     const char *database = getenv("MYGAMES_TEST_PROJECTION_DB");
     const char *driver = getenv("MYGAMES_TEST_PROJECTION_DRIVER");
@@ -167,6 +240,8 @@ static bool project_received_event(const probe *p) {
         !mygames_outbox_public_event_validate(p->received_payload,
                                               p->received_size, epoch, seq))
         return false;
+    if (p->owner)
+        return project_received_owner(p, ns, expected, epoch, seq);
     if (cmeta_sha256(p->received_payload, p->received_size, hash) != SALTS_OK)
         return false;
     status = mygames_consumer_projection_open(driver, database, &projection);
