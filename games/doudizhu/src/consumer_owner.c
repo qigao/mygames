@@ -35,6 +35,10 @@ struct mygames_consumer_owner {
     bool processing;
     bool closed;
     bool quarantined;
+#ifdef MYGAMES_CONSUMER_OWNER_TESTING
+    mygames_owner_test_taken_hook test_taken_hook;
+    void *test_taken_user;
+#endif
     owner_event slots[MYGAMES_OWNER_TOTAL_SLOTS];
 };
 
@@ -320,6 +324,14 @@ mygames_owner_result mygames_consumer_owner_pump_one(
     owner->slots[index].state = SLOT_TAKEN;
     cmeta_mutex_unlock(&owner->lock);
 
+#ifdef MYGAMES_CONSUMER_OWNER_TESTING
+    /* Slot remains TAKEN and process-level Owner remains live while
+     * another thread tests cancel and begin_close. Its hook MUST finish
+     * before this sole Owner accesses its borrowed ledger. */
+    if (owner->test_taken_hook)
+        owner->test_taken_hook(owner->test_taken_user);
+#endif
+
     if (cmeta_sha256(selected.payload, selected.payload_size,
                      digest) != SALTS_OK) {
         rc = MYGAMES_OWNER_QUARANTINED;
@@ -354,6 +366,29 @@ complete:
         *out_committed_cursor = current;
     return rc;
 }
+
+#ifdef MYGAMES_CONSUMER_OWNER_TESTING
+mygames_owner_result mygames_consumer_owner_test_set_taken_hook(
+    mygames_consumer_owner *owner, mygames_owner_test_taken_hook hook,
+    void *user) {
+    if (!owner ||
+        cmeta_thread_affine_check(&owner->thread, owner) != SALTS_OK)
+        return MYGAMES_OWNER_INVALID;
+    cmeta_mutex_lock(&owner->lock);
+    if (owner->closed) {
+        cmeta_mutex_unlock(&owner->lock);
+        return MYGAMES_OWNER_CLOSED;
+    }
+    if (owner->processing || owner->quarantined) {
+        cmeta_mutex_unlock(&owner->lock);
+        return MYGAMES_OWNER_BUSY;
+    }
+    owner->test_taken_hook = hook;
+    owner->test_taken_user = user;
+    cmeta_mutex_unlock(&owner->lock);
+    return MYGAMES_OWNER_OK;
+}
+#endif
 
 mygames_owner_result mygames_consumer_owner_begin_close(
     mygames_consumer_owner *owner) {
