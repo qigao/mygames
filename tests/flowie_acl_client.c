@@ -5,6 +5,8 @@
 #include <flowie_mqtt_client.h>
 #include "mygames/consumer_projection.h"
 #include "mygames/outbox_dispatch.h"
+#include "mygames/consumer_owner.h"
+#include "mygames/recovery_wire.h"
 #include <cmeta_crypto.h>
 #include <salts/clock.h>
 #include <salts/thread.h>
@@ -27,7 +29,12 @@ typedef struct probe {
     atomic_bool received;
     uint8_t received_payload[MYGAMES_STORE_EVENT_MAX + 1u];
     size_t received_size; /* published by received release store */
+    mygames_consumer_owner *owner; /* callback-borrowed until Flowie destroyed */
+    mygames_consumer_projection *projection;
+    mygames_owner_ticket mqtt_ticket;
 } probe;
+static bool read_positive_field(const char *json, const char *field,
+                                uint64_t *out);
 
 static bool wait_bool(atomic_bool *flag, uint64_t deadline_ms) {
     const uint64_t start = cmeta_monotonic_ms();
@@ -102,6 +109,19 @@ static int on_message(flowie_mqtt_client_t *client,
            message->payload.size);
     p->received_payload[message->payload.size] = 0u;
     p->received_size = message->payload.size;
+    if (p->owner) {
+        uint64_t epoch = 0u, seq = 0u;
+        /* Callback copied borrowed Flowie bytes above. This is queue
+         * admission ONLY; Flowie 1.0.4 auto-PUBACK may precede DB COMMIT. */
+        if (!read_positive_field((const char *)p->received_payload,
+                                 "\"room_epoch\":", &epoch) ||
+            !read_positive_field((const char *)p->received_payload,
+                                 "\"seq\":", &seq) ||
+            mygames_consumer_owner_admit_mqtt(
+                p->owner, TOPIC, p->received_payload, p->received_size,
+                epoch, seq, &p->mqtt_ticket) != MYGAMES_OWNER_OK)
+            return SALTS_ENOBUFS;
+    }
     atomic_store_explicit(&p->received, true, memory_order_release);
     return SALTS_OK;
 }
@@ -193,7 +213,8 @@ int main(int argc, char **argv) {
     expect_connect = strcmp(mode, "bad-secret") != 0;
     if (strcmp(mode, "subscriber") == 0 ||
         strcmp(mode, "subscriber-listen") == 0 ||
-        strcmp(mode, "subscriber-no-commit") == 0) {
+        strcmp(mode, "subscriber-no-commit") == 0 ||
+        strcmp(mode, "subscriber-owner") == 0) {
         identity = "svc-consumer";
         password = getenv("MYGAMES_TEST_CONSUMER_SECRET");
         client_id = "mygames-consumer-v1";
@@ -236,6 +257,24 @@ int main(int argc, char **argv) {
         client_id = "mygames-outbox-v1";
     } else return 2;
     if (!password || !password[0]) return 2;
+    p.owner = NULL;
+    p.projection = NULL;
+    p.mqtt_ticket = (mygames_owner_ticket){0};
+    if (strcmp(mode, "subscriber-owner") == 0) {
+        const char *db = getenv("MYGAMES_TEST_PROJECTION_DB");
+        const char *driver = getenv("MYGAMES_TEST_PROJECTION_DRIVER");
+        const char *ns = getenv("MYGAMES_TEST_SOURCE_NAMESPACE");
+        if (!db || !driver || !ns ||
+            mygames_consumer_projection_open(
+                driver, db, &p.projection) != MYGAMES_CONSUMER_APPLIED)
+            return 2;
+        if (mygames_consumer_owner_open(
+                p.projection, ns, "backend-projection-v1",
+                &p.owner) != MYGAMES_OWNER_OK) {
+            mygames_consumer_projection_close(p.projection);
+            return 2;
+        }
+    }
     atomic_init(&p.connect_done, false);
     atomic_init(&p.connect_allowed, false);
     atomic_init(&p.operation_done, false);
@@ -254,7 +293,8 @@ int main(int argc, char **argv) {
     config.on_publish = on_publish;
     config.user_data = &p;
     if ((strcmp(mode, "subscriber-listen") == 0 ||
-         strcmp(mode, "subscriber-no-commit") == 0)) {
+         strcmp(mode, "subscriber-no-commit") == 0 ||
+         strcmp(mode, "subscriber-owner") == 0)) {
         handler.filter = (flowie_mqtt_span_t){
             (const uint8_t *)TOPIC, sizeof(TOPIC) - 1u};
         handler.on_message = on_message;
@@ -310,10 +350,12 @@ int main(int argc, char **argv) {
         if (atomic_load_explicit(&p.operation_allowed, memory_order_acquire) !=
             (strcmp(mode, "subscriber") == 0 ||
              strcmp(mode, "subscriber-listen") == 0 ||
-             strcmp(mode, "subscriber-no-commit") == 0))
+             strcmp(mode, "subscriber-no-commit") == 0 ||
+             strcmp(mode, "subscriber-owner") == 0))
             goto cleanup;
         if ((strcmp(mode, "subscriber-listen") == 0 ||
-         strcmp(mode, "subscriber-no-commit") == 0)) {
+         strcmp(mode, "subscriber-no-commit") == 0 ||
+         strcmp(mode, "subscriber-owner") == 0)) {
             puts("FLOWIE_ACL_SUBSCRIBER_READY");
             fflush(stdout);
             if (!wait_bool(&p.received, 9000u)) goto cleanup;
@@ -354,6 +396,12 @@ int main(int argc, char **argv) {
 cleanup:
     if (client && flowie_mqtt_client_try_destroy(client, 5000u) != SALTS_OK)
         return 5;
+    /* Flowie callback borrows the Owner pointer; stop/join Flowie before
+     * freeing Owner and its private consumer DB connection. */
+    if (p.owner &&
+        mygames_consumer_owner_destroy(p.owner) != MYGAMES_OWNER_OK)
+        return 5;
+    mygames_consumer_projection_close(p.projection);
     if (!rc)
         printf("FLOWIE_ACL_TEST_PASS %s\n", mode);
     else
