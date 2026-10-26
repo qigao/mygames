@@ -44,14 +44,17 @@ def stop_with_line(proc: subprocess.Popen, label: str) -> None:
 
 
 def main() -> int:
-    if len(sys.argv) != 9:
+    if len(sys.argv) not in (9, 10) or (
+        len(sys.argv) == 10 and sys.argv[9] != "--native"
+    ):
         raise SystemExit(
             "usage: ci_flowie_owner_live_mtls.py broker subscriber "
             "outbox-publisher seed outbox-audit consumer-audit "
-            "recovery-service sqlite-plugin"
+            "recovery-service sqlite-plugin [--native]"
         )
+    native = len(sys.argv) == 10
     broker, subscriber, publisher, seed, audit, consumer_audit, service, plugin = [
-        str(pathlib.Path(v).resolve()) for v in sys.argv[1:]
+        str(pathlib.Path(v).resolve()) for v in sys.argv[1:9]
     ]
     with tempfile.TemporaryDirectory(prefix="mygames-owner-live-mtls-") as temp:
         root = pathlib.Path(temp)
@@ -71,6 +74,11 @@ def main() -> int:
         env["MYGAMES_TEST_PROJECTION_DB"] = str(ledger_db)
         env["MYGAMES_TEST_PROJECTION_DRIVER"] = plugin
         env["MYGAMES_TEST_SOURCE_NAMESPACE"] = namespace
+        hold_file = root / "release-native-http-reply"
+        if native:
+            # Test-only deterministic request hold; the real MQTT publisher
+            # settles while native CHttp Client's GET is still outstanding.
+            env["MYGAMES_RECOVERY_TEST_HOLD_FILE"] = str(hold_file)
 
         run([seed, plugin, str(source_db), "--seed"], env)
         run([audit, plugin, str(source_db), "1"], env)
@@ -114,60 +122,91 @@ def main() -> int:
                 with (root / "subscriber.log").open(
                     "w+t", encoding="utf-8"
                 ) as subscriber_log:
+                    subenv = env.copy()
+                    if native:
+                        subenv.update({
+                            "MYGAMES_TEST_RECOVERY_PORT": str(port),
+                            "MYGAMES_TEST_RECOVERY_CA": str(ca),
+                            "MYGAMES_TEST_RECOVERY_CERT": str(client_crt),
+                            "MYGAMES_TEST_RECOVERY_KEY": str(client_key),
+                        })
                     sub = subprocess.Popen(
-                        [subscriber, "subscriber-owner-mtls"],
+                        [subscriber,
+                         "subscriber-owner-native" if native
+                         else "subscriber-owner-mtls"],
                         stdin=subprocess.PIPE, stdout=subscriber_log,
-                        stderr=subprocess.STDOUT, env=env,
+                        stderr=subprocess.STDOUT, env=subenv,
                     )
                     try:
                         check_ready(
                             sub, subscriber_log,
                             "FLOWIE_ACL_SUBSCRIBER_READY")
 
-                        # Use the DEFAULT OpenSSL TLS1.3 X25519-first HRR
-                        # profile + compatibility CCS, with server SAN and
-                        # CA verification and the matching client cert.
-                        tls = ssl.create_default_context(cafile=str(ca))
-                        tls.minimum_version = ssl.TLSVersion.TLSv1_3
-                        tls.maximum_version = ssl.TLSVersion.TLSv1_3
-                        tls.load_cert_chain(str(client_crt), str(client_key))
-                        assert tls.options & ssl.OP_ENABLE_MIDDLEBOX_COMPAT
-                        url = (
-                            f"https://127.0.0.1:{port}"
-                            "/internal/recovery/v1/events?after=0&limit=1"
-                        )
-                        with urllib.request.urlopen(
-                            urllib.request.Request(url, method="GET"),
-                            context=tls, timeout=8
-                        ) as response:
-                            if response.status != 200:
-                                raise AssertionError("Authenticated GET not 200")
-                            raw_page = response.read(32769)
-                        if len(raw_page) == 0 or len(raw_page) > 32768:
-                            raise AssertionError("HTTP response violates bound")
-                        decoded = json.loads(raw_page)
-                        if (decoded.get("source_namespace") != namespace or
-                            decoded.get("consumer_id") != consumer_id or
-                            decoded.get("resume_after") != 1 or
-                            [v["seq"] for v in decoded.get("events", [])] != [1]):
-                            raise AssertionError("Authenticated history mismatched")
+                        if native:
+                            check_ready(
+                                sub, subscriber_log,
+                                "FLOWIE_OWNER_NATIVE_HTTP_STARTED")
+                            assert recovery.stdout is not None
+                            ready, _, _ = select.select(
+                                [recovery.stdout], [], [], 12)
+                            if not ready:
+                                raise AssertionError(
+                                    "Native CHttp GET did not reach TLS source")
+                            held = recovery.stdout.readline().decode(
+                                "ascii").strip()
+                            if held != "MYGAMES_RECOVERY_TEST_HTTP_HELD":
+                                raise AssertionError(
+                                    "Native TLS source hold marker: " + held)
+                            # Native CHttp request is provably outstanding
+                            # while the real Flowie subscriber receives QoS1.
+                            run([publisher, plugin, str(source_db), "--once"], env)
+                            hold_file.write_text("release", encoding="ascii")
+                        else:
+                            # Use the DEFAULT OpenSSL TLS1.3 X25519-first HRR
+                            # profile + compatibility CCS, with server SAN and
+                            # CA verification and the matching client cert.
+                            tls = ssl.create_default_context(cafile=str(ca))
+                            tls.minimum_version = ssl.TLSVersion.TLSv1_3
+                            tls.maximum_version = ssl.TLSVersion.TLSv1_3
+                            tls.load_cert_chain(str(client_crt), str(client_key))
+                            assert tls.options & ssl.OP_ENABLE_MIDDLEBOX_COMPAT
+                            url = (
+                                f"https://127.0.0.1:{port}"
+                                "/internal/recovery/v1/events?after=0&limit=1"
+                            )
+                            with urllib.request.urlopen(
+                                urllib.request.Request(url, method="GET"),
+                                context=tls, timeout=8
+                            ) as response:
+                                if response.status != 200:
+                                    raise AssertionError("Authenticated GET not 200")
+                                raw_page = response.read(32769)
+                            if len(raw_page) == 0 or len(raw_page) > 32768:
+                                raise AssertionError("HTTP response violates bound")
+                            decoded = json.loads(raw_page)
+                            if (decoded.get("source_namespace") != namespace or
+                                decoded.get("consumer_id") != consumer_id or
+                                decoded.get("resume_after") != 1 or
+                                [v["seq"] for v in decoded.get("events", [])] != [1]):
+                                raise AssertionError("Authenticated history mismatched")
 
-                        # This is deliberately a bounded IPC handoff to the
-                        # same Owner process, NOT an alternate production
-                        # network client. The callback arrives independently
-                        # from a real Flowie broker in its worker thread.
-                        assert sub.stdin is not None
-                        sub.stdin.write(f"{len(raw_page)}\n".encode("ascii"))
-                        sub.stdin.write(raw_page)
-                        sub.stdin.flush()
-                        run([publisher, plugin, str(source_db), "--once"], env)
+                            # This is deliberately a bounded IPC handoff to the
+                            # same Owner process, NOT an alternate production
+                            # network client. The callback arrives independently
+                            # from a real Flowie broker in its worker thread.
+                            assert sub.stdin is not None
+                            sub.stdin.write(f"{len(raw_page)}\n".encode("ascii"))
+                            sub.stdin.write(raw_page)
+                            sub.stdin.flush()
+                            run([publisher, plugin, str(source_db), "--once"], env)
                         sub.wait(timeout=14)
                         subscriber_log.seek(0)
                         actual = subscriber_log.read()
-                        if sub.returncode != 0 or (
-                            "FLOWIE_OWNER_REAL_MTLS_HISTORY_PASS"
-                            not in actual
-                        ):
+                        marker = (
+                            "FLOWIE_OWNER_NATIVE_CHTTP_AND_MQTT_PASS"
+                            if native else "FLOWIE_OWNER_REAL_MTLS_HISTORY_PASS"
+                        )
+                        if sub.returncode != 0 or marker not in actual:
                             raise AssertionError(
                                 "M4.4 real network Owner failed: "
                                 + actual[-2200:]
@@ -189,10 +228,16 @@ def main() -> int:
                 if accepted != 1:
                     raise AssertionError(
                         f"Expected exactly one Broker event, got {accepted}")
-                print("mygames.flowie_owner_real_mtls: PASS "
-                      "broker MQTT ingress + real CA-verified HTTPS page "
-                      "under one bounded Owner, one durable effect/receipt",
-                      flush=True)
+                print(
+                    "mygames.flowie_owner_native_chttp: PASS "
+                    "native CHttp TLS GET overlapped actual Flowie MQTT "
+                    "callback under one Consumer Owner, one durable receipt"
+                    if native else
+                    "mygames.flowie_owner_real_mtls: PASS "
+                    "broker MQTT ingress + real CA-verified HTTPS page "
+                    "under one bounded Owner, one durable effect/receipt",
+                    flush=True
+                )
             finally:
                 if recovery is not None:
                     try:
