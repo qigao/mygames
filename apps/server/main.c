@@ -441,6 +441,12 @@ static bool ticket_sha256(const char *token,
 }
 #endif
 
+#if defined(MYGAMES_WITH_TURBODB)
+static void send_game_snapshot_after_reconnect(
+    dev_server_state *state, const chttp_server_websocket_session *session,
+    const mygames_room *room);
+#endif
+
 static void handle_session_resume(dev_server_state *state, client_peer *peer,
                                   const chttp_server_websocket_session *session,
                                   const mygames_wire_command *command) {
@@ -555,6 +561,15 @@ static void handle_session_resume(dev_server_state *state, client_peer *peer,
         char snapshot[1024];
         if (encode_snapshot(state, room, snapshot, sizeof(snapshot)))
             (void)send_text(session, snapshot);
+#if defined(MYGAMES_WITH_TURBODB)
+        /* A reconnected Cocos client does not know the SERVER-minted
+         * game_id until it receives a public Game snapshot. Send one
+         * AFTER binding the rotated session credential and room snapshot.
+         * No unplayed cards or secret kitty leave the Game Owner. */
+        if (room->phase == MYGAMES_ROOM_STARTING && state->store &&
+            !state->store_halted)
+            send_game_snapshot_after_reconnect(state, session, room);
+#endif
     }
 }
 
@@ -647,6 +662,32 @@ static bool encode_game_snapshot(const mygames_ddz_game_owner *owner,
             (unsigned)view.round.remaining[2], (unsigned)view.round.winner_seat);
     }
     return length > 0 && (size_t)length < capacity;
+}
+
+/* Once the independently authenticated session has reattached to its
+ * persisted seat, replay ONLY the public current game state. The browser
+ * must separately request its own private hand from a fresh game.hand ID.
+ * An invalid private checkpoint halts admissions rather than inventing
+ * an empty game after process recovery. */
+static void send_game_snapshot_after_reconnect(
+    dev_server_state *state, const chttp_server_websocket_session *session,
+    const mygames_room *room) {
+    mygames_ddz_game_owner owner = {0};
+    char public_data[768];
+    mygames_ddz_owner_status result;
+    if (!state || !state->store || !room ||
+        room->phase != MYGAMES_ROOM_STARTING) return;
+    result = mygames_ddz_game_owner_init(&owner, state->store, &state->rooms,
+                  state->room_epoch, &state->durable_sequence, room->id);
+    if (result != MYGAMES_DDZ_OWNER_OK) {
+        state->store_halted = true;
+        return;
+    }
+    if (owner.has_match &&
+        encode_game_snapshot(&owner, "resume-public-game", public_data,
+                             sizeof(public_data)))
+        (void)send_text(session, public_data);
+    mygames_ddz_game_owner_reset(&owner);
 }
 
 /* Commit happens BEFORE any public fanout. Only current bound members of
