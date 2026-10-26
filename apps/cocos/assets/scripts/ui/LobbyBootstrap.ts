@@ -4,6 +4,8 @@ import {
 } from 'cc';
 import {GameSocket} from '../net/GameSocket';
 import {RoomStore} from '../state/RoomStore';
+import {GameStore} from '../state/GameStore';
+import {GameTableView} from './GameTableView';
 import type {ConnectionState} from '../net/GameSocket';
 import type {RoomSnapshot, ServerFrame} from '../net/Protocol';
 
@@ -34,6 +36,8 @@ export class LobbyBootstrap extends Component {
     public autoConnect = true;
 
     private readonly rooms = new RoomStore();
+    private readonly games = new GameStore();
+    private gameTable: GameTableView | null = null;
     private socket: GameSocket | null = null;
     private playerId: string | null = null;
 
@@ -56,13 +60,19 @@ export class LobbyBootstrap extends Component {
     protected onDestroy(): void {
         this.socket?.disconnect();
         this.socket = null;
+        this.games.reset();
+        this.gameTable?.destroy();
+        this.gameTable = null;
     }
 
     private onConnectionState(state: ConnectionState, reason?: string): void {
-        if ((state === 'offline' || state === 'failed') &&
-            !this.socket?.canResume) {
-            this.rooms.reset();
-            this.playerId = null;
+        if (state === 'offline' || state === 'failed') {
+            this.games.suspend(); // clear private cards, not the durable game ID
+            if (!this.socket?.canResume) {
+                this.rooms.reset();
+                this.games.reset();
+                this.playerId = null;
+            }
             this.renderRoom();
         }
         if (this.statusText) {
@@ -82,10 +92,14 @@ export class LobbyBootstrap extends Component {
             this.playerId = frame.player_id ?? null;
             if (this.identityText)
                 this.identityText.string = '开发会话 ID：' + (this.playerId ?? '未知');
+            this.bindGameContext();
             this.renderRoom();
+            if (frame.type === 'session.ready' && this.games.gameId)
+                this.requestGameSnapshot();
             break;
         case 'session.error':
             this.rooms.reset();
+            this.games.reset();
             this.renderRoom();
             this.report('原房间恢复失败，已创建新的临时会话。');
             break;
@@ -93,10 +107,44 @@ export class LobbyBootstrap extends Component {
             this.rooms.onAck(frame);
             if (frame.seat !== 3 && this.joinBox)
                 this.joinBox.string = frame.room_id;
+            this.bindGameContext();
             this.renderRoom();
             break;
         case 'room.snapshot':
-            if (this.rooms.applySnapshot(frame)) this.renderRoom();
+            if (this.rooms.applySnapshot(frame)) {
+                this.bindGameContext();
+                this.renderRoom();
+            }
+            break;
+        case 'game.ack':
+            if (this.games.noteAck(frame)) {
+                // The ACK is confirmed durable, but it contains no private
+                // hand; refresh the actual public state before requesting it.
+                this.games.clearSelection();
+                this.report('已提交 ' + frame.action + ' · 序号 ' + frame.seq);
+                this.requestGameSnapshot();
+            }
+            break;
+        case 'game.snapshot':
+            this.bindGameContext();
+            if (this.games.applySnapshot(frame)) {
+                this.renderRoom();
+                // Request only this authenticated session's private cards.
+                if (frame.phase === 'bidding' ||
+                    frame.phase === 'playing' || frame.phase === 'finished') {
+                    this.execute((socket) => {
+                        const id = socket.requestGameHand(frame.game_id);
+                        this.games.expectHand(id, frame.game_id);
+                    });
+                }
+            }
+            break;
+        case 'game.hand':
+            if (this.games.applyPrivateHand(frame)) this.renderRoom();
+            break;
+        case 'game.error':
+            this.report('游戏操作拒绝：' + frame.code);
+            this.renderRoom();
             break;
         case 'room.error':
         case 'server.error':
@@ -228,6 +276,8 @@ export class LobbyBootstrap extends Component {
                     () => this.execute((s) => s.leaveRoom()));
         this.button(root, 'suspend', '模拟断线 · 保留身份', -406, -246, 325, 41,
                     () => this.socket?.suspend());
+        this.button(root, 'room-start', '三人已准备 · 房主启动', -406, -290, 325, 34,
+                    () => this.execute(s => s.startRoom()));
 
         this.panel(root, 'table', 238, -31, 780, 515, COLORS.felt, COLORS.border, 24);
         this.roomTitle = this.text(root, 'room-title', '尚未进入房间', 238, 179, 690,
@@ -246,11 +296,73 @@ export class LobbyBootstrap extends Component {
                 '座位 ' + (i + 1) + '\n等待玩家加入',
                 position.x, position.y, 186, 103, 20, COLORS.white));
         }
-        this.text(root, 'phase-caption', '此阶段仅实现房间与准备功能，尚未接入发牌和对战。',
+        this.text(root, 'phase-caption', '房主开始房间后，切换到对局牌桌。',
                   238, -248, 700, 29, 17, COLORS.muted);
+        this.gameTable = new GameTableView(root, {
+            startGame: () => this.execute(s => s.startGame()),
+            bid: score => this.placeBid(score),
+            play: () => this.playCards(),
+            pass: () => this.passTurn(),
+            refresh: () => this.requestGameSnapshot(),
+            retryPending: () => this.execute(s => s.retryPendingGameActions()),
+            toggleCard: card => {
+                if (this.games.toggle(card)) this.renderGame();
+            },
+        });
         this.statusText = this.text(root, 'status', '尚未连接', 0, -328, 1160,
                                     38, 19, COLORS.muted);
         this.renderRoom();
+    }
+
+    /** A room identity change invalidates every private card. Never infer
+     * a seat from a client claimed value; use the latest server room view. */
+    private bindGameContext(): void {
+        const snapshot = this.rooms.current;
+        const seat = snapshot && this.playerId ?
+            snapshot.seats.findIndex(s => s?.player_id === this.playerId) : -1;
+        this.games.bindRoom(this.rooms.roomId, this.playerId,
+                            seat >= 0 ? seat : null);
+    }
+
+    private requestGameSnapshot(): void {
+        const gameId = this.games.gameId;
+        if (!gameId) { this.renderGame(); return; }
+        this.execute(socket => {
+            this.games.suspend();
+            socket.requestGameSnapshot(gameId);
+            this.renderGame();
+        });
+    }
+
+    private placeBid(score: number): void {
+        const view = this.games.snapshot;
+        if (!view || view.phase !== 'bidding' || !this.games.isMyTurn)
+            return;
+        this.execute(socket => socket.bid(view.game_id, view.bid_turn_id, score));
+    }
+    private playCards(): void {
+        const view = this.games.snapshot;
+        if (!view || view.phase !== 'playing' || !this.games.isMyTurn)
+            return;
+        this.execute(socket => socket.play(view.game_id, view.turn_id,
+                                            this.games.selectedMask()));
+    }
+    private passTurn(): void {
+        const view = this.games.snapshot;
+        if (!view || view.phase !== 'playing' || !this.games.isMyTurn ||
+            view.last_cards_hex === '00000000000000')
+            return;
+        this.execute(socket => socket.pass(view.game_id, view.turn_id));
+    }
+
+    private renderGame(): void {
+        if (!this.gameTable) return;
+        const room = this.rooms.current;
+        const playable = room?.phase === 'starting';
+        this.gameTable.setVisible(playable === true);
+        if (playable) this.gameTable.render(this.games, !!this.socket?.canPlayGames,
+                             room.owner_id === this.playerId,
+                             this.socket?.pendingGameCount ?? 0);
     }
 
     private renderRoom(): void {
@@ -276,5 +388,6 @@ export class LobbyBootstrap extends Component {
                   '\n' + (seat.ready ? '● 已准备' : '○ 未准备')
                 : '座位 ' + (i + 1) + '\n等待玩家加入';
         }
+        this.renderGame();
     }
 }
