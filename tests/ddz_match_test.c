@@ -419,6 +419,87 @@ static void test_real_bomb_and_rocket_only_after_legal_play(void) {
     REQUIRE(match.scoring.bombs_rockets == 2u);
 }
 
+/* True M5b gameplay path: landlord has exactly ONE non-pass play;
+ * one farmer responds and empties all 17 cards while the other farmer and
+ * landlord pass. The winner must be a COUNTER-SPRING, not calculated from
+ * a spoofed client-supplied tally. */
+static void test_real_farmer_reverse_spring(void) {
+    mygames_ddz_match match = begin_test_match(), next = {0};
+    mygames_ddz_action_result play = {0};
+    mygames_ddz_bid_result bid = {0};
+    mygames_ddz_settlement score = {0};
+    mygames_ddz_match_public public_view = {0};
+    uint64_t remaining;
+    unsigned int i;
+    memset(match.initial_hands, 0, sizeof(match.initial_hands));
+    match.secret_kitty = UINT64_C(0);
+    for (i = 0u; i < MYGAMES_DDZ_CARDS; ++i) {
+        const uint64_t bit = UINT64_C(1) << i;
+        match.secret_deck[i] = (uint8_t)i;
+        if (i < 51u) match.initial_hands[i % MYGAMES_DDZ_SEATS] |= bit;
+        else match.secret_kitty |= bit;
+    }
+    REQUIRE(mygames_ddz_match_validate(&match) == MYGAMES_DDZ_MATCH_OK);
+    REQUIRE(mygames_ddz_match_bid(&match, 42u, 500u, 101u, 1u, 3u,
+                                   &next, &bid) == MYGAMES_DDZ_MATCH_OK);
+    match = next;
+    REQUIRE((match.round.hands[0] & UINT64_C(1)) != 0u);
+    REQUIRE((match.round.hands[1] & (UINT64_C(1) << 4u)) != 0u);
+    /* Landlord leads the three-of-clubs; farmer responds with a FOUR. */
+    REQUIRE(mygames_ddz_match_play(&match, 42u, 500u, 101u, 1u,
+                                   UINT64_C(1), &next, &play) == MYGAMES_DDZ_MATCH_OK);
+    match = next;
+    REQUIRE(mygames_ddz_match_play(&match, 42u, 500u, 202u, 2u,
+                                   UINT64_C(1) << 4u, &next, &play) ==
+            MYGAMES_DDZ_MATCH_OK);
+    match = next;
+    REQUIRE(mygames_ddz_match_play(&match, 42u, 500u, 303u, 3u,
+                                   UINT64_C(0), &next, &play) == MYGAMES_DDZ_MATCH_OK);
+    match = next;
+    REQUIRE(mygames_ddz_match_play(&match, 42u, 500u, 101u, 4u,
+                                   UINT64_C(0), &next, &play) == MYGAMES_DDZ_MATCH_OK);
+    match = next;
+    REQUIRE(match.round.turn_seat == 1u);
+    remaining = match.round.hands[1];
+    REQUIRE(count_cards(remaining) == 16u);
+    while (remaining) {
+        const uint64_t single = remaining & (~remaining + UINT64_C(1));
+        const uint64_t turn = match.round.turn_id;
+        REQUIRE(mygames_ddz_match_play(&match, 42u, 500u, 202u, turn,
+                                       single, &next, &play) ==
+                MYGAMES_DDZ_MATCH_OK);
+        match = next;
+        remaining &= ~single;
+        if (!remaining) break;
+        REQUIRE(mygames_ddz_match_play(&match, 42u, 500u, 303u,
+                match.round.turn_id, UINT64_C(0), &next, &play) ==
+                MYGAMES_DDZ_MATCH_OK);
+        match = next;
+        REQUIRE(mygames_ddz_match_play(&match, 42u, 500u, 101u,
+                match.round.turn_id, UINT64_C(0), &next, &play) ==
+                MYGAMES_DDZ_MATCH_OK);
+        match = next;
+    }
+    REQUIRE(match.phase == MYGAMES_DDZ_MATCH_FINISHED);
+    REQUIRE(match.round.winner_seat == 1u && match.round.remaining[1] == 0u);
+    REQUIRE(match.scoring.landlord_nonpass == 1u &&
+            match.scoring.farmers_nonpass == 17u &&
+            match.scoring.bombs_rockets == 0u);
+    REQUIRE(mygames_ddz_match_settlement(&match, &score) == MYGAMES_DDZ_MATCH_OK);
+    REQUIRE(score.spring == MYGAMES_DDZ_SPRING_FARMERS &&
+            score.bid_base == 3u && score.multiplier == 2u &&
+            score.unit == 6u);
+    REQUIRE(score.delta[0] == -12 && score.delta[1] == 6 &&
+            score.delta[2] == 6);
+    REQUIRE(mygames_ddz_match_public_view(&match, &public_view) ==
+            MYGAMES_DDZ_MATCH_OK);
+    REQUIRE(public_view.has_settlement &&
+            public_view.settlement.spring == MYGAMES_DDZ_SPRING_FARMERS);
+    REQUIRE(mygames_ddz_match_play(&match, 42u, 500u, 303u,
+            match.round.turn_id, UINT64_C(0), &next, &play) ==
+            MYGAMES_DDZ_MATCH_GAME_FINISHED);
+}
+
 static void test_authoritative_zero_sum_scoring(void) {
     mygames_ddz_settlement score = {0};
     mygames_ddz_settlement sentinel = {0};
@@ -477,6 +558,7 @@ int main(void) {
     test_winning_game_through_authored_fixture();
     test_authoritative_zero_sum_scoring();
     test_real_bomb_and_rocket_only_after_legal_play();
+    test_real_farmer_reverse_spring();
     puts("mygames.ddz_match: PASS");
     return 0;
 }
