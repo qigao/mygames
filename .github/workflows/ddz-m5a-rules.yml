@@ -1,0 +1,89 @@
+name: M5a Dou Dizhu gameplay rules (C11)
+
+'on':
+  pull_request:
+    paths:
+      - 'games/doudizhu/src/ddz_round.c'
+      - 'games/doudizhu/include/mygames/ddz_round.h'
+      - 'tests/ddz_round_test.c'
+      - 'CMakeLists.txt'
+      - '.github/workflows/ddz-m5a-rules.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mygames-ddz-m5a-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-rules:
+    name: Pure C11 rules / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+    steps:
+      - name: Checkout exact game candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Configure no-SDK authority core
+        run: >-
+          cmake -S . -B build/ddz
+          -DBUILD_TESTING=ON
+          -DMYGAMES_ENABLE_GATEWAY=OFF
+          -DMYGAMES_ENABLE_TURBODB=OFF
+          -DMYGAMES_ENABLE_FLOWIE=OFF
+
+      - name: Build all C11 room/session/recovery/rules targets
+        run: cmake --build build/ddz --config Debug --parallel 2
+
+      - name: Run full pure C11 core regression suite
+        run: >-
+          ctest --test-dir build/ddz -C Debug --no-tests=error
+          --output-on-failure --timeout 60
+
+      - name: Repeat real rules and turn state tests (no mocks or SDK)
+        run: >-
+          ctest --test-dir build/ddz -C Debug --no-tests=error
+          --output-on-failure --timeout 30 --repeat until-fail:20
+          -R '^mygames[.]ddz_round$'
+
+  pure-source-asan:
+    name: Pure C11 rules / Linux ASan+UBSan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Build game rules without networking or dependency SDKs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build/ddz-asan \
+            -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON \
+            -DMYGAMES_ENABLE_GATEWAY=OFF -DMYGAMES_ENABLE_TURBODB=OFF \
+            -DMYGAMES_ENABLE_FLOWIE=OFF \
+            -DCMAKE_C_FLAGS='-fsanitize=address,undefined -g -fno-omit-frame-pointer -Wall -Wextra -Wpedantic -Werror' \
+            -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=address,undefined'
+          cmake --build build/ddz-asan --target mygames_ddz_round_test --parallel 2
+
+      - name: Check all gameplay operations under sanitizers
+        shell: bash
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          set -euo pipefail
+          ctest --test-dir build/ddz-asan --no-tests=error \
+            --output-on-failure --timeout 30 --repeat until-fail:20 \
+            -R '^mygames[.]ddz_round$'

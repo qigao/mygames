@@ -19,6 +19,20 @@ else()
   target_compile_options(mygames_room PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
 
+# M5a authoritative Dou Dizhu move/rule kernel. Deliberately independent
+# of the Room gateway, TurboDB, Flowie and all released SDK dependencies.
+# Caller supplies a secret, externally shuffled deck after bidding; this
+# component never persists or publishes player hands.
+add_library(mygames_ddz_round STATIC games/doudizhu/src/ddz_round.c)
+add_library(MyGames::DouDizhuRound ALIAS mygames_ddz_round)
+target_compile_features(mygames_ddz_round PUBLIC c_std_11)
+target_include_directories(mygames_ddz_round PUBLIC games/doudizhu/include)
+if(MSVC)
+  target_compile_options(mygames_ddz_round PRIVATE /W4 /WX)
+else()
+  target_compile_options(mygames_ddz_round PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+
 # The recovery admission core is pure C11; no network, database or
 # fallback implementation is linked into this policy target.
 add_library(mygames_recovery_gate STATIC
@@ -139,6 +153,16 @@ endif()
 
 
 if(BUILD_TESTING)
+  add_executable(mygames_ddz_round_test tests/ddz_round_test.c)
+  target_compile_features(mygames_ddz_round_test PRIVATE c_std_11)
+  target_link_libraries(mygames_ddz_round_test PRIVATE MyGames::DouDizhuRound)
+  if(MSVC)
+    target_compile_options(mygames_ddz_round_test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_ddz_round_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME mygames.ddz_round COMMAND mygames_ddz_round_test)
+
   add_executable(mygames_room_test tests/room_test.c)
   target_link_libraries(mygames_room_test PRIVATE MyGames::Room)
   if(MSVC)
