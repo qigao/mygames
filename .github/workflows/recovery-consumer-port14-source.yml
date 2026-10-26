@@ -239,10 +239,11 @@ jobs:
             mygames_recovery_wire_test \
             mygames_recovery_decode_test \
             mygames_recovery_consumer_test \
+            mygames_consumer_owner_test \
             mygames_recovery_remote_consumer_test \
             mygames_flowie_consumer_projection_audit
           ctest --test-dir build/recovery-port14 -C Release \
-            -R '^(mygames[.](recovery_gate|recovery_wire|recovery_decode|recovery_consumer|turbodb_store|outbox_contract|consumer_projection))$' \
+            -R '^(mygames[.](recovery_gate|recovery_wire|recovery_decode|recovery_consumer|consumer_owner|turbodb_store|outbox_contract|consumer_projection))$' \
             --output-on-failure --no-tests=error
           ldd build/recovery-port14/mygames_recovery_service \
             | tee build/gmssl-port14/mygames-recovery-ldd.txt
