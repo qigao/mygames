@@ -34,7 +34,12 @@ static bool digest_command(
     uint8_t digest[MYGAMES_STORE_COMMAND_DIGEST_BYTES]) {
     char normalized[218];
     int n;
-    if (!operation || !digest || !player || !epoch || !game_id || !turn)
+    /* game.start has a SERVER-minted game_id. Excluding it from the
+     * normalized start digest makes a retry after confirmed COMMIT replay
+     * the ORIGINAL Game ACK, rather than conflict against a newly minted
+     * id based on the now-incremented global sequence. */
+    if (!operation || !digest || !player || !epoch || !turn ||
+        (!game_id && strcmp(operation, "start") != 0))
         return false;
     n = snprintf(normalized, sizeof(normalized),
         "mygames.ddz.v1|%s|%" PRIu64 "|%" PRIu64 "|%" PRIu64
@@ -92,8 +97,9 @@ static mygames_ddz_owner_status preflight(
         return MYGAMES_DDZ_OWNER_INVALID;
     if (!owner_available(owner)) return MYGAMES_DDZ_OWNER_STORAGE_HALTED;
     if (!player_seated(owner, player)) return MYGAMES_DDZ_OWNER_UNAUTHORIZED;
-    if (!digest_command(operation, owner->epoch, game_id, turn,
-                        player, value, digest))
+    if (!digest_command(operation, owner->epoch,
+                        strcmp(operation, "start") == 0 ? UINT64_C(0) : game_id,
+                        turn, player, value, digest))
         return MYGAMES_DDZ_OWNER_INVALID;
     return lookup_replay(owner, player, request_id,
                          digest, out_ack, capacity, out_bytes);
