@@ -479,3 +479,46 @@ test('M5i recovery cannot replay old-player game commands under a different iden
   client.disconnect();
   globalThis.WebSocket=originalWebSocket;
 });
+
+test('M5i Owner epoch takeover cannot regress committed game, phase, turn or ACK',()=>{
+  const store=new GameStore();
+  store.bindRoom('room-1','101',0);
+  const firstFinished={...playing('59',0),room_epoch:'7',game_id:'11',
+    phase:'finished',turn_seat:3,winner_seat:0,score:springScore};
+  const finalAck={...startAck,room_epoch:'7',game_id:'11',
+    phase:4,turn_id:'59',seq:'100',request_id:'g1-terminal',action:'play'};
+  assert.equal(store.noteAck(finalAck),true);
+  assert.equal(store.noteAck(finalAck),false,
+    'Idempotent receipt replay must not reschedule a UI transition');
+  assert.equal(store.applySnapshot(firstFinished),true);
+  assert.equal(store.snapshot.phase,'finished');
+
+  assert.equal(store.applySnapshot({...firstFinished,room_epoch:'8',
+    phase:'playing',turn_id:'58'}),false,
+    'A new Owner epoch must not restore pre-terminal gameplay');
+  assert.equal(store.applySnapshot({...firstFinished,room_epoch:'8',
+    game_id:'10'}),false,
+    'Even a higher epoch cannot resurrect an older game');
+  assert.equal(store.applySnapshot({...firstFinished,room_epoch:'8',
+    turn_id:'58'}),false,
+    'Higher epoch must not roll a terminal turn backwards');
+
+  assert.equal(store.applySnapshot({...firstFinished,room_epoch:'8'}),true,
+    'New Owner may rehydrate an equal confirmed terminal game');
+  assert.equal(store.applySnapshot({...firstFinished,room_epoch:'8'}),false,
+    'Same-epoch duplicate public snapshot is not another update');
+  assert.equal(store.applySnapshot({...firstFinished,room_epoch:'9',
+    phase:'playing'}),false,
+    'A later epoch cannot downgrade FINISHED to PLAYING');
+
+  const nextGame={...bidding('1'),room_epoch:'9',game_id:'12'};
+  assert.equal(store.applySnapshot(nextGame),true);
+  assert.equal(store.snapshot.phase,'bidding');
+  assert.equal('score' in store.snapshot,false);
+  assert.equal(store.noteAck({...finalAck,room_epoch:'10',seq:'101'}),false,
+    'A higher-epoch replay of the previous game cannot replace new game');
+  assert.equal(store.noteAck({...startAck,room_epoch:'9',game_id:'12',
+    phase:1,turn_id:'1',seq:'101',request_id:'new-game'}),true);
+  assert.equal(store.lastAck.game_id,'12');
+  assert.equal(store.applySnapshot({...firstFinished,room_epoch:'10'}),false);
+});
