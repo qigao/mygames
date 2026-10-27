@@ -914,7 +914,6 @@ static void ws_handle_game_command(dev_server_state *state, client_peer *client,
         return;
     }
     if (command->kind == MYGAMES_DDZ_GAME_SNAPSHOT ||
-        command->kind == MYGAMES_DDZ_GAME_HAND) {    if (command->kind == MYGAMES_DDZ_GAME_SNAPSHOT ||
         command->kind == MYGAMES_DDZ_GAME_HAND) {
         if (!owner.has_match || command->game_id != owner.private_match.game_id) {
             result = MYGAMES_DDZ_OWNER_STALE;
