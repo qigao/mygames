@@ -1844,6 +1844,33 @@ mygames_store_status mygames_room_store_load_game(
         !game_matches_room(&game.match,
             mygames_room_directory_get(&rooms, room_id)))
         return MYGAMES_STORE_CORRUPT;
+    if (game.match.phase == MYGAMES_DDZ_MATCH_FINISHED) {
+        /* A committed terminal private image without its corresponding
+         * immutable per-game result is a CORRUPT ledger, not an unsolved
+         * match or a cue to replay/pay the scoring transaction. */
+        mygames_store_game_result historical = {0};
+        mygames_ddz_settlement calculated = {0};
+        unsigned int seat;
+        st = mygames_room_store_game_result(store, room_id,
+                                           game.game_id, &historical);
+        if (st == MYGAMES_STORE_NOT_FOUND) return MYGAMES_STORE_CORRUPT;
+        if (st != MYGAMES_STORE_OK) return st;
+        if (historical.finish_sequence != game.sequence ||
+            mygames_ddz_match_settlement(&game.match, &calculated) !=
+                MYGAMES_DDZ_MATCH_OK ||
+            calculated.bid_base != historical.score.bid_base ||
+            calculated.bombs_rockets != historical.score.bombs_rockets ||
+            calculated.spring != historical.score.spring ||
+            calculated.multiplier != historical.score.multiplier ||
+            calculated.unit != historical.score.unit ||
+            calculated.landlord_seat != historical.score.landlord_seat ||
+            calculated.winner_seat != historical.score.winner_seat)
+            return MYGAMES_STORE_CORRUPT;
+        for (seat = 0u; seat < MYGAMES_DDZ_SEATS; ++seat)
+            if (historical.players[seat] != game.match.players[seat] ||
+                historical.score.delta[seat] != calculated.delta[seat])
+                return MYGAMES_STORE_CORRUPT;
+    }
     *out_match = game.match;
     *out_sequence = game.sequence;
     return MYGAMES_STORE_OK;
