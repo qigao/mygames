@@ -152,6 +152,14 @@ export class GameSocket {
     requestGameHand(gameId: string): string {
         return this.sendGameCommand('game.hand.get', {game_id: gameId}, false);
     }
+    /** Read-only, authenticated historical query. These NEVER stage a
+     * mutation, own a Game ACK, or re-execute earlier game actions. */
+    requestGameResult(gameId: string): string {
+        return this.sendGameCommand('game.result.get', {game_id: gameId}, false);
+    }
+    requestGameStandings(): string {
+        return this.sendGameCommand('game.standings.get', {}, false);
+    }
     retryPendingGameActions(): void {
         this.ensureReady();
         if (!this.gamesAvailable) throw new Error('Game service unavailable');
