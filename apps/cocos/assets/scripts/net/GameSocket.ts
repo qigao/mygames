@@ -170,6 +170,9 @@ export class GameSocket {
         this.playerId = null;
         this.pendingGameActions.clear();
         this.gameNonce = null;
+        // Only explicit logout may restart the per-session command counter.
+        // Transient reconnect retains the nonce and MUST retain its ordinal.
+        this.requestOrdinal = 0;
         this.transition('offline');
     }
 
@@ -189,7 +192,14 @@ export class GameSocket {
                 return;
             }
             const hadPreviousLease = this.resumeTicket !== null;
-            if (hadPreviousLease) this.pendingGameActions.clear();
+            if (hadPreviousLease) {
+                this.pendingGameActions.clear();
+                // A server without recovery created a different principal.
+                // A fresh nonce/ordinal separates new commands from its
+                // predecessor's already-journalled request IDs.
+                this.gameNonce = null;
+                this.requestOrdinal = 0;
+            }
             this.resumeTicket = frame.resume_token ?? null;
             this.playerId = frame.player_id ?? null;
             this.transition('ready');
@@ -204,6 +214,18 @@ export class GameSocket {
         if (frame.type === 'session.ready') {
             if (this.status !== 'restoring' || !this.provisional)
                 throw new Error('Unexpected session recovery');
+            if (!this.playerId || frame.player_id !== this.playerId) {
+                // Never replay a previous principal's private game command
+                // under a different recovered player, even when the peer
+                // reported a syntactically valid session.ready.
+                this.pendingGameActions.clear();
+                this.resumeTicket = null;
+                this.playerId = null;
+                this.gameNonce = null;
+                this.requestOrdinal = 0;
+                this.fail('Recovered game player identity changed');
+                return;
+            }
             this.resumeTicket = frame.resume_token;
             this.playerId = frame.player_id;
             this.provisional = null;
@@ -223,6 +245,8 @@ export class GameSocket {
             const fresh = this.provisional;
             this.provisional = null;
             this.pendingGameActions.clear();
+            this.gameNonce = null;
+            this.requestOrdinal = 0;
             this.resumeTicket = fresh.resume_token ?? null;
             this.playerId = fresh.player_id ?? null;
             this.transition('ready');
@@ -265,7 +289,8 @@ export class GameSocket {
         this.roomsAvailable = false;
         this.gamesAvailable = false;
         this.provisional = null;
-        this.requestOrdinal = 0;
+        // Preserve the request ordinal on temporary transport loss: the
+        // gameNonce and historical durable receipts outlive this WebSocket.
         const previous = this.socket;
         this.socket = null;
         if (previous) {
