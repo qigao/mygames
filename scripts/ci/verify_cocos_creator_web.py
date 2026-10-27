@@ -27,8 +27,11 @@ def parse_args():
     return parser.parse_args()
 
 
-def run_gate(creator: Path, project: Path, report: Path, timeout: int):
-    if sys.platform not in ("win32", "darwin"):
+def run_gate(creator: Path, project: Path, report: Path, timeout: int,
+             platform_name: str = None):
+    # Injectable only for local self-tests; the CLI always uses sys.platform.
+    platform_name = sys.platform if platform_name is None else platform_name
+    if platform_name not in ("win32", "darwin"):
         raise RuntimeError("Real Creator 3.8.8 Editor needs Windows/macOS GUI; "
                            "a Linux mocked CLI is not Editor acceptance")
     if not creator.is_file():
@@ -70,10 +73,15 @@ def run_gate(creator: Path, project: Path, report: Path, timeout: int):
         raise RuntimeError("Creator build appears stale: index.html predates this run")
 
     head = None
-    head_result = subprocess.run(["git", "-C", str(project), "rev-parse", "HEAD"],
-                                 capture_output=True, text=True, check=False)
-    if head_result.returncode == 0:
-        head = head_result.stdout.strip()
+    try:
+        head_result = subprocess.run(["git", "-C", str(project), "rev-parse", "HEAD"],
+                                     capture_output=True, text=True, check=False)
+        if head_result.returncode == 0:
+            head = head_result.stdout.strip()
+    except OSError:
+        # An Editor installed on a workstation may not have git on PATH.
+        # Report an absent source hash; do not fabricate an exact HEAD.
+        pass
     evidence = {
         "gate": "real-cocos-creator-cli-web-desktop",
         "project_requested_creator_version": REQUIRED_VERSION,
