@@ -112,3 +112,28 @@ private cards, shuffle/deck content or SQLite data.
 The full real Editor/Web/visual gate remains [Issue #2](https://github.com/qigao/mygames/issues/2)
 OPEN until those manual/interactive checks complete. External WSS/IAM and
 multi-host fencing remain separate production requirements.
+
+
+### Real browser rendering smoke after a successful Editor build
+
+The privileged GUI workflow now continues **after** a real Cocos Creator
+CLI build by running the generated Web Desktop application in the actual
+locally installed **Microsoft Edge GUI**, using pinned
+`playwright-core@1.64.1` (no Playwright browser binary download).
+`scripts/ci/verify_cocos_web_browser.mjs` serves **only** the newly
+attested Creator output on loopback and verifies three isolated browser
+contexts each load the genuine Canvas, complete asset loading without
+uncaught JavaScript errors or missing static resources, and produce a
+real rendered PNG screenshot **in memory**. Only screenshot SHA256 and
+sanitized Canvas/browser metrics are written to
+`apps/cocos/build/cocos-browser-m5i-evidence.json`; no screenshot bytes,
+session tickets, hands or database are archived.
+
+This is a **real-browser start-screen smoke**, not simulated UI execution,
+but it deliberately keeps the actual game backend disconnected. It is
+**not** proof of three-player gameplay, bidding, terminal settlement,
+session replay, Cocos Editor interactive scene import, or visual quality
+review. Those interactive checks remain required for Issue #2. The
+Windows interactive GUI runner must also have Microsoft Edge installed.
+If the browser is absent, or the packaged Cocos runtime fails to load,
+the true GUI job fails rather than silently passing its prior build.

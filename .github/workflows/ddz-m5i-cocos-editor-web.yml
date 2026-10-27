@@ -6,6 +6,7 @@ name: M5i real Cocos Creator 3.8.8 Editor Web Desktop gate
     paths:
       - 'scripts/ci/verify_cocos_creator_web.py'
       - 'tests/cocos_creator_gate_test.py'
+      - 'scripts/ci/verify_cocos_web_browser.mjs'
       - '.github/workflows/ddz-m5i-cocos-editor-web.yml'
   # Also available on the default branch after this workflow is merged.
   # For an unmerged Draft branch use the explicit 'run-cocos-editor' PR label.
@@ -27,6 +28,11 @@ jobs:
       - name: Test documented exit 36, missing and stale output failure gates
         shell: bash
         run: python3 -m unittest discover -s tests -p 'cocos_creator_gate_test.py' -v
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Parse real browser smoke entrypoint, no fake Creator/browser
+        run: node --check scripts/ci/verify_cocos_web_browser.mjs
 
   actual-editor-web-desktop:
     name: ACTUAL Creator Editor GUI Web Desktop (manual runner only)
@@ -65,11 +71,28 @@ jobs:
           }
           python scripts/ci/verify_cocos_creator_web.py --creator "$env:COCOS_CREATOR_EXECUTABLE" --project "$env:GITHUB_WORKSPACE/apps/cocos" --report "$env:GITHUB_WORKSPACE/apps/cocos/build/cocos-editor-m5i-evidence.json" --expected-head "$env:EXPECTED_HEAD" --expected-creator-sha256 "$env:COCOS_CREATOR_SHA256"
           if ($LASTEXITCODE -ne 0) { throw "Real Cocos Creator admission failed" }
-      - name: Save only nonsecret CLI build metadata (NO game hand or tickets)
+      - name: Install Node 22 for actual Web Desktop browser smoke
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install pinned Playwright core (reuse installed Microsoft Edge)
+        shell: pwsh
+        run: |
+          npm install --prefix scripts/ci --no-save --no-package-lock --ignore-scripts --no-audit --no-fund playwright-core@1.64.1
+          if ($LASTEXITCODE -ne 0) { throw "Pinned Playwright-core installation failed" }
+      - name: Real Microsoft Edge GUI smoke of three isolated Web Desktop sessions
+        shell: pwsh
+        run: |
+          node scripts/ci/verify_cocos_web_browser.mjs --project "$env:GITHUB_WORKSPACE/apps/cocos" --build-report "$env:GITHUB_WORKSPACE/apps/cocos/build/cocos-editor-m5i-evidence.json" --report "$env:GITHUB_WORKSPACE/apps/cocos/build/cocos-browser-m5i-evidence.json"
+          if ($LASTEXITCODE -ne 0) { throw "Real Edge Canvas/browser qualification failed" }
+      - name: Save only nonsecret CLI and browser evidence (NO private PNGs or DB)
+
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: cocos-editor-web-desktop-${{ github.run_id }}
           if-no-files-found: error
           retention-days: 14
-          path: apps/cocos/build/cocos-editor-m5i-evidence.json
+          path: |
+            apps/cocos/build/cocos-editor-m5i-evidence.json
+            apps/cocos/build/cocos-browser-m5i-evidence.json
