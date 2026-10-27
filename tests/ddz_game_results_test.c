@@ -203,23 +203,91 @@ int main(int argc, char **argv) {
                  MYGAMES_STORE_NOT_FOUND);
     assert_total(store,101u,12,1);
 
+    /* SECOND real completed match with a DIFFERENT landlord: owner passes,
+     * seat 1 bids 3, and seat 1 now plays all 20 cards while the two
+     * actual farmers return two PASS commands per nonfinal trick. */
+    match = rematch;
+    assert(mygames_ddz_match_bid(&match,1u,9u,101u,1u,0u,&next,&bid)==
+           MYGAMES_DDZ_MATCH_OK);
+    seq=commit_game(store,&rooms,&match,&next,101u,1u,seq,"g2-bid-pass",0x89u);
+    match=next;
+    assert(mygames_ddz_match_bid(&match,1u,9u,202u,2u,3u,&next,&bid)==
+           MYGAMES_DDZ_MATCH_OK);
+    seq=commit_game(store,&rooms,&match,&next,202u,1u,seq,"g2-bid-three",0x8au);
+    match=next;
+    assert(match.round.landlord_seat==1u && match.round.remaining[1]==20u);
+    for(i=0u;i<20u;++i) {
+        const uint64_t single=mask_lowest(match.round.hands[1]);
+        int n=snprintf(request,sizeof(request),"g2-play-%02u",i);
+        assert(n>0 && (size_t)n<sizeof(request));
+        assert(mygames_ddz_match_play(&match,1u,9u,202u,match.round.turn_id,
+                                     single,&next,&move)==MYGAMES_DDZ_MATCH_OK);
+        seq=commit_game(store,&rooms,&match,&next,202u,1u,seq,request,
+                        (uint8_t)(i+0x21u));
+        match=next;
+        if (i==19u) break;
+        assert(mygames_ddz_match_play(&match,1u,9u,303u,match.round.turn_id,
+                                     UINT64_C(0),&next,&move)==MYGAMES_DDZ_MATCH_OK);
+        n=snprintf(request,sizeof(request),"g2-c-pass-%02u",i);
+        assert(n>0 && (size_t)n<sizeof(request));
+        seq=commit_game(store,&rooms,&match,&next,303u,1u,seq,request,
+                        (uint8_t)(i+0x42u));
+        match=next;
+        assert(mygames_ddz_match_play(&match,1u,9u,101u,match.round.turn_id,
+                                     UINT64_C(0),&next,&move)==MYGAMES_DDZ_MATCH_OK);
+        n=snprintf(request,sizeof(request),"g2-a-pass-%02u",i);
+        assert(n>0 && (size_t)n<sizeof(request));
+        seq=commit_game(store,&rooms,&match,&next,101u,1u,seq,request,
+                        (uint8_t)(i+0x64u));
+        match=next;
+    }
+    assert(match.phase==MYGAMES_DDZ_MATCH_FINISHED &&
+           match.round.winner_seat==1u && match.round.remaining[1]==0u);
+    expect_store(mygames_room_store_game_result(store,"room-1",9u,&result),
+                 MYGAMES_STORE_OK);
+    assert(result.finish_sequence==seq && result.game_id==9u &&
+           result.players[0]==101u && result.players[1]==202u &&
+           result.players[2]==303u);
+    assert(result.score.bid_base==3u &&
+           result.score.spring==MYGAMES_DDZ_SPRING_LANDLORD &&
+           result.score.delta[0]==-6 && result.score.delta[1]==12 &&
+           result.score.delta[2]==-6);
+    /* Two different landlords truly FINISHED, no duplicate terminal
+     * credit, and every seat's total is derived from exactly two rows. */
+    assert_total(store,101u,6,2);
+    assert_total(store,202u,6,2);
+    assert_total(store,303u,-12,2);
+    assert_total(store,404u,0,0);
+    expect_store(mygames_room_store_game_result(store,"room-1",8u,&result),
+                 MYGAMES_STORE_OK);
+    assert(result.finish_sequence==final_seq &&
+           result.score.delta[0]==12 && result.score.delta[1]==-6 &&
+           result.score.delta[2]==-6);
+
     mygames_room_store_close(store);
     store=NULL;
     expect_store(mygames_room_store_open(argv[1],argv[2],&store),MYGAMES_STORE_OK);
     expect_store(mygames_room_store_load_game(store,"room-1",
                  &restarted,&loaded_game_seq),MYGAMES_STORE_OK);
     assert(restarted.game_id==9u && loaded_game_seq==seq &&
-           restarted.phase==MYGAMES_DDZ_MATCH_BIDDING);
+           restarted.phase==MYGAMES_DDZ_MATCH_FINISHED &&
+           restarted.round.winner_seat==1u);
     expect_store(mygames_room_store_game_result(store,"room-1",8u,&result),
                  MYGAMES_STORE_OK);
     assert(result.finish_sequence==final_seq);
-    assert_total(store,101u,12,1);
-    assert_total(store,202u,-6,1);
-    assert_total(store,303u,-6,1);
+    assert_total(store,101u,6,2);
+    assert_total(store,202u,6,2);
+    assert_total(store,303u,-12,2);
+    expect_store(mygames_room_store_game_result(store,"room-1",9u,&result),
+                 MYGAMES_STORE_OK);
+    assert(result.finish_sequence==seq &&
+           result.score.delta[1]==12);
     expect_store(mygames_room_store_claim_epoch(store,1u,&claimed_epoch),
                  MYGAMES_STORE_OK);
     assert(claimed_epoch==2u);
-    assert_total(store,101u,12,1);
+    assert_total(store,101u,6,2);
+    assert_total(store,202u,6,2);
+    assert_total(store,303u,-12,2);
     expect_store(mygames_room_store_game_result(store,"room-1",8u,&result),
                  MYGAMES_STORE_OK);
     assert(result.finish_sequence==final_seq);
