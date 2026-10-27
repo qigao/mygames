@@ -770,11 +770,13 @@ static bool game_result_reply(const mygames_ddz_game_owner *owner,
         "\"room_id\":\"%s\",\"game_id\":\"%" PRIu64 "\","
         "\"finish_seq\":\"%" PRIu64 "\","
         "\"players\":[\"%" PRIu64 "\",\"%" PRIu64 "\",\"%" PRIu64 "\"],"
+        "\"landlord_seat\":%u,\"winner_seat\":%u,"
         "\"score\":{\"base\":%u,\"bombs\":%u,\"spring\":\"%s\","
         "\"multiplier\":%" PRIu32 ",\"unit\":%" PRIu32 ","
         "\"delta\":[%" PRId32 ",%" PRId32 ",%" PRId32 "]}}",
         request_id, owner->room_id, value.game_id, value.finish_sequence,
         value.players[0], value.players[1], value.players[2],
+        (unsigned)score->landlord_seat, (unsigned)score->winner_seat,
         (unsigned)score->bid_base, (unsigned)score->bombs_rockets, spring,
         score->multiplier, score->unit,
         score->delta[0], score->delta[1], score->delta[2]);
