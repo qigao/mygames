@@ -141,6 +141,8 @@ export interface GameResult extends WireEnvelope {
     game_id: string;
     finish_seq: string;
     players: [string, string, string];
+    landlord_seat: number;
+    winner_seat: number;
     score: GameScore;
 }
 export interface GameStandingMember {
@@ -327,6 +329,7 @@ function validGameScore(
     if (!record(value) ||
         !exactFields(value,['base','bombs','spring','multiplier','unit','delta']) ||
         !Number.isInteger(value.base) || value.base !== base ||
+        (value.base as number) < 1 || (value.base as number) > 3 ||
         !Number.isInteger(value.bombs) || (value.bombs as number) < 0 ||
         (value.bombs as number) > 14 ||
         (value.spring !== 'none' &&
@@ -354,7 +357,8 @@ function parseGameFrame(value: Record<string, unknown>): GameFrame {
     const common = ['v','type','request_id','room_id','room_epoch','game_id'];
     if (value.type === 'game.result') {
         if (!exactFields(value,['v','type','request_id','room_id','game_id',
-                                'finish_seq','players','score']) ||
+                                'finish_seq','players','landlord_seat',
+                                'winner_seat','score']) ||
             !safeText(value.request_id) || !safeText(value.room_id,39) ||
             !canonicalU64(value.game_id) ||
             !canonicalU64(value.finish_seq) ||
@@ -363,8 +367,8 @@ function parseGameFrame(value: Record<string, unknown>): GameFrame {
             new Set(value.players).size !== 3 ||
             !record(value.score) ||
             !validGameScore(value.score, value.score.base as number,
-                            value.score.landlord_seat as number,
-                            value.score.winner_seat as number))
+                            value.landlord_seat as number,
+                            value.winner_seat as number))
             throw new Error('Invalid historical game result');
         return value as unknown as GameResult;
     }
