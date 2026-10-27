@@ -201,11 +201,44 @@ async function run(project, buildReport, report, timeoutMs) {
       assert(image.length>256 && image.subarray(0,8).equals(
         Buffer.from([137,80,78,71,13,10,26,10])),
         'Real browser screenshot is not a valid PNG');
+      // A nonempty canvas element does not prove Cocos drew the Lobby.
+      // Analyze the ACTUAL Edge screenshot in-memory: a blank/solid-color
+      // surface must fail rather than qualify as a rendered game scene.
+      // This is not synthetic rendering or a replacement UI screenshot.
+      const pixels=await page.evaluate(async encoded=>{
+        const bytes=Uint8Array.from(atob(encoded),c=>c.charCodeAt(0));
+        const bitmap=await createImageBitmap(new Blob([bytes],{
+          type:'image/png'
+        }));
+        const sample=document.createElement('canvas');
+        sample.width=64;
+        sample.height=36;
+        const ctx=sample.getContext('2d',{willReadFrequently:true});
+        if(!ctx)throw Error('Screenshot sampling canvas unavailable');
+        ctx.drawImage(bitmap,0,0,sample.width,sample.height);
+        bitmap.close();
+        const data=ctx.getImageData(0,0,sample.width,sample.height).data;
+        const colors=new Set();
+        let minLight=255,maxLight=0;
+        for(let n=0;n<data.length;n+=4){
+          const r=data[n],g=data[n+1],b=data[n+2];
+          colors.add([r>>4,g>>4,b>>4].join('-'));
+          const light=Math.round((r*299+g*587+b*114)/1000);
+          if(light<minLight)minLight=light;
+          if(light>maxLight)maxLight=light;
+        }
+        return {quantized_color_count:colors.size,
+          luminance_span:maxLight-minLight};
+      },image.toString('base64'));
+      assert(pixels.quantized_color_count>=8 &&
+        pixels.luminance_span>=40,
+        'Real Cocos screenshot is blank or lacks visible Lobby content');
       assert(exceptions===0 && resourceFailures===0 && fatalConsole===0 &&
         networkFailures===0 && unexpectedOutbound===0,
         'Real Web Desktop scene failed, had missing resources, or attempted unexpected external traffic');
       observations.push({
         context:i+1,canvas:surface,
+        screenshot_render_metrics:pixels,
         screenshot_sha256:createHash('sha256').update(image).digest('hex'),
         uncaught_script_errors:exceptions,
         failed_static_resources:resourceFailures,
@@ -233,7 +266,7 @@ async function run(project, buildReport, report, timeoutMs) {
       description:'Real Edge loaded the bundled Creator Web Desktop in three isolated contexts with all unrelated outbound traffic blocked. No synthetic Cocos renderer or fake gameplay server. Full three-client gameplay and Editor import remain separate.'
     };
     await writeFile(report,JSON.stringify(evidence,null,2)+'\n','utf8');
-    console.log('Real Edge Web Desktop smoke: PASS (3 isolated browser contexts, Canvas present, static assets intact, no unexpected outbound network); full gameplay UNVERIFIED');
+    console.log('Real Edge Web Desktop smoke: PASS (3 isolated contexts, nonblank rendered Canvas, static assets intact, no unexpected outbound network); full gameplay UNVERIFIED');
   } finally {
     await Promise.allSettled(contexts.map(x=>x.close()));
     if(browser) await browser.close();
