@@ -7,6 +7,7 @@ name: M5h immutable durable match settlement results
       - 'games/doudizhu/src/room_store_turbodb.c'
       - 'tests/ddz_game_results_test.c'
       - 'scripts/ci/ci_ddz_m5f_full_match.py'
+      - 'scripts/ddz_m5f_full_match.mjs'
       - 'CMakeLists.txt'
       - '.github/workflows/ddz-m5h-game-results.yml'
   workflow_dispatch:
@@ -75,7 +76,7 @@ jobs:
             build/m5h/Testing/Temporary/LastTest.log
 
   full-real-rematch:
-    name: CHttp CFlow three-player full match / independent result-ledger audit
+    name: CHttp CFlow two finished games / read-only result-ledger audit
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -112,7 +113,7 @@ jobs:
             -DCMAKE_PREFIX_PATH="$SDK_PREFIX_PATH"
           cmake --build build/m5h-gateway --parallel 2 \
             --target mygames_server mygames_game_results_test
-      - name: Three real WebSockets, full spring, rematch, two process restarts
+      - name: Three real WebSockets, two terminal springs, three cold restarts
         shell: bash
         run: |
           set -euo pipefail
