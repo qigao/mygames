@@ -306,7 +306,30 @@ static mygames_store_status create_schema(mygames_room_store *s) {
         "epoch integer not null check(epoch>0),"
         "game_id integer not null check(game_id>0),"
         "seq integer not null check(seq>0),"
-        "private_image blob not null check(length(private_image)=224))"
+        "private_image blob not null check(length(private_image)=224))",
+        /* Per-room/game immutable, nonmonetary outcome. A unique global
+         * finish_seq couples this historical settlement to precisely one
+         * committed CFlow Room/receipt/Outbox sequence. No private cards. */
+        "create table if not exists mg_game_results ("
+        "room_id text not null,"
+        "game_id integer not null check(game_id>0),"
+        "finish_seq integer not null unique check(finish_seq>0),"
+        "p0 integer not null check(p0>0),"
+        "p1 integer not null check(p1>0),"
+        "p2 integer not null check(p2>0),"
+        "base integer not null check(base between 1 and 3),"
+        "bombs integer not null check(bombs between 0 and 14),"
+        "spring integer not null check(spring between 0 and 2),"
+        "landlord_seat integer not null check(landlord_seat between 0 and 2),"
+        "winner_seat integer not null check(winner_seat between 0 and 2),"
+        "multiplier integer not null check(multiplier>0),"
+        "unit integer not null check(unit>0),"
+        "d0 integer not null,"
+        "d1 integer not null,"
+        "d2 integer not null,"
+        "primary key(room_id,game_id),"
+        "check(p0<>p1 and p0<>p2 and p1<>p2),"
+        "check(d0+d1+d2=0))"
     };
     orm_transaction_t *tx = NULL;
     mygames_store_status st = begin_transaction(s, &tx);
@@ -1357,7 +1380,52 @@ static mygames_store_status game_store_candidate(
             "values(?1,?2,?3,?4,?5)", args, 5u, &affected);
     }
     if (st != MYGAMES_STORE_OK) return st;
-    return affected == 1u ? MYGAMES_STORE_OK : MYGAMES_STORE_STALE_GAME;
+    if (affected != 1u) return MYGAMES_STORE_STALE_GAME;
+
+    /* Only an actual accepted PLAYING -> FINISHED transition may create a
+     * historical settlement. The same unique Room-Owner transaction also
+     * commits the final private v2 image, exact Game ACK receipt and public
+     * Outbox. No independent score transaction or application-side wallet. */
+    if (game->previous &&
+        game->previous->phase == MYGAMES_DDZ_MATCH_PLAYING &&
+        game->candidate->phase == MYGAMES_DDZ_MATCH_FINISHED) {
+        mygames_ddz_settlement score = {0};
+        orm_value_t values[16];
+        size_t i;
+        if (mygames_ddz_match_settlement(game->candidate, &score) !=
+                MYGAMES_DDZ_MATCH_OK)
+            return MYGAMES_STORE_INVALID;
+        for (i = 0u; i < MYGAMES_DDZ_SEATS; ++i)
+            if (game->candidate->players[i] == 0u ||
+                game->candidate->players[i] > (uint64_t)INT64_MAX)
+                return MYGAMES_STORE_INVALID;
+        values[0] = orm_text(game->room_id);
+        values[1] = orm_i64((int64_t)game->candidate->game_id);
+        values[2] = orm_i64((int64_t)next_sequence);
+        values[3] = orm_i64((int64_t)game->candidate->players[0]);
+        values[4] = orm_i64((int64_t)game->candidate->players[1]);
+        values[5] = orm_i64((int64_t)game->candidate->players[2]);
+        values[6] = orm_i64((int64_t)score.bid_base);
+        values[7] = orm_i64((int64_t)score.bombs_rockets);
+        values[8] = orm_i64((int64_t)score.spring);
+        values[9] = orm_i64((int64_t)score.landlord_seat);
+        values[10] = orm_i64((int64_t)score.winner_seat);
+        values[11] = orm_i64((int64_t)score.multiplier);
+        values[12] = orm_i64((int64_t)score.unit);
+        values[13] = orm_i64((int64_t)score.delta[0]);
+        values[14] = orm_i64((int64_t)score.delta[1]);
+        values[15] = orm_i64((int64_t)score.delta[2]);
+        affected = 0u;
+        st = execute(store, tx,
+            "insert into mg_game_results("
+            "room_id,game_id,finish_seq,p0,p1,p2,base,bombs,spring,"
+            "landlord_seat,winner_seat,multiplier,unit,d0,d1,d2) "
+            "values(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+            values, 16u, &affected);
+        if (st != MYGAMES_STORE_OK) return st;
+        if (affected != 1u) return MYGAMES_STORE_CORRUPT;
+    }
+    return MYGAMES_STORE_OK;
 }
 
 typedef struct optional_seated_expiry {
@@ -1574,6 +1642,181 @@ mygames_store_status mygames_room_store_commit_game(
         expected_epoch, expected_sequence, request_id, command_digest,
         response, response_bytes, event, (size_t)count,
         out_committed_sequence, NULL, &game);
+}
+
+/* Strictly checked immutable historical game result. Do not reuse a live
+ * Game ACK or reexecute M5b to answer queries: this row belongs to the
+ * already-confirmed finish COMMIT and survives a new game/owner epoch. */
+static bool ledger_score_valid(const mygames_store_game_result *value) {
+    const mygames_ddz_settlement *score;
+    uint32_t expected_multiplier, expected_unit;
+    bool landlord_won;
+    unsigned int seat;
+    if (!value || !value->game_id || !value->finish_sequence ||
+        value->players[0] == 0u || value->players[1] == 0u ||
+        value->players[2] == 0u || value->players[0] == value->players[1] ||
+        value->players[0] == value->players[2] ||
+        value->players[1] == value->players[2])
+        return false;
+    score = &value->score;
+    if (score->bid_base < 1u || score->bid_base > 3u ||
+        score->bombs_rockets > 14u ||
+        score->spring > MYGAMES_DDZ_SPRING_FARMERS ||
+        score->landlord_seat >= MYGAMES_DDZ_SEATS ||
+        score->winner_seat >= MYGAMES_DDZ_SEATS)
+        return false;
+    landlord_won = score->landlord_seat == score->winner_seat;
+    if ((score->spring == MYGAMES_DDZ_SPRING_LANDLORD && !landlord_won) ||
+        (score->spring == MYGAMES_DDZ_SPRING_FARMERS && landlord_won))
+        return false;
+    expected_multiplier = UINT32_C(1) <<
+        ((unsigned int)score->bombs_rockets +
+         (score->spring != MYGAMES_DDZ_SPRING_NONE ? 1u : 0u));
+    expected_unit = (uint32_t)score->bid_base * expected_multiplier;
+    if (score->multiplier != expected_multiplier ||
+        score->unit != expected_unit) return false;
+    for (seat = 0u; seat < MYGAMES_DDZ_SEATS; ++seat) {
+        const int32_t expected = seat == score->landlord_seat ?
+            (landlord_won ? (int32_t)(expected_unit * 2u) :
+                            -(int32_t)(expected_unit * 2u)) :
+            (landlord_won ? -(int32_t)expected_unit :
+                             (int32_t)expected_unit);
+        if (score->delta[seat] != expected) return false;
+    }
+    return true;
+}
+
+mygames_store_status mygames_room_store_game_result(
+    mygames_room_store *store, const char *room_id, uint64_t game_id,
+    mygames_store_game_result *out_result) {
+    orm_result_t *result = NULL;
+    orm_error_t error;
+    orm_value_t args[2];
+    orm_status_t rc = ORM_STATUS_OK;
+    mygames_store_status status;
+    mygames_store_game_result item = {0};
+    uint64_t count = 0u;
+    int64_t values[14] = {0};
+    unsigned int i;
+    if (!store || !out_result || !game_room_id_valid(room_id) ||
+        game_id == 0u || game_id > (uint64_t)INT64_MAX)
+        return MYGAMES_STORE_INVALID;
+    if (!owner_valid(store)) return MYGAMES_STORE_QUARANTINED;
+    args[0] = orm_text(room_id);
+    args[1] = orm_i64((int64_t)game_id);
+    status = backend_query(store, NULL,
+        "select finish_seq,p0,p1,p2,base,bombs,spring,"
+        "landlord_seat,winner_seat,multiplier,unit,d0,d1,d2 "
+        "from mg_game_results where room_id=?1 and game_id=?2",
+        args, 2u, &result);
+    if (status != MYGAMES_STORE_OK) return status;
+    orm_error_init(&error);
+    rc = orm_result_row_count(result, &count, &error);
+    if (rc != ORM_STATUS_OK) goto failed;
+    if (count == 0u) {
+        status = MYGAMES_STORE_NOT_FOUND;
+        goto done;
+    }
+    if (count != 1u) {
+        status = MYGAMES_STORE_CORRUPT;
+        goto done;
+    }
+    for (i = 0u; i < 14u && rc == ORM_STATUS_OK; ++i)
+        rc = orm_result_get_int64(result, 0u, i, &values[i], &error);
+    if (rc != ORM_STATUS_OK) goto failed;
+    if (values[0] <= 0 ||
+        values[1] <= 0 || values[2] <= 0 || values[3] <= 0 ||
+        values[4] < 1 || values[4] > 3 ||
+        values[5] < 0 || values[5] > 14 ||
+        values[6] < 0 || values[6] > 2 ||
+        values[7] < 0 || values[7] > 2 ||
+        values[8] < 0 || values[8] > 2 ||
+        values[9] < 1 || values[9] > INT32_MAX ||
+        values[10] < 1 || values[10] > INT32_MAX ||
+        values[11] < INT32_MIN || values[11] > INT32_MAX ||
+        values[12] < INT32_MIN || values[12] > INT32_MAX ||
+        values[13] < INT32_MIN || values[13] > INT32_MAX) {
+        status = MYGAMES_STORE_CORRUPT;
+        goto done;
+    }
+    item.game_id = game_id;
+    item.finish_sequence = (uint64_t)values[0];
+    for (i = 0u; i < MYGAMES_DDZ_SEATS; ++i)
+        item.players[i] = (mygames_player_id)values[1u + i];
+    item.score.bid_base = (uint8_t)values[4];
+    item.score.bombs_rockets = (uint8_t)values[5];
+    item.score.spring = (mygames_ddz_spring_kind)values[6];
+    item.score.landlord_seat = (uint8_t)values[7];
+    item.score.winner_seat = (uint8_t)values[8];
+    item.score.multiplier = (uint32_t)values[9];
+    item.score.unit = (uint32_t)values[10];
+    for (i = 0u; i < MYGAMES_DDZ_SEATS; ++i)
+        item.score.delta[i] = (int32_t)values[11u + i];
+    if (!ledger_score_valid(&item)) {
+        status = MYGAMES_STORE_CORRUPT;
+        goto done;
+    }
+    *out_result = item;
+    status = MYGAMES_STORE_OK;
+    goto done;
+failed:
+    status = error_from_orm(store, rc, &error);
+done:
+    orm_result_destroy(result);
+    return status;
+}
+
+/* Read-only aggregate derived entirely from settled per-game facts,
+ * never from pending Room state or a mutable account wallet. Individual
+ * scores are simple room/game points; no monetary authority is implied. */
+mygames_store_status mygames_room_store_player_game_points(
+    mygames_room_store *store, const char *room_id, mygames_player_id player_id,
+    int64_t *out_points, uint64_t *out_finished_games) {
+    orm_result_t *result = NULL;
+    orm_error_t error;
+    orm_value_t args[2];
+    orm_status_t rc;
+    mygames_store_status st;
+    uint64_t row_count = 0u;
+    int64_t points = 0, matches = 0;
+    if (!store || !game_room_id_valid(room_id) ||
+        !player_id || player_id > (uint64_t)INT64_MAX ||
+        !out_points || !out_finished_games)
+        return MYGAMES_STORE_INVALID;
+    if (!owner_valid(store)) return MYGAMES_STORE_QUARANTINED;
+    args[0] = orm_text(room_id);
+    args[1] = orm_i64((int64_t)player_id);
+    st = backend_query(store, NULL,
+        "select coalesce(sum(case when p0=?2 then d0 "
+        "when p1=?2 then d1 when p2=?2 then d2 else 0 end),0),"
+        "count(*) from mg_game_results where room_id=?1 "
+        "and (p0=?2 or p1=?2 or p2=?2)",
+        args, 2u, &result);
+    if (st != MYGAMES_STORE_OK) return st;
+    orm_error_init(&error);
+    rc = orm_result_row_count(result, &row_count, &error);
+    if (rc == ORM_STATUS_OK && row_count != 1u) {
+        st = MYGAMES_STORE_CORRUPT;
+        goto done;
+    }
+    if (rc == ORM_STATUS_OK)
+        rc = orm_result_get_int64(result, 0u, 0u, &points, &error);
+    if (rc == ORM_STATUS_OK)
+        rc = orm_result_get_int64(result, 0u, 1u, &matches, &error);
+    if (rc != ORM_STATUS_OK) {
+        st = error_from_orm(store, rc, &error);
+        goto done;
+    }
+    if (matches < 0) {
+        st = MYGAMES_STORE_CORRUPT;
+        goto done;
+    }
+    *out_points = points;
+    *out_finished_games = (uint64_t)matches;
+    st = MYGAMES_STORE_OK;
+done:
+    orm_result_destroy(result);
+    return st;
 }
 
 mygames_store_status mygames_room_store_load_game(
