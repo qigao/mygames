@@ -54,11 +54,16 @@ jobs:
         shell: pwsh
         env:
           COCOS_CREATOR_EXECUTABLE: ${{ vars.MYGAMES_COCOS_CREATOR_388_EXE }}
+          COCOS_CREATOR_SHA256: ${{ vars.MYGAMES_COCOS_CREATOR_388_SHA256 }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:COCOS_CREATOR_EXECUTABLE)) {
             throw "Set trusted repository variable MYGAMES_COCOS_CREATOR_388_EXE first"
           }
-          python scripts/ci/verify_cocos_creator_web.py --creator "$env:COCOS_CREATOR_EXECUTABLE" --project "$env:GITHUB_WORKSPACE/apps/cocos" --report "$env:GITHUB_WORKSPACE/apps/cocos/build/cocos-editor-m5i-evidence.json"
+          if ([string]::IsNullOrWhiteSpace($env:COCOS_CREATOR_SHA256)) {
+            throw "Set trusted repository variable MYGAMES_COCOS_CREATOR_388_SHA256 first"
+          }
+          python scripts/ci/verify_cocos_creator_web.py --creator "$env:COCOS_CREATOR_EXECUTABLE" --project "$env:GITHUB_WORKSPACE/apps/cocos" --report "$env:GITHUB_WORKSPACE/apps/cocos/build/cocos-editor-m5i-evidence.json" --expected-head "$env:EXPECTED_HEAD" --expected-creator-sha256 "$env:COCOS_CREATOR_SHA256"
           if ($LASTEXITCODE -ne 0) { throw "Real Cocos Creator admission failed" }
       - name: Save only nonsecret CLI build metadata (NO game hand or tickets)
         if: success()

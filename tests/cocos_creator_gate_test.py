@@ -3,6 +3,7 @@
 Only a real, installed Cocos Creator 3.8.8 binary running inside a GUI
 session can satisfy the separate manual Editor/Web acceptance workflow.
 """
+import hashlib
 import importlib.util
 import json
 import os
@@ -15,6 +16,9 @@ from unittest.mock import patch
 
 
 SCENE_UUID = "74bddbba-b612-4236-b8ed-d10f871e0d49"
+FAKE_HEAD = "a" * 40
+FAKE_CREATOR_BYTES = b"fake-executable-for-harness-contract-only"
+FAKE_CREATOR_HASH = hashlib.sha256(FAKE_CREATOR_BYTES).hexdigest()
 FILE = Path(__file__).resolve().parents[1] / "scripts/ci/verify_cocos_creator_web.py"
 SPEC = importlib.util.spec_from_file_location("verify_cocos_creator_web", FILE)
 GATE = importlib.util.module_from_spec(SPEC)
@@ -36,22 +40,30 @@ class RealEditorGateHarnessTests(unittest.TestCase):
         (self.project / "package.json").write_text(
             json.dumps({"creator": {"version": "3.8.8"}}))
         self.creator = root / "CocosCreator.exe"
-        self.creator.write_bytes(b"fake-executable-for-harness-contract-only")
+        self.creator.write_bytes(FAKE_CREATOR_BYTES)
         self.report = root / "evidence.json"
-        self.index = (self.project / "build" / GATE.BUILD_OUTPUT_NAME /
-                      "index.html")
-        self.application = (self.project / "build" / GATE.BUILD_OUTPUT_NAME /
-                            "src" / "application.js")
+        self.output = None
+        self.index = None
+        self.application = None
 
     def invoke(self, exit_code=36, produce=True, fresh=True,
-               produce_bootstrap=True):
+               produce_bootstrap=True, expected_head=FAKE_HEAD,
+               expected_hash=FAKE_CREATOR_HASH):
         def intercepted(command, **kwargs):
             if command[0] == "git":
-                return SimpleNamespace(returncode=1, stdout="", stderr="")
+                return SimpleNamespace(returncode=0, stdout=FAKE_HEAD + "\n",
+                                       stderr="")
             self.assertEqual(command[1:3], ["--project", str(self.project)])
             self.assertEqual(command[3], "--build")
             self.assertIn("startScene=" + SCENE_UUID, command[4])
-            self.assertIn("outputName=" + GATE.BUILD_OUTPUT_NAME, command[4])
+            parameters = dict(part.split("=", 1)
+                              for part in command[4].split(";"))
+            output_name = parameters["outputName"]
+            self.assertRegex(output_name,
+                             r"^" + GATE.BUILD_OUTPUT_PREFIX + r"-[0-9a-f]{16}$")
+            self.output = self.project / "build" / output_name
+            self.index = self.output / "index.html"
+            self.application = self.output / "src" / "application.js"
             if produce:
                 self.index.parent.mkdir(parents=True, exist_ok=True)
                 self.index.write_text("<html>dummy harness artifact</html>")
@@ -65,8 +77,11 @@ class RealEditorGateHarnessTests(unittest.TestCase):
                         os.utime(path, (previous, previous))
             return SimpleNamespace(returncode=exit_code, stdout="", stderr="")
         with patch.object(GATE.subprocess, "run", side_effect=intercepted):
-            return GATE.run_gate(self.creator, self.project, self.report, 40,
-                                 platform_name="win32")
+            return GATE.run_gate(
+                self.creator, self.project, self.report, 40,
+                platform_name="win32",
+                expected_head=expected_head,
+                expected_creator_sha256=expected_hash)
 
     def test_documented_success_with_fresh_output_records_qualified_build_only(self):
         self.assertEqual(self.invoke(), self.report)
@@ -80,10 +95,43 @@ class RealEditorGateHarnessTests(unittest.TestCase):
         self.assertEqual(evidence["project_requested_creator_version"], "3.8.8")
         self.assertEqual(evidence["tracked_start_scene_uuid"], SCENE_UUID)
         self.assertTrue(evidence["explicit_start_scene"])
-        self.assertEqual(evidence["output_name"], GATE.BUILD_OUTPUT_NAME)
+        self.assertRegex(evidence["output_name"],
+                         r"^" + GATE.BUILD_OUTPUT_PREFIX + r"-[0-9a-f]{16}$")
+        self.assertTrue(evidence["output_isolated_per_run"])
+        self.assertEqual(evidence["source_head_sha"], FAKE_HEAD)
+        self.assertTrue(evidence["expected_head_sha_matched"])
+        self.assertTrue(evidence["creator_sha256_pin_verified"])
         self.assertEqual(len(evidence["index_sha256"]), 64)
         self.assertEqual(len(evidence["bootstrap_sha256"]), 64)
         self.assertEqual(len(evidence["creator_executable_sha256"]), 64)
+
+    def test_prior_artifact_cannot_satisfy_a_new_isolated_run(self):
+        old = self.project / "build" / (
+            GATE.BUILD_OUTPUT_PREFIX + "-" + "0" * 16) / "index.html"
+        old.parent.mkdir(parents=True)
+        old.write_text("old build")
+        self.assertEqual(self.invoke(), self.report)
+        self.assertNotEqual(self.index, old)
+        self.assertEqual(old.read_text(), "old build")
+
+    def test_expected_head_mismatch_rejects_before_editor_execution(self):
+        with self.assertRaisesRegex(RuntimeError, "Source HEAD differs"):
+            self.invoke(expected_head="b" * 40)
+        self.assertFalse(self.report.exists())
+        self.assertIsNone(self.output)
+
+    def test_wrong_creator_hash_rejects_before_editor_execution(self):
+        with self.assertRaisesRegex(RuntimeError, "SHA256 does not match pin"):
+            self.invoke(expected_hash="0" * 64)
+        self.assertFalse(self.report.exists())
+        self.assertIsNone(self.output)
+
+    def test_unpinned_local_run_records_its_limitations(self):
+        self.assertEqual(self.invoke(expected_head=None, expected_hash=None),
+                         self.report)
+        evidence = json.loads(self.report.read_text())
+        self.assertFalse(evidence["creator_sha256_pin_verified"])
+        self.assertFalse(evidence["expected_head_sha_matched"])
 
     def test_non_success_exit_including_zero_never_claims_build(self):
         for code in (0, 32, 34, 1):

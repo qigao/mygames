@@ -7,8 +7,10 @@ See: https://docs.cocos.com/creator/3.8/manual/en/editor/publish/publish-in-comm
 """
 import argparse
 import hashlib
+import hmac
 import json
 import re
+import secrets
 import subprocess
 import sys
 import time
@@ -16,7 +18,7 @@ from pathlib import Path
 
 
 REQUIRED_VERSION = "3.8.8"
-BUILD_OUTPUT_NAME = "mygames-m5i-web-desktop"
+BUILD_OUTPUT_PREFIX = "mygames-m5i-web-desktop"
 UUID_PATTERN = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
@@ -58,11 +60,15 @@ def parse_args():
                                                  "apps" / "cocos"))
     parser.add_argument("--report", help="Local JSON evidence path (no secrets or private cards)")
     parser.add_argument("--timeout", type=int, default=900)
+    parser.add_argument("--expected-head", help="Exact 40-digit git SHA for this build")
+    parser.add_argument("--expected-creator-sha256",
+                        help="Trusted SHA256 of installed executable, pinned by admin")
     return parser.parse_args()
 
 
 def run_gate(creator: Path, project: Path, report: Path, timeout: int,
-             platform_name: str = None):
+             platform_name: str = None, expected_head: str = None,
+             expected_creator_sha256: str = None):
     # Injectable only for local self-tests; the CLI always uses sys.platform.
     platform_name = sys.platform if platform_name is None else platform_name
     if platform_name not in ("win32", "darwin"):
@@ -81,15 +87,43 @@ def run_gate(creator: Path, project: Path, report: Path, timeout: int,
     if timeout < 30:
         raise RuntimeError("Timeout must be at least 30 seconds")
 
-    # Never overwrite a project-level scene or copy private ticket/hand data.
-    # The Editor must create an actual Web Desktop index.html in this run.
+    # A project manifest or a runner label cannot prove which executable
+    # was run. The trusted SHA pin is mandatory on the opt-in GUI runner.
+    creator_hash = file_sha256(creator)
+    if expected_creator_sha256 is not None:
+        pin = expected_creator_sha256.lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", pin):
+            raise RuntimeError("Expected Creator SHA256 must be 64 hex characters")
+        if not hmac.compare_digest(creator_hash, pin):
+            raise RuntimeError("Installed Creator executable SHA256 does not match pin")
+
+    # Evidence must belong to one inspectable source commit. A missing Git
+    # binary or an unexpected checkout is not an acceptable exact-head run.
+    try:
+        head_result = subprocess.run(
+            ["git", "-C", str(project), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=False)
+    except OSError as exc:
+        raise RuntimeError("Git is required for exact source HEAD evidence") from exc
+    head = head_result.stdout.strip()
+    if head_result.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", head):
+        raise RuntimeError("Cannot establish exact source HEAD from Git")
+    if expected_head is not None:
+        expected = expected_head.lower()
+        if not re.fullmatch(r"[0-9a-f]{40}", expected) or head != expected:
+            raise RuntimeError("Source HEAD differs from expected CI checkout SHA")
+
+    # Every invocation gets a random, previously nonexistent output folder.
+    # Never delete existing build output and never accept a previous build
+    # merely because its mtime was within three seconds of this invocation.
+    output_name = BUILD_OUTPUT_PREFIX + "-" + secrets.token_hex(8)
+    output = project / "build" / output_name
+    if output.exists() or output.is_symlink():
+        raise RuntimeError("Isolated Creator output already exists")
     started = time.time()
-    # The official 3.8 CLI supports startScene=<uuid> and outputName.
-    # This avoids accidentally bundling a different scene selected in a
-    # developer's previous Editor session, and gives a dedicated output.
     cmd = [str(creator), "--project", str(project), "--build",
            ("platform=web-desktop;debug=true;startScene=" + scene_uuid +
-            ";outputName=" + BUILD_OUTPUT_NAME)]
+            ";outputName=" + output_name)]
     try:
         result = subprocess.run(cmd, timeout=timeout, capture_output=True,
                                 text=True, errors="replace", check=False)
@@ -103,7 +137,6 @@ def run_gate(creator: Path, project: Path, report: Path, timeout: int,
                            "(documented exit 36; got %d). Inspect local Editor "
                            "console. No Editor/Web acceptance is claimed." %
                            result.returncode)
-    output = project / "build" / BUILD_OUTPUT_NAME
     index = output / "index.html"
     application = output / "src" / "application.js"
     if not index.is_file() or index.stat().st_size == 0:
@@ -117,16 +150,6 @@ def run_gate(creator: Path, project: Path, report: Path, timeout: int,
         raise RuntimeError("Creator build appears stale: index or application.js "
                            "predates this run")
 
-    head = None
-    try:
-        head_result = subprocess.run(["git", "-C", str(project), "rev-parse", "HEAD"],
-                                     capture_output=True, text=True, check=False)
-        if head_result.returncode == 0:
-            head = head_result.stdout.strip()
-    except OSError:
-        # An Editor installed on a workstation may not have git on PATH.
-        # Report an absent source hash; do not fabricate an exact HEAD.
-        pass
     evidence = {
         "gate": "real-cocos-creator-cli-web-desktop",
         "project_requested_creator_version": REQUIRED_VERSION,
@@ -134,15 +157,18 @@ def run_gate(creator: Path, project: Path, report: Path, timeout: int,
         "editor_runtime_invoked": True,
         "documented_success_exit_code": result.returncode,
         "source_head_sha": head,
+        "expected_head_sha_matched": expected_head is not None,
         "tracked_start_scene_uuid": scene_uuid,
         "explicit_start_scene": True,
-        "output_name": BUILD_OUTPUT_NAME,
-        "produced_index": "build/" + BUILD_OUTPUT_NAME + "/index.html",
+        "output_name": output_name,
+        "output_isolated_per_run": True,
+        "produced_index": "build/" + output_name + "/index.html",
         "index_size_bytes": index.stat().st_size,
         "index_sha256": file_sha256(index),
-        "produced_bootstrap": "build/" + BUILD_OUTPUT_NAME + "/src/application.js",
+        "produced_bootstrap": "build/" + output_name + "/src/application.js",
         "bootstrap_sha256": file_sha256(application),
-        "creator_executable_sha256": file_sha256(creator),
+        "creator_executable_sha256": creator_hash,
+        "creator_sha256_pin_verified": expected_creator_sha256 is not None,
         "produced_in_this_run": True,
         "editor_scene_visual_acceptance": False,
         "browser_three_client_visual_acceptance": False,
@@ -162,13 +188,16 @@ def main():
         project = Path(args.project).expanduser().resolve()
         report = (Path(args.report).expanduser().resolve() if args.report else
                   project / "build" / "cocos-editor-m5i-evidence.json")
-        completed = run_gate(creator, project, report, args.timeout)
+        completed = run_gate(
+            creator, project, report, args.timeout,
+            expected_head=args.expected_head,
+            expected_creator_sha256=args.expected_creator_sha256)
     except (RuntimeError, OSError, ValueError, json.JSONDecodeError) as exc:
         print("Cocos REAL Editor Web gate: NOT ACCEPTED — " + str(exc),
               file=sys.stderr)
         return 1
     print("Cocos real Editor CLI Web Desktop build: SUCCESS (exit 36, "
-          "explicit Lobby startScene + fresh index/application.js); "
+          "explicit Lobby startScene + isolated new index/application.js); "
           "Editor 3.8.8 binary identity, preview and "
           "actual UI visuals remain UNVERIFIED. Evidence: " + str(completed))
     return 0

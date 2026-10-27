@@ -64,10 +64,11 @@ version in the Dashboard or Editor About dialog. Then from the repository root:
 The script uses Cocos Creator's **real** `--project apps/cocos --build`
 CLI, explicitly sets `startScene` to the verified UUID in the tracked
 `Lobby.scene.meta` (`74bddbba-b612-4236-b8ed-d10f871e0d49`), and uses
-the dedicated `outputName=mygames-m5i-web-desktop` build folder. It
-requires the documented success exit **36** and fresh nonempty
-`build/mygames-m5i-web-desktop/index.html` **and**
-`build/mygames-m5i-web-desktop/src/application.js`. The report stores
+a **unique** `outputName=mygames-m5i-web-desktop-<16-hex>` folder
+per invocation, without deleting or reusing previous output.
+It requires documented success exit **36** and nonempty
+`build/<outputName>/index.html` **and**
+`build/<outputName>/src/application.js`. The report stores
 the source HEAD, scene UUID, binary SHA256 fingerprint and hashes of the
 built entry files as nonsecret evidence.
 It writes only `apps/cocos/build/cocos-editor-m5i-evidence.json` with
@@ -83,8 +84,16 @@ job is opt-in on a **same-repository** PR: a maintainer applies the
 self-hosted logged-in GUI runner labeled `cocos-creator-3.8.8`
 **without merging the Draft branch**. The installed executable path must
 be configured by an administrator as repository variable
-`MYGAMES_COCOS_CREATOR_388_EXE`; no PR submitter or dispatch input
-may supply an arbitrary executable path. A `workflow_dispatch`
+`MYGAMES_COCOS_CREATOR_388_EXE`, **and** the expected binary hash in
+`MYGAMES_COCOS_CREATOR_388_SHA256`. The job passes the exact PR HEAD
+and verifies both the Git checkout SHA and the executable hash **before
+launching the Editor**. A local operator may also supply
+`--expected-head` and `--expected-creator-sha256`; when omitted the
+evidence clearly records the missing trusted pins. Git is required to
+establish the physical source HEAD. The trusted executable SHA identifies
+the binary but the operator must still independently verify the installed
+Creator 3.8.8 version through Dashboard/About. No PR submitter or dispatch
+input may supply an arbitrary executable path. A `workflow_dispatch`
 route is also available once the workflow file is present on the default
 branch. On ordinary PR runs, the actual Editor job is deliberately
 **skipped**. A skipped job is **not Editor acceptance**.
