@@ -392,3 +392,90 @@ test('M5h two finished games, landlord rotation and rematch recovery never displ
   assert.equal(store.applyPrivateHand(privateHand('second-private',gameTwo)),false,
     'Unsolicited hand after recovery cannot bypass exact request binding');
 });
+
+test('M5i verified reconnect keeps unique new game request IDs and exact old replay',()=>{
+  globalThis.WebSocket=FakeWebSocket;
+  const client=new GameSocket(()=>{},()=>{});
+  client.connect('ws://127.0.0.1:1780/ws');
+  let ws=FakeWebSocket.instances.at(-1);
+  ws.open();
+  ws.receive(hello(101,token('a')));
+  const firstId=client.startGame();
+  const firstWire=ws.sent.at(-1);
+  ws.receive({...startAck,request_id:firstId});
+  assert.equal(client.pendingGameCount,0);
+  // The command is physically sent and its outcome is not known yet.
+  const pendingId=client.bid(gameId,'1',3);
+  const pendingWire=ws.sent.at(-1);
+  assert.notEqual(pendingId,firstId);
+  ws.disconnect();
+  client.connect('ws://127.0.0.1:1780/ws');
+  ws=FakeWebSocket.instances.at(-1);
+  ws.open();
+  ws.receive(hello(404,token('b')));
+  assert.equal(client.state,'restoring');
+  assert.equal(ws.sent.length,1);
+  ws.receive({v:1,type:'session.ready',player_id:'101',
+    generation:2,resume_token:token('c'),resumed:true});
+  assert.equal(client.state,'ready');
+  assert.deepEqual(ws.sent[1],pendingWire,
+    'Only the original unresolved command may be replayed verbatim');
+  assert.equal(client.pendingGameCount,1);
+  ws.receive({...startAck,request_id:pendingId,action:'bid',
+    phase:3,turn_id:'2',seq:'18446744073709551601'});
+  assert.equal(client.pendingGameCount,0);
+  const newerId=client.play(gameId,'2','00000000000001');
+  assert.ok(![firstId,pendingId].includes(newerId),
+    'New command after resume must never collide with an old receipt');
+  assert.notDeepEqual(ws.sent.at(-1),firstWire);
+  const newerWire=ws.sent.at(-1);
+  ws.disconnect();
+
+  // Repeated cold transport reconnects must keep the same monotonic
+  // session nonce/ordinal even when an unconfirmed new turn is pending.
+  client.connect('ws://127.0.0.1:1780/ws');
+  ws=FakeWebSocket.instances.at(-1);
+  ws.open();
+  ws.receive(hello(505,token('d')));
+  ws.receive({v:1,type:'session.ready',player_id:'101',
+    generation:3,resume_token:token('e'),resumed:true});
+  assert.deepEqual(ws.sent[1],newerWire);
+  assert.equal(client.pendingGameCount,1);
+  ws.receive({...startAck,request_id:newerId,action:'play',
+    phase:3,turn_id:'3',seq:'18446744073709551602'});
+  const lastId=client.pass(gameId,'3');
+  assert.equal(new Set([firstId,pendingId,newerId,lastId]).size,4);
+  client.disconnect();
+  globalThis.WebSocket=originalWebSocket;
+});
+
+test('M5i recovery cannot replay old-player game commands under a different identity',()=>{
+  globalThis.WebSocket=FakeWebSocket;
+  const client=new GameSocket(()=>{},()=>{});
+  client.connect('ws://127.0.0.1:1780/ws');
+  let ws=FakeWebSocket.instances.at(-1);
+  ws.open();
+  ws.receive(hello(101,token('a')));
+  client.startGame();
+  assert.equal(client.pendingGameCount,1);
+  ws.disconnect();
+  client.connect('ws://127.0.0.1:1780/ws');
+  ws=FakeWebSocket.instances.at(-1);
+  ws.open();
+  ws.receive(hello(404,token('b')));
+  assert.equal(client.state,'restoring');
+  assert.equal(ws.sent.length,1);
+  // Malformed recovery semantics, even though this frame passes shape
+  // validation: player 202 is NOT the holder of player 101's commands.
+  ws.receive({v:1,type:'session.ready',player_id:'202',
+    generation:2,resume_token:token('c'),resumed:true});
+  assert.equal(client.state,'failed');
+  assert.equal(client.canResume,false);
+  assert.equal(client.currentPlayerId,null);
+  assert.equal(client.pendingGameCount,0);
+  assert.equal(ws.sent.length,1,
+    'Mismatched principal must NEVER see the pending request replay');
+  assert.throws(()=>client.startGame(),/Not connected/);
+  client.disconnect();
+  globalThis.WebSocket=originalWebSocket;
+});
