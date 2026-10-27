@@ -1,5 +1,5 @@
 import {cardsFromMask, cardMaskFromIds} from '../net/Protocol';
-import type {GameAck, GameHand, GameSnapshot} from '../net/Protocol';
+import type {GameAck, GameHand, GameSnapshot, GameResult, GameStandings} from '../net/Protocol';
 
 function phaseRank(view: GameSnapshot): number {
     return view.phase === 'bidding' ? 1 :
@@ -24,6 +24,11 @@ export class GameStore {
     private readonly selectedCards = new Set<number>();
     private awaitingHand: {requestId: string; gameId: string} | null = null;
     private lastAckValue: GameAck | null = null;
+    private standingsValue: GameStandings | null = null;
+    private historicalResultValue: GameResult | null = null;
+    private priorFinishedGameId: string | null = null;
+    private expectingStandings: string | null = null;
+    private expectingHistory: {requestId: string; gameId: string} | null = null;
     private hydratedValue = false;
 
     get roomId(): string | null { return this.roomIdValue; }
@@ -34,6 +39,12 @@ export class GameStore {
     }
     get selected(): readonly number[] { return [...this.selectedCards].sort((a,b)=>b-a); }
     get lastAck(): GameAck | null { return this.lastAckValue; }
+    get standings(): GameStandings | null { return this.standingsValue; }
+    get historicalResult(): GameResult | null { return this.historicalResultValue; }
+    get lastFinishedGameId(): string | null {
+        return this.currentView?.phase === 'finished' ?
+            this.currentView.game_id : this.priorFinishedGameId;
+    }
     get hydrated(): boolean { return this.hydratedValue; }
     get gameId(): string | null {
         // A newly confirmed game.start ACK can arrive while the displayed
@@ -74,6 +85,10 @@ export class GameStore {
     suspend(): void {
         this.privateHand = null;
         this.awaitingHand = null;
+        this.standingsValue = null;
+        this.historicalResultValue = null;
+        this.expectingStandings = null;
+        this.expectingHistory = null;
         this.selectedCards.clear();
         this.hydratedValue = false;
     }
@@ -83,6 +98,11 @@ export class GameStore {
         this.privateHand = null;
         this.awaitingHand = null;
         this.lastAckValue = null;
+        this.standingsValue = null;
+        this.historicalResultValue = null;
+        this.priorFinishedGameId = null;
+        this.expectingStandings = null;
+        this.expectingHistory = null;
         this.selectedCards.clear();
         this.hydratedValue = false;
         this.roomIdValue = null;
@@ -130,6 +150,9 @@ export class GameStore {
                     return false;
             }
         }
+        if (current && current.phase === 'finished' &&
+            BigInt(next.game_id) > BigInt(current.game_id))
+            this.priorFinishedGameId = current.game_id;
         // A newer Owner epoch with exactly the same committed game/turn is
         // still accepted to rehydrate a fresh session and private hand.
         this.currentView = next;
@@ -162,6 +185,11 @@ export class GameStore {
             BigInt(ack.game_id) > BigInt(this.currentView.game_id);
         this.lastAckValue = ack;
         if (newGameCommitted) {
+            if (this.currentView?.phase === 'finished')
+                this.priorFinishedGameId = this.currentView.game_id;
+            // Standings are now stale until reloaded after this COMMIT.
+            this.standingsValue = null;
+            this.expectingStandings = null;
             // The old FINISHED score and private hand must disappear as
             // soon as the next game's durable ACK is observed. Public
             // bidding and a fresh member-only hand are fetched afterwards.
@@ -171,6 +199,48 @@ export class GameStore {
             this.selectedCards.clear();
             this.hydratedValue = false;
         }
+        return true;
+    }
+
+    expectStandings(requestId: string): void {
+        this.expectingStandings = requestId;
+    }
+
+    applyStandings(frame: GameStandings): boolean {
+        if (!this.roomIdValue || !this.playerIdValue ||
+            this.expectingStandings !== frame.request_id ||
+            this.roomIdValue !== frame.room_id ||
+            (this.currentView &&
+             BigInt(frame.room_epoch) < BigInt(this.currentView.room_epoch)) ||
+            (this.lastAckValue &&
+             BigInt(frame.checkpoint_seq) < BigInt(this.lastAckValue.seq)) ||
+            (this.standingsValue &&
+             BigInt(frame.checkpoint_seq) <
+                 BigInt(this.standingsValue.checkpoint_seq)) ||
+            !frame.players.some(p=>p.player_id===this.playerIdValue) ||
+            (this.seatValue !== null &&
+             frame.players[this.seatValue]?.player_id !== this.playerIdValue))
+            return false;
+        this.standingsValue = frame;
+        this.expectingStandings = null;
+        return true;
+    }
+
+    expectHistory(requestId: string, gameId: string): void {
+        this.expectingHistory = {requestId,gameId};
+    }
+
+    applyHistoricalResult(frame: GameResult): boolean {
+        if (!this.roomIdValue || !this.playerIdValue ||
+            frame.room_id !== this.roomIdValue ||
+            this.expectingHistory?.requestId !== frame.request_id ||
+            this.expectingHistory?.gameId !== frame.game_id ||
+            !frame.players.includes(this.playerIdValue) ||
+            (this.seatValue !== null &&
+             frame.players[this.seatValue] !== this.playerIdValue))
+            return false;
+        this.historicalResultValue = frame;
+        this.expectingHistory = null;
         return true;
     }
 
