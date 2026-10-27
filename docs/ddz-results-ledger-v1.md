@@ -69,26 +69,57 @@ receipts remain separate and are not changed.
 
 ## Exact-head acceptance and boundaries
 
-An additional compiled C11 TurboDB fixture runs a true 20-card
-landlord spring game with two farmers PASSing after 19 plays, injects
-a real rollback **after** the would-be private final checkpoint but
-**before** receipt/Outbox, verifies zero credited results, then retries
-the same legal final move and checks precisely one result. Duplicate
-original `request_id` returns REPLAY, conflicting digest returns
-CONFLICT, no additional score is posted. A newly started, unfinished
-rematch is uncredited. The closed/reopened physical SQLite connection
-and new Room Owner epoch retain the original one-game score.
+An additional compiled C11 TurboDB fixture runs **two complete physical**
+20-card landlord spring games with different landlords. In game one, two
+farmers PASS after each of 19 plays. The test injects a real transaction
+failure **after** the would-be private final checkpoint but **before**
+receipt/Outbox. No result or credit survives that failed COMMIT. The
+confirmed retry inserts exactly one immutable result; replaying the same
+`request_id` and submitting a conflicting digest cannot credit twice.
 
-The existing real three-client CHttp/CFlow/TurboDB M5f full-match CI
-independently opens a **read-only SQLite connection** after each of
-three genuine process executions and verifies the ledger contains
-exactly the original score `[+12,-6,-6]` at the original
-winning Game ACK sequence. A later unfinished rematch remains uncredited;
-the first game's points do not multiply after restart or old receipt
-replay. No private credential or original shuffled cards are uploaded.
+The rematch remains uncredited throughout bidding and nonterminal play.
+Its different landlord then legally wins after a second genuine sequence
+of 20 singles and 38 farmer PASSes. The two terminal results carry
+distinct `game_id` and `finish_seq` values, with deltas
+`[+12,-6,-6]` and `[-6,+12,-6]`, yielding
+`[+6,+6,-12]` per-seat cumulative totals. A physical SQLite connection
+close/reopen and new Room Owner epoch claim preserve both historical
+rows and original terminal sequences. The immutable HEAD
+`8a22afecc1ec231d4e940dd8fec51932c8f273a2` established the
+first exact-head green C11 two-game ledger gate.
 
-This is Draft, with no real-money gaming/payments, persistent ranked
-account service, cross-room/global scoring, scheduled session expiry,
-production WSS/IAM, Cocos Editor runtime acceptance, external Flowie
-game events, real power-cut claims or cross-host Game Owner leadership.
-No pending Draft PR is merged as a consequence of these tests.
+The separate M5f/M5h **real native CHttp/CFlow/TurboDB three-client**
+qualification is extended to **four physical server processes**:
+
+1. Finish a complete landlord spring in seat 0. A separate read-only
+   SQLite connection must find exactly one `[+12,-6,-6]` row at its
+   durable winning Game ACK sequence.
+2. Cold restart, claim a new epoch, replay the original receipts, then
+   bid and start a new shuffled game with seat 2 as landlord. Its
+   **nonterminal** score must not appear in the ledger.
+3. Cold restart again, reauthenticate all three physical WebSocket
+   clients, replay old receipts, then finish the second real full-length
+   game using 20 distinct seat-2 plays and 38 genuine seat-0/seat-1
+   PASS actions. Audit two different immutable results, score deltas
+   `[+12,-6,-6]` and `[-6,-6,+12]`, and cumulative points
+   `[+6,-12,+6]`.
+4. Cold restart a third time. Read-only SQLite audit must still
+   find **the same two committed historical rows and original terminal
+   sequence numbers**. Original Game ACKs from *both* finished games
+   must replay byte-for-byte without any new credit.
+
+The third/fourth-stage real-WebSocket extension is a **new candidate**
+until its own exact-HEAD M5f and M5h workflows pass. In contrast, the
+prior immutable `8a22afe` native green gate tested two fully finished
+games in the C11 fixture but only one fully finished game through
+real WebSocket clients. This distinction must not be elided.
+
+The private member resume manifest (0600) is deleted with the temporary
+test directory; no private hand, hidden deck, credential, SQLite DB or
+private checkpoint is uploaded as a CI artifact.
+
+This remains Draft. There is no real-money gaming/payment ledger,
+persistent global ranked account service, production WSS/IAM, Cocos
+Editor runtime acceptance, external Flowie game events, real power-cut
+claim or cross-host leadership/fencing proof. These tests neither merge
+the stacked PRs nor change any deployed SDK or Flowie pins.
