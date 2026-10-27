@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   full-game-acceptance:
-    name: Three real players 20-card winner, rematch, and two cold SQL reopens
+    name: Three real players, two 20-card winners, and three cold SQL reopens
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -83,7 +83,7 @@ jobs:
           ctest --test-dir build/m5f-gateway -C Release --output-on-failure \
             --no-tests=error --timeout 120 \
             -R '^mygames[.](game_owner|game_store|turbodb_store|ddz_game_wire)$'
-      - name: Real complete landlord victory, rematch with farmer landlord and cold restarts
+      - name: Two completed landlord victories, real rematch, and cold restarts
         shell: bash
         run: |
           set -euo pipefail
