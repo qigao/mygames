@@ -522,3 +522,71 @@ test('M5i Owner epoch takeover cannot regress committed game, phase, turn or ACK
   assert.equal(store.lastAck.game_id,'12');
   assert.equal(store.applySnapshot({...firstFinished,room_epoch:'10'}),false);
 });
+
+test('M5i a confirmed rematch ACK refreshes the NEW game, not the stale finished snapshot',()=>{
+  const store=new GameStore();
+  store.bindRoom('room-1','101',0);
+  const finished={...playing('59',0),phase:'finished',turn_seat:3,
+    winner_seat:0,score:springScore};
+  assert.equal(store.applySnapshot(finished),true);
+  store.expectHand('finished-private',gameId);
+  assert.equal(store.applyPrivateHand(privateHand('finished-private')),true);
+  assert.equal(store.hand.length,2);
+
+  const firstFinishAck={...startAck,action:'play',request_id:'first-finish',
+    phase:4,turn_id:'59',seq:'18446744073709551605'};
+  assert.equal(store.noteAck(firstFinishAck),true);
+  const rematchGame='9007199254740995';
+  const rematchAck={...startAck,request_id:'rematch-start',
+    game_id:rematchGame,phase:1,turn_id:'1',
+    seq:'18446744073709551606'};
+  assert.equal(store.noteAck(rematchAck),true);
+  assert.equal(store.gameId,rematchGame,
+    'After the durable rematch Game ACK, the next snapshot request must target the new game');
+  assert.equal(store.snapshot,null,
+    'The old terminal winner and score cannot remain on the displayed game');
+  assert.deepEqual(store.hand,[],
+    'The old private hand cannot be displayed before the new game rehydrates');
+  assert.equal(store.hydrated,false);
+  assert.equal(store.isMyTurn,false);
+  assert.equal(store.applySnapshot(finished),false,
+    'A delayed terminal snapshot from game one cannot undo the confirmed rematch');
+
+  globalThis.WebSocket=FakeWebSocket;
+  const socket=new GameSocket(()=>{},()=>{});
+  try {
+    socket.connect('ws://127.0.0.1:1780/ws');
+    const ws=FakeWebSocket.instances.at(-1);
+    ws.open();
+    ws.receive(hello(101,token('a')));
+    assert.equal(socket.canPlayGames,true);
+    const request=socket.requestGameSnapshot(store.gameId);
+    assert.deepEqual(ws.sent.at(-1),{
+      v:1,type:'game.snapshot.get',request_id:request,game_id:rematchGame
+    },'The production client must send the new committed game ID');
+  } finally {
+    socket.disconnect();
+    globalThis.WebSocket=originalWebSocket;
+  }
+
+  const newBidding={...bidding(),game_id:rematchGame,
+    bid_turn_id:'1'};
+  assert.equal(store.applySnapshot(newBidding),true);
+  assert.equal(store.snapshot.phase,'bidding');
+  assert.equal(store.gameId,rematchGame);
+  assert.equal('score' in store.snapshot,false);
+  store.expectHand('rematch-member-hand',rematchGame);
+  assert.equal(store.applyPrivateHand(
+    privateHand('rematch-member-hand',gameId)),false);
+  assert.equal(store.applyPrivateHand(
+    privateHand('rematch-member-hand',rematchGame)),true);
+  assert.equal(store.applySnapshot(finished),false);
+
+  // If an unsolicited newer-game public snapshot arrives before an ACK,
+  // snapshot identity must also outrank the older ACK as the refresh target.
+  const peer=new GameStore();
+  peer.bindRoom('room-1','202',1);
+  assert.equal(peer.noteAck(startAck),true);
+  assert.equal(peer.applySnapshot(newBidding),true);
+  assert.equal(peer.gameId,rematchGame);
+});
