@@ -52,6 +52,22 @@ const playing=(turn='1',count=20)=>({...base,type:'game.snapshot',request_id:'br
 });
 const springScore={base:3,bombs:0,spring:'landlord',multiplier:2,
                    unit:6,delta:[12,-6,-6]};
+const historicalResult={
+  v:1,type:'game.result',request_id:'result-query',room_id:'room-1',
+  game_id:gameId,finish_seq:'18446744073709551609',
+  players:['101','202','303'],landlord_seat:0,winner_seat:0,
+  score:springScore,
+};
+const historicalStandings={
+  v:1,type:'game.standings',request_id:'standings-query',
+  room_id:'room-1',room_epoch:epoch,
+  checkpoint_seq:'18446744073709551610',
+  players:[
+    {player_id:'101',points:'12',games:'1'},
+    {player_id:'202',points:'-6',games:'1'},
+    {player_id:'303',points:'-6',games:'1'}
+  ]
+};
 const privateHand=(id,game=gameId,mask='00000000000003')=>({
   v:1,type:'game.hand',request_id:id,room_id:'room-1',
   game_id:game,cards_hex:mask
@@ -128,6 +144,78 @@ test('public game frames reject secret/extra fields and imprecise identifiers',(
   ];
   for(const frame of invalid)
     assert.throws(()=>parseServerFrame(JSON.stringify(frame)),Error,JSON.stringify(frame));
+});
+
+test('historical results/standings are exact, signed, member-only and zero-sum',()=>{
+  assert.deepEqual(parseServerFrame(JSON.stringify(historicalResult)),historicalResult);
+  assert.deepEqual(parseServerFrame(JSON.stringify(historicalStandings)),historicalStandings);
+  assert.deepEqual(JSON.parse(encodeGameCommand('game.result.get','x',{
+      game_id:gameId
+  })),{v:1,type:'game.result.get',request_id:'x',game_id:gameId});
+  assert.deepEqual(JSON.parse(encodeGameCommand('game.standings.get','y')),
+      {v:1,type:'game.standings.get',request_id:'y'});
+  assert.throws(()=>encodeGameCommand('game.standings.get','x',{
+      game_id:gameId
+  }),/server-owned/);
+  for(const tampered of [
+    {...historicalResult,players:['101','101','303']},
+    {...historicalResult,players:['101','202','303'],secret_deck:'PRIVATE'},
+    {...historicalResult,score:{...springScore,delta:[13,-6,-6]}},
+    {...historicalResult,landlord_seat:3},
+    {...historicalResult,finish_seq:'18446744073709551616'},
+    {...historicalStandings,players:[
+      {player_id:'101',points:'12',games:'1'},
+      {player_id:'202',points:'-6',games:'1'},
+      {player_id:'303',points:'-7',games:'1'}
+    ]},
+    {...historicalStandings,players:[
+      {player_id:'101',points:'12',games:'1'},
+      {player_id:'202',points:'-6',games:'0'},
+      {player_id:'303',points:'-6',games:'1'}
+    ]},
+    {...historicalStandings,players:[
+      {player_id:'101',points:'12',games:'1'},
+      {player_id:'202',points:'-6',games:'1'},
+      {player_id:'101',points:'-6',games:'1'}
+    ]},
+    {...historicalStandings,players:[
+      {player_id:'101',points:'+12',games:'1'},
+      {player_id:'202',points:'-6',games:'1'},
+      {player_id:'303',points:'-6',games:'1'}
+    ]},
+    {...historicalStandings,secret_hand:'forbidden'},
+    {...historicalStandings,checkpoint_seq:'00'}
+  ])assert.throws(()=>parseServerFrame(JSON.stringify(tampered)),Error,
+                    'historical result must reject corrupted/unauthorized content');
+});
+
+test('room history accepts ONLY current authenticated seat and exact request',()=>{
+  const store=new GameStore();
+  store.bindRoom('room-1','101',0);
+  store.noteAck(startAck);
+  assert.equal(store.applySnapshot(playing('2',19)),true);
+  store.expectStandings('standings-query');
+  assert.equal(store.applyStandings({...historicalStandings,request_id:'stale'}),false);
+  assert.equal(store.applyStandings({...historicalStandings,room_id:'room-2'}),false);
+  assert.equal(store.applyStandings(historicalStandings),true);
+  assert.equal(store.standings.players[0].points,'12');
+  store.expectHistory('result-query',gameId);
+  assert.equal(store.applyHistoricalResult({...historicalResult,request_id:'old'}),false);
+  assert.equal(store.applyHistoricalResult({...historicalResult,players:['999','202','303']}),false);
+  assert.equal(store.applyHistoricalResult(historicalResult),true);
+  assert.equal(store.historicalResult.finish_seq,historicalResult.finish_seq);
+  store.suspend();
+  assert.equal(store.standings,null);
+  assert.equal(store.historicalResult,null);
+  store.expectStandings('standings-recovered');
+  assert.equal(store.applyStandings({
+    ...historicalStandings,request_id:'standings-recovered',
+    checkpoint_seq:'99'
+  }),false,'standings preceding last durable Game ACK must not regress');
+  store.bindRoom('room-2','202',0);
+  store.expectHistory('result-query',gameId);
+  assert.equal(store.applyHistoricalResult(historicalResult),false);
+  assert.equal(store.historicalResult,null);
 });
 
 test('game UI ignores stale snapshots, stale hand responses and foreign room context',()=>{
@@ -295,6 +383,31 @@ test('failed session recovery never replays old player game commands',()=>{
   assert.equal(client.pendingGameCount,0);
   assert.equal(client.currentPlayerId,'202');
   assert.equal(ws.sent.length,1); // only the attempted resume token
+  client.disconnect();
+  globalThis.WebSocket=originalWebSocket;
+});
+
+test('GameSocket sends read-only room history requests without identity aliases',()=>{
+  globalThis.WebSocket=FakeWebSocket;
+  const messages=[];
+  const client=new GameSocket(()=>{},frame=>messages.push(frame));
+  client.connect('ws://127.0.0.1:1780/ws');
+  const ws=FakeWebSocket.instances.at(-1);
+  ws.open();ws.receive(hello(101,token('a')));
+  const historyId=client.requestGameResult(gameId);
+  const resultCommand=ws.sent.at(-1);
+  assert.deepEqual(resultCommand,{
+    v:1,type:'game.result.get',request_id:historyId,game_id:gameId
+  });
+  const standingsId=client.requestGameStandings();
+  assert.deepEqual(ws.sent.at(-1),{
+    v:1,type:'game.standings.get',request_id:standingsId
+  });
+  assert.equal(client.pendingGameCount,0,'read-only queries never journal a mutation');
+  ws.receive({...historicalResult,request_id:historyId});
+  ws.receive({...historicalStandings,request_id:standingsId});
+  assert.equal(messages.at(-2).type,'game.result');
+  assert.equal(messages.at(-1).type,'game.standings');
   client.disconnect();
   globalThis.WebSocket=originalWebSocket;
 });
