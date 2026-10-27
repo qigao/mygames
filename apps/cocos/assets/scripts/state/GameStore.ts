@@ -36,7 +36,15 @@ export class GameStore {
     get lastAck(): GameAck | null { return this.lastAckValue; }
     get hydrated(): boolean { return this.hydratedValue; }
     get gameId(): string | null {
-        return this.currentView?.game_id ?? this.lastAckValue?.game_id ?? null;
+        // A newly confirmed game.start ACK can arrive while the displayed
+        // snapshot still refers to the FINISHED previous game. Routing a
+        // refresh using that old ID would query a stale generation instead
+        // of hydrating the newly COMMITTED match.
+        const viewId = this.currentView?.game_id;
+        const ackId = this.lastAckValue?.game_id;
+        if (!viewId) return ackId ?? null;
+        if (!ackId) return viewId;
+        return BigInt(ackId) > BigInt(viewId) ? ackId : viewId;
     }
     get isMyTurn(): boolean {
         if (!this.hydratedValue || !this.currentView || !this.privateHand)
@@ -150,7 +158,19 @@ export class GameStore {
         // client refresh or overwrite a newer local progress floor.
         if (this.lastAckValue &&
             BigInt(ack.seq) <= BigInt(this.lastAckValue.seq)) return false;
+        const newGameCommitted = this.currentView !== null &&
+            BigInt(ack.game_id) > BigInt(this.currentView.game_id);
         this.lastAckValue = ack;
+        if (newGameCommitted) {
+            // The old FINISHED score and private hand must disappear as
+            // soon as the next game's durable ACK is observed. Public
+            // bidding and a fresh member-only hand are fetched afterwards.
+            this.currentView = null;
+            this.privateHand = null;
+            this.awaitingHand = null;
+            this.selectedCards.clear();
+            this.hydratedValue = false;
+        }
         return true;
     }
 
