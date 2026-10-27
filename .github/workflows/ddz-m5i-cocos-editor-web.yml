@@ -1,0 +1,59 @@
+name: M5i real Cocos Creator 3.8.8 Editor Web Desktop gate
+
+'on':
+  pull_request:
+    paths:
+      - 'scripts/ci/verify_cocos_creator_web.py'
+      - 'tests/cocos_creator_gate_test.py'
+      - '.github/workflows/ddz-m5i-cocos-editor-web.yml'
+  workflow_dispatch:
+    inputs:
+      creator_executable:
+        description: 'Absolute installed Cocos Creator 3.8.8 executable path on a GUI runner'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  gate-harness-only:
+    name: CLI contract self-test (NOT Editor acceptance)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Test documented exit 36, missing and stale output failure gates
+        shell: bash
+        run: python3 -m unittest discover -s tests -p 'cocos_creator_gate_test.py' -v
+
+  actual-editor-web-desktop:
+    name: ACTUAL Creator Editor GUI Web Desktop (manual runner only)
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    # Must be an interactive desktop logon session with Editor 3.8.8
+    # already installed and available. No fake headless Editor or
+    # download from an unverified third-party URL is accepted.
+    runs-on: [self-hosted, Windows, cocos-creator-3.8.8]
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Invoke actual installed Editor executable in GUI session
+        shell: pwsh
+        env:
+          COCOS_CREATOR_EXECUTABLE: ${{ inputs.creator_executable }}
+        run: |
+          python scripts/ci/verify_cocos_creator_web.py --creator "$env:COCOS_CREATOR_EXECUTABLE" --project "$env:GITHUB_WORKSPACE/apps/cocos" --report "$env:GITHUB_WORKSPACE/apps/cocos/build/cocos-editor-m5i-evidence.json"
+      - name: Save only nonsecret CLI build metadata (NO game hand or tickets)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cocos-editor-web-desktop-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 14
+          path: apps/cocos/build/cocos-editor-m5i-evidence.json
