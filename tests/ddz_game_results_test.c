@@ -67,7 +67,7 @@ static uint64_t commit_game(mygames_room_store *store,
     return next_seq;
 }
 int main(int argc, char **argv) {
-    mygames_room_directory rooms, recovered;
+    mygames_room_directory rooms;
     mygames_room_store *store = NULL;
     const mygames_room *room;
     mygames_ddz_match match = {0}, next = {0}, last_before = {0}, win = {0};
