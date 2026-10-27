@@ -44,3 +44,49 @@ server advertises `games` capability only with an admitted real
 TurboDB-backed Owner; no gameplay fallback exists without durable state.
 
 No external art/fonts or proprietary assets were copied.
+
+
+## Real Creator Editor 3.8.8 / Web Desktop gate (M5i)
+
+Source-only `npx tsc`, mocked Creator declarations, `Lobby.scene` JSON
+structure tests, and physical CHttp/CFlow/TurboDB three-player tests **do not**
+prove that Cocos Creator imported the project, resolved all asset UUIDs,
+rendered a graphical game table or produced a real Web Desktop bundle.
+
+For that separate gate, install **Cocos Creator 3.8.8** using the official
+Cocos Dashboard on an interactive Windows/macOS desktop. Review its installed
+version in the Dashboard or Editor About dialog. Then from the repository root:
+
+- Windows: `python scripts/ci/verify_cocos_creator_web.py --creator "C:\\path\\to\\CocosCreator.exe"`
+- macOS: `python3 scripts/ci/verify_cocos_creator_web.py --creator "/Applications/CocosCreator/Creator/3.8.8/CocosCreator.app/Contents/MacOS/CocosCreator"`
+  (adjust both paths to the **actual installed** executable).
+
+The script uses Cocos Creator's **real** `--project apps/cocos --build
+"platform=web-desktop;debug=true"` CLI and requires documented success
+exit **36** and a newly written, nonempty `build/web-desktop/index.html`.
+It writes only `apps/cocos/build/cocos-editor-m5i-evidence.json` with
+nonsecret build metadata and explicitly records that Editor version and
+graphical/browser behavior are **not** established by that alone.
+It does not download/repackage the Editor, print private hands or tickets,
+or silently treat exit 0 or a stale index as successful acceptance.
+
+The separate [M5i workflow](../../../.github/workflows/ddz-m5i-cocos-editor-web.yml)
+runs only a **gate-harness self-test** on hosted PR CI. Its actual Editor
+job is **manual workflow_dispatch only**, with a Windows self-hosted GUI
+runner labeled `cocos-creator-3.8.8`, and requires the operator to supply
+the installed Editor executable path. A skipped actual-Editor job is **not
+a completed Editor acceptance**.
+
+After a true build, open `Lobby.scene` in the 3.8.8 Editor, check for
+MissingScript/asset UUID/material and font issues, then launch the Web Desktop
+build against the real loopback gateway using **three separate browser
+sessions**. Verify two fully played rounds, a new landlord on the second
+round, visible public-only settlement, 17/20-card hand layout, disabled
+buttons, no opponent hand exposure, and exact pending-request replay on
+authenticated reconnect. Retain sanitized browser, Editor and WebSocket
+evidence linked to the immutable HEAD. Never upload bearer credentials,
+private cards, shuffle/deck content or SQLite data.
+
+The full real Editor/Web/visual gate remains [Issue #2](https://github.com/qigao/mygames/issues/2)
+OPEN until those manual/interactive checks complete. External WSS/IAM and
+multi-host fencing remain separate production requirements.
