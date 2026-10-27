@@ -136,12 +136,39 @@ async function run(project, buildReport, report, timeoutMs) {
         serviceWorkers:'block'
       });
       contexts.push(context);
-      const page=await context.newPage();
       let exceptions=0,resourceFailures=0,fatalConsole=0;
+      let networkFailures=0,unexpectedOutbound=0,blockedWebSockets=0;
+      // The unpacked Creator bundle must be self-contained. Intercept HTTP
+      // before the very first navigation; abort and count all requests to
+      // other origins, rather than leaking traffic from the GUI test runner.
+      await context.route('**/*', async route=>{
+        if(route.request().url().startsWith(origin+'/')) {
+          await route.continue();
+        } else {
+          unexpectedOutbound++;
+          await route.abort('blockedbyclient');
+        }
+      });
+      // Intercept *every* WebSocket, not only the original local /ws URL.
+      // Never impersonate the game server. The known loopback connection is
+      // closed deliberately; an unexpected endpoint fails the qualification.
+      await context.routeWebSocket(/.*/, async socket=>{
+        blockedWebSockets++;
+        if(socket.url() !== 'ws://127.0.0.1:1780/ws')
+          unexpectedOutbound++;
+        await socket.close();
+      });
+      const page=await context.newPage();
       page.on('pageerror',()=>{exceptions++;});
       page.on('response',response=>{
         if(response.url().startsWith(origin + '/') && response.status()>=400)
           resourceFailures++;
+      });
+      page.on('requestfailed',request=>{
+        // HTTP 404 is counted above; DNS failures, aborted asset loads,
+        // broken connections and other missing actual build resources do
+        // not produce an HTTP response and must be rejected separately.
+        if(request.url().startsWith(origin+'/')) networkFailures++;
       });
       page.on('console',message=>{
         // Expected loopback WebSocket failures do not prove a scene failure.
@@ -150,9 +177,8 @@ async function run(project, buildReport, report, timeoutMs) {
            /MissingScript|Cannot find module|Uncaught|SyntaxError|ReferenceError|WebGL.*not supported/i
              .test(message.text())) fatalConsole++;
       });
-      // The local backend is deliberately not part of this smoke. Close
-      // socket attempts; do not fabricate server replies or enroll players.
-      await page.routeWebSocket('ws://127.0.0.1:1780/ws', socket=>socket.close());
+      // The local backend is deliberately not part of this smoke; all
+      // WebSockets were already closed at the context boundary above.
       await page.goto(origin+'/',{waitUntil:'domcontentloaded',timeout:timeoutMs});
       await page.waitForFunction(()=>{
         return [...document.querySelectorAll('canvas')].some(canvas=>{
@@ -175,13 +201,17 @@ async function run(project, buildReport, report, timeoutMs) {
       assert(image.length>256 && image.subarray(0,8).equals(
         Buffer.from([137,80,78,71,13,10,26,10])),
         'Real browser screenshot is not a valid PNG');
-      assert(exceptions===0 && resourceFailures===0 && fatalConsole===0,
-        'Real Web Desktop scene failed to load cleanly in Microsoft Edge');
+      assert(exceptions===0 && resourceFailures===0 && fatalConsole===0 &&
+        networkFailures===0 && unexpectedOutbound===0,
+        'Real Web Desktop scene failed, had missing resources, or attempted unexpected external traffic');
       observations.push({
         context:i+1,canvas:surface,
         screenshot_sha256:createHash('sha256').update(image).digest('hex'),
         uncaught_script_errors:exceptions,
         failed_static_resources:resourceFailures,
+        failed_static_network_requests:networkFailures,
+        unexpected_external_requests:unexpectedOutbound,
+        deliberately_closed_websockets:blockedWebSockets,
         fatal_console_errors:fatalConsole
       });
       // We deliberately retain contexts simultaneously: three independent
@@ -200,10 +230,10 @@ async function run(project, buildReport, report, timeoutMs) {
       actual_gameplay_backend_connected:false,
       actual_three_player_gameplay_acceptance:false,
       editor_interactive_scene_import_acceptance:false,
-      description:'Real Edge loaded actual Creator Web Desktop and initialized Canvas. No synthetic Cocos renderer or fake gameplay server. Full three-client gameplay and Editor import remain separate.'
+      description:'Real Edge loaded the bundled Creator Web Desktop in three isolated contexts with all unrelated outbound traffic blocked. No synthetic Cocos renderer or fake gameplay server. Full three-client gameplay and Editor import remain separate.'
     };
     await writeFile(report,JSON.stringify(evidence,null,2)+'\n','utf8');
-    console.log('Real Edge Web Desktop smoke: PASS (3 isolated browser contexts, Canvas present, no script or static resource errors); full gameplay UNVERIFIED');
+    console.log('Real Edge Web Desktop smoke: PASS (3 isolated browser contexts, Canvas present, static assets intact, no unexpected outbound network); full gameplay UNVERIFIED');
   } finally {
     await Promise.allSettled(contexts.map(x=>x.close()));
     if(browser) await browser.close();
