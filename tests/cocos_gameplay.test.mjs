@@ -354,7 +354,7 @@ test('M5h two finished games, landlord rotation and rematch recovery never displ
 
   // Seat 2 becomes landlord; the local seat 0 is now a farmer.
   const secondPlay={...playing('1',17),game_id:gameTwo,
-    landlord_seat:2,turn_seat:2,remaining:[17,17,20]};
+    landlord_seat:2,turn_seat:0,remaining:[17,17,20]};
   assert.equal(store.applySnapshot(secondPlay),true);
   assert.equal('score' in store.snapshot,false);
   store.expectHand('second-private',gameTwo);
