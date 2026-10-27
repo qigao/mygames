@@ -66,6 +66,39 @@ const roomAck=id=>x=>x.type==='room.ack' && x.request_id===id;
 const error=id=>x=>x.type==='game.error' && x.request_id===id;
 const pub=id=>x=>x.type==='game.snapshot' && x.request_id===id;
 const priv=id=>x=>x.type==='game.hand' && x.request_id===id;
+const historical=id=>x=>x.type==='game.result' && x.request_id===id;
+const standings=id=>x=>x.type==='game.standings' && x.request_id===id;
+async function checkStandings(client,id,players,points,finishedCount) {
+  client.send('game.standings.get',id);
+  const value=await client.receive(standings(id));
+  assert.equal(value.v,1);
+  assert.match(value.room_epoch,/^[1-9][0-9]*$/);
+  assert.match(value.checkpoint_seq,/^[1-9][0-9]*$/);
+  assert.equal(value.players.length,3);
+  assert.deepEqual(value.players.map(p=>p.player_id),players.map(p=>p.player));
+  assert.deepEqual(value.players.map(p=>p.points),points.map(String));
+  assert.deepEqual(value.players.map(p=>p.games),
+                   Array(3).fill(String(finishedCount)));
+  assert.equal(value.players.reduce((sum,p)=>sum+BigInt(p.points),0n),0n);
+  assert.ok(!Object.hasOwn(value,'secret_deck'));
+  assert.ok(!Object.hasOwn(value,'cards_hex'));
+  return value;
+}
+async function checkResult(client,id,gameId,finished,players,expectedScore) {
+  client.send('game.result.get',id,{game_id:gameId});
+  const result=await client.receive(historical(id));
+  assert.equal(result.v,1);
+  assert.equal(result.game_id,gameId);
+  assert.equal(result.finish_seq,finished.seq);
+  assert.deepEqual(result.players,players.map(p=>p.player));
+  assert.deepEqual(result.score,expectedScore);
+  assert.equal(result.landlord_seat,expectedScore.delta[0]===12?0:2);
+  assert.equal(result.winner_seat,result.landlord_seat);
+  assert.ok(!Object.hasOwn(result,'secret_deck'));
+  assert.ok(!Object.hasOwn(result,'cards_hex'));
+  assert.ok(!Object.hasOwn(result,'resume_token'));
+  return result;
+}
 const count=x=>{let n=0;for(let k=BigInt('0x'+x);k>0n;k&=k-1n)n++;return n;};
 const bits=x=>{let k=BigInt('0x'+x),cards=[];for(let i=0;i<54;i++)if(k&(1n<<BigInt(i)))cards.push(i);return cards;};
 const oneCard=id=>(1n<<BigInt(id)).toString(16).padStart(14,'0');
@@ -118,6 +151,10 @@ async function first(){
   const started=await a.receive(ack('m5f-first-game'));
   assert.equal(started.phase,1);
   const gameId=started.game_id;
+  await checkStandings(a,'m5j-empty-standings',[a,b,c],[0,0,0],0);
+  b.send('game.result.get','m5j-not-settled',{game_id:gameId});
+  assert.equal((await b.receive(error('m5j-not-settled'))).code,
+               'result_not_found');
   a.send('game.bid','m5f-landlord-bid',{game_id:gameId,turn_id:'1',bid:3});
   const bid=await a.receive(ack('m5f-landlord-bid'));
   assert.equal(bid.phase,3);
@@ -179,6 +216,18 @@ async function first(){
     base:3,bombs:0,spring:'landlord',multiplier:2,unit:6,
     delta:[12,-6,-6]
   },'20 real single-card leads with no farmer play must be a landlord spring');
+  await checkResult(a,'m5j-first-result',gameId,finalAck,[a,b,c],
+      finished.score);
+  await checkStandings(c,'m5j-first-standings',[a,b,c],[12,-6,-6],1);
+  // An unrelated connected player may not query this room's member-scoped
+  // score totals; the room is always derived from their own session seat.
+  const outsider=await connect();
+  outsider.send('game.standings.get','m5j-outsider');
+  assert.equal((await outsider.receive(error('m5j-outsider'))).code,
+               'room_not_started');
+  outsider.send('game.result.get','m5j-outsider-result',{game_id:gameId});
+  assert.equal((await outsider.receive(error('m5j-outsider-result'))).code,
+               'room_not_started');
 
   a.send('game.hand.get','m5f-finished-landlord',{game_id:gameId});
   assert.equal((await a.receive(priv('m5f-finished-landlord'))).cards_hex,
@@ -219,6 +268,11 @@ async function restarted(){
     });
   }
   const [a,b,c]=members;
+  await checkResult(b,'m5j-restart-first',saved.game_id,saved.finalAck,
+                    [a,b,c],{base:3,bombs:0,spring:'landlord',
+                              multiplier:2,unit:6,delta:[12,-6,-6]});
+  await checkStandings(c,'m5j-restart-standings',
+                       [a,b,c],[12,-6,-6],1);
   a.send('game.play','m5f-play-19',{game_id:saved.game_id,
     turn_id:String(BigInt(saved.winner_turn)-1n),
     cards_hex:saved.finalAck.action==='play' ?
@@ -269,6 +323,12 @@ async function restarted(){
   publicOnly(awarded);
   assert.equal(awarded.phase,'playing');
   assert.ok(!Object.hasOwn(awarded,'score'));
+  await checkStandings(b,'m5j-unfinished-rematch-standings',
+                       [a,b,c],[12,-6,-6],1);
+  b.send('game.result.get','m5j-no-premature-rematch-credit',
+         {game_id:rematch.game_id});
+  assert.equal((await b.receive(error('m5j-no-premature-rematch-credit'))).code,
+               'result_not_found');
   assert.equal(awarded.landlord_seat,2);
   assert.deepEqual(awarded.remaining,[17,17,20]);
   assert.equal(count(awarded.revealed_kitty_hex),3);
@@ -374,6 +434,14 @@ async function secondRestart(){
     base:3,bombs:0,spring:'landlord',multiplier:2,unit:6,
     delta:[-6,-6,12]
   });
+  await checkResult(a,'m5j-second-result',saved.rematch.game_id,
+                    rematchFinalAck,[a,b,c],finished.score);
+  await checkStandings(b,'m5j-second-standings',
+                       [a,b,c],[6,-12,6],2);
+  await checkResult(c,'m5j-old-immutable-first',saved.game_id,
+                    saved.finalAck,[a,b,c],
+                    {base:3,bombs:0,spring:'landlord',multiplier:2,
+                     unit:6,delta:[12,-6,-6]});
   // The terminal command must be replay-only, never a second credit.
   c.send('game.play','m5h-rematch-play-19',
     {game_id:saved.rematch.game_id,turn_id:String(turn-1n),
@@ -410,7 +478,17 @@ async function thirdRestart(){
       delta:[-6,-6,12]
     });
   }
-  const [a,,c]=members;
+  const [a,b,c]=members;
+  await checkStandings(a,'m5j-third-restart-standings',
+                       [a,b,c],[6,-12,6],2);
+  await checkResult(b,'m5j-third-original',saved.game_id,
+                    saved.finalAck,[a,b,c],
+                    {base:3,bombs:0,spring:'landlord',multiplier:2,
+                     unit:6,delta:[12,-6,-6]});
+  await checkResult(c,'m5j-third-second',saved.rematch.game_id,
+                    saved.rematchFinalAck,[a,b,c],
+                    {base:3,bombs:0,spring:'landlord',multiplier:2,
+                     unit:6,delta:[-6,-6,12]});
   a.send('game.start','m5f-rematch');
   assert.deepEqual(await a.receive(ack('m5f-rematch')),saved.rematch);
   c.send('game.play','m5h-rematch-play-0',
