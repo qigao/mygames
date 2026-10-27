@@ -9,6 +9,8 @@ hand, bearer ticket, or shuffled deck is emitted into GitHub CI artifacts.
 """
 import os
 import pathlib
+import json
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -60,6 +62,60 @@ def with_native_server(executable, env, stage):
         if proc.returncode != 0:
             raise RuntimeError("Native game service exit %d" % proc.returncode)
 
+def audit_immutable_results(db, audit_file, stage):
+    # A truly separate READONLY sqlite connection: no Game Owner fixture
+    # or application callback is permitted to synthesize ledger rows.
+    info = json.loads(audit_file.read_text(encoding="utf-8"))
+    first_game = int(info["game_id"])
+    players = [int(x["player_id"]) for x in info["players"]]
+    if len(players) != 3 or len(set(players)) != 3:
+        raise AssertionError("Invalid independently recorded player seats")
+    uri = "file:" + str(db) + "?mode=ro"
+    with sqlite3.connect(uri, uri=True) as connection:
+        rows = connection.execute(
+            "select room_id,game_id,finish_seq,p0,p1,p2,base,bombs,"
+            "spring,landlord_seat,winner_seat,multiplier,unit,d0,d1,d2 "
+            "from mg_game_results order by finish_seq"
+        ).fetchall()
+        if len(rows) != 1:
+            raise AssertionError(
+                "Expected EXACTLY one credited finished game at " + stage)
+        row = rows[0]
+        if row[0] != info["room_id"] or row[1] != first_game:
+            raise AssertionError("Wrong immutable first game identity")
+        if tuple(row[3:6]) != tuple(players):
+            raise AssertionError("Historical settlement attributed to wrong players")
+        if tuple(row[6:]) != (3, 0, 1, 0, 0, 2, 6, 12, -6, -6):
+            raise AssertionError("Incorrect real landlord spring ledger result")
+        if row[2] != int(info["finalAck"]["seq"]):
+            raise AssertionError("Ledger finish_sequence != durable Game ACK")
+        for player, points in zip(players, (12, -6, -6)):
+            total, count = connection.execute(
+                "select coalesce(sum(case when p0=? then d0 "
+                "when p1=? then d1 when p2=? then d2 end),0),"
+                "count(*) from mg_game_results "
+                "where room_id=? and (p0=? or p1=? or p2=?)",
+                (player,player,player,info["room_id"],player,player,player)
+            ).fetchone()
+            if (total, count) != (points, 1):
+                raise AssertionError("Duplicate or lost per-player game credit")
+        if stage != "first":
+            game_two = int(info["rematch"]["game_id"])
+            if game_two <= first_game:
+                raise AssertionError("Rematch ID reused finished game")
+            if connection.execute(
+                "select count(*) from mg_game_results where game_id=?",
+                (game_two,)
+            ).fetchone()[0] != 0:
+                raise AssertionError("Unfinished rematch received unauthorized score")
+        # No secret deck/private_image field is copied into the public ledger.
+        names = {item[1] for item in connection.execute("pragma table_info(mg_game_results)")}
+        if {"private_image","secret_deck","hands","kitty"} & names:
+            raise AssertionError("Settlement ledger leaked a private game field")
+    print("m5h real read-only ledger " + stage + ": PASS"
+          " (one credited game, original terminal sequence, three zero-sum seats)")
+
+
 def main():
     if len(sys.argv) != 3:
         raise SystemExit("usage: ci_ddz_m5f_full_match.py server sqlite_driver")
@@ -81,6 +137,7 @@ def main():
                 raise AssertionError("Missing real durable game or recovery proof")
             if credentials.stat().st_mode & 0o077:
                 raise AssertionError("Rotating capability manifest not private")
+            audit_immutable_results(db, credentials, stage)
         print("mygames.m5f.full_game: PASS"
               " (20 physical cards, ~60 real commits, winner,"
               " rematch with a different landlord,"
