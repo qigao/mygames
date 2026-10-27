@@ -482,9 +482,12 @@ export function encodeGameCommand(
     const payload: Record<string, number | string> = {
         v: PROTOCOL_VERSION, type, request_id: requestId
     };
-    if (type === 'game.start' || type === 'game.standings.get') {
+    if (type === 'game.start') {
         if (Object.keys(options).length)
-            throw new Error('Game ID/room identity is server-owned');
+            throw new Error('Game ID is server-minted');
+    } else if (type === 'game.standings.get') {
+        if (Object.keys(options).length)
+            throw new Error('Room identity is server-owned');
     } else if (type === 'game.bid') {
         if (!canonicalU64(options.game_id) || !canonicalU64(options.turn_id) ||
             !Number.isInteger(options.bid) || (options.bid ?? -1) < 0 ||
