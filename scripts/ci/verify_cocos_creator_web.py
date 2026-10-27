@@ -122,8 +122,8 @@ def run_gate(creator: Path, project: Path, report: Path, timeout: int,
         raise RuntimeError("Isolated Creator output already exists")
     started = time.time()
     cmd = [str(creator), "--project", str(project), "--build",
-           ("platform=web-desktop;debug=true;startScene=" + scene_uuid +
-            ";outputName=" + output_name)]
+           ("platform=web-desktop;debug=true;buildPath=project://build;" +
+            "startScene=" + scene_uuid + ";outputName=" + output_name)]
     try:
         result = subprocess.run(cmd, timeout=timeout, capture_output=True,
                                 text=True, errors="replace", check=False)

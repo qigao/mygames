@@ -62,7 +62,8 @@ version in the Dashboard or Editor About dialog. Then from the repository root:
   (adjust both paths to the **actual installed** executable).
 
 The script uses Cocos Creator's **real** `--project apps/cocos --build`
-CLI, explicitly sets `startScene` to the verified UUID in the tracked
+CLI, pins `buildPath=project://build` independently of prior Editor
+Build-panel settings, and explicitly sets `startScene` to the verified UUID in the tracked
 `Lobby.scene.meta` (`74bddbba-b612-4236-b8ed-d10f871e0d49`), and uses
 a **unique** `outputName=mygames-m5i-web-desktop-<16-hex>` folder
 per invocation, without deleting or reusing previous output.

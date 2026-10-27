@@ -58,6 +58,7 @@ class RealEditorGateHarnessTests(unittest.TestCase):
             self.assertIn("startScene=" + SCENE_UUID, command[4])
             parameters = dict(part.split("=", 1)
                               for part in command[4].split(";"))
+            self.assertEqual(parameters["buildPath"], "project://build")
             output_name = parameters["outputName"]
             self.assertRegex(output_name,
                              r"^" + GATE.BUILD_OUTPUT_PREFIX + r"-[0-9a-f]{16}$")
