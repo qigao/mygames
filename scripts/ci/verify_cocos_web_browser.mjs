@@ -4,10 +4,10 @@
 // certify gameplay, and must never upload a screenshot, hand or bearer token.
 // Run only after verify_cocos_creator_web.py has qualified the physical build.
 import {createHash} from 'node:crypto';
-import {createReadStream, createWriteStream} from 'node:fs';
+import {createReadStream} from 'node:fs';
 import {readFile, realpath, stat, writeFile} from 'node:fs/promises';
 import {createServer} from 'node:http';
-import {extname, join, relative, resolve, sep} from 'node:path';
+import {extname, join, resolve, sep} from 'node:path';
 import {parseArgs} from 'node:util';
 import {chromium} from 'playwright-core';
 
@@ -79,7 +79,10 @@ function serveBuild(root) {
       assert(!decoded.includes('\0') && !decoded.includes('\\'),
         'Invalid resource path');
       let target = resolve(root, '.' + decoded);
-      assert(target.startsWith(root + sep), 'Resource escapes built output');
+      // '/' resolves to the root directory itself and must serve its
+      // index.html; other paths must remain strictly inside this root.
+      assert(target === root || target.startsWith(root + sep),
+        'Resource escapes built output');
       let info = await stat(target);
       if (info.isDirectory()) {
         target = join(target,'index.html');
