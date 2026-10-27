@@ -1,0 +1,130 @@
+name: M5h immutable durable match settlement results
+
+'on':
+  pull_request:
+    paths:
+      - 'games/doudizhu/include/mygames/room_store.h'
+      - 'games/doudizhu/src/room_store_turbodb.c'
+      - 'tests/ddz_game_results_test.c'
+      - 'scripts/ci/ci_ddz_m5f_full_match.py'
+      - 'CMakeLists.txt'
+      - '.github/workflows/ddz-m5h-game-results.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mygames-m5h-immutable-results-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-ledger:
+    name: Actual TurboDB SQLite zero-sum ledger / Linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Restore same SHA256-pinned Salts and TurboDB native packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/ci/restore-native-sdks.sh "$RUNNER_TEMP/mygames-sdk"
+          test -f "$RUNNER_TEMP/mygames-sdk/turbodb/sdk/linux-x64/lib/turbodb/drivers/turbodb_driver_sqlite.so"
+      - name: Build real CFlow data model with TurboDB ORM/SQLite
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build/m5h -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=ON -DMYGAMES_ENABLE_GATEWAY=OFF \
+            -DMYGAMES_ENABLE_TURBODB=ON -DMYGAMES_ENABLE_FLOWIE=OFF \
+            -DCMAKE_PREFIX_PATH="$SDK_PREFIX_PATH"
+          cmake --build build/m5h --parallel 2 --target \
+            mygames_game_results_test mygames_game_store_test \
+            mygames_game_owner_test mygames_turbodb_store_test
+      - name: Assert independently installed SQLite/ORM and dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          ldd build/m5h/mygames_game_results_test | tee build/m5h/ledger-dependencies.txt
+          ! grep -q 'not found' build/m5h/ledger-dependencies.txt
+      - name: Run original owner/store and real immutable scoring tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          ctest --test-dir build/m5h --no-tests=error --output-on-failure \
+            --timeout 120 -R '^mygames[.](game_results|game_store|game_owner|turbodb_store)$'
+      - name: Repeated actual 20-card game with injected rollback and replay
+        shell: bash
+        run: |
+          set -euo pipefail
+          ctest --test-dir build/m5h --no-tests=error --output-on-failure \
+            --repeat until-fail:5 --timeout 120 -R '^mygames[.]game_results$'
+      - name: Save only nonsecret test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m5h-real-orm-${{ github.run_id }}
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            build/m5h/ledger-dependencies.txt
+            build/m5h/Testing/Temporary/LastTest.log
+
+  full-real-rematch:
+    name: CHttp CFlow three-player full match / independent result-ledger audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Restore exact SHA256-pinned native Salts/CHttp/TurboDB SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/ci/restore-native-sdks.sh "$RUNNER_TEMP/mygames-sdk"
+          test -f "$RUNNER_TEMP/mygames-sdk/turbodb/sdk/linux-x64/lib/turbodb/drivers/turbodb_driver_sqlite.so"
+      - name: Cache pinned GmSSL 3.2.0 compatible native SDK
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/mygames-gmssl/installed/x64-linux
+          key: mygames-gmssl-3.2.0-port12-linux-x64-v1
+      - name: Restore exact pinned CHttp GmSSL port
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/ci/restore-gmssl.sh "$RUNNER_TEMP/mygames-gmssl"
+      - name: Configure genuine CHttp CFlow and TurboDB Game Owner
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build/m5h-gateway -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=ON -DMYGAMES_ENABLE_GATEWAY=ON \
+            -DMYGAMES_ENABLE_TURBODB=ON -DMYGAMES_ENABLE_FLOWIE=OFF \
+            -DCMAKE_PREFIX_PATH="$SDK_PREFIX_PATH"
+          cmake --build build/m5h-gateway --parallel 2 \
+            --target mygames_server mygames_game_results_test
+      - name: Three real WebSockets, full spring, rematch, two process restarts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/ci_ddz_m5f_full_match.py \
+            build/m5h-gateway/mygames_server \
+            "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so"
+      - name: No private hands, bearer tickets or DB files in CI evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m5h-full-match-${{ github.run_id }}
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            build/m5h-gateway/Testing/Temporary/LastTest.log
