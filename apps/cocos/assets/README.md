@@ -61,9 +61,15 @@ version in the Dashboard or Editor About dialog. Then from the repository root:
 - macOS: `python3 scripts/ci/verify_cocos_creator_web.py --creator "/Applications/CocosCreator/Creator/3.8.8/CocosCreator.app/Contents/MacOS/CocosCreator"`
   (adjust both paths to the **actual installed** executable).
 
-The script uses Cocos Creator's **real** `--project apps/cocos --build
-"platform=web-desktop;debug=true"` CLI and requires documented success
-exit **36** and a newly written, nonempty `build/web-desktop/index.html`.
+The script uses Cocos Creator's **real** `--project apps/cocos --build`
+CLI, explicitly sets `startScene` to the verified UUID in the tracked
+`Lobby.scene.meta` (`74bddbba-b612-4236-b8ed-d10f871e0d49`), and uses
+the dedicated `outputName=mygames-m5i-web-desktop` build folder. It
+requires the documented success exit **36** and fresh nonempty
+`build/mygames-m5i-web-desktop/index.html` **and**
+`build/mygames-m5i-web-desktop/src/application.js`. The report stores
+the source HEAD, scene UUID, binary SHA256 fingerprint and hashes of the
+built entry files as nonsecret evidence.
 It writes only `apps/cocos/build/cocos-editor-m5i-evidence.json` with
 nonsecret build metadata and explicitly records that Editor version and
 graphical/browser behavior are **not** established by that alone.
@@ -71,11 +77,17 @@ It does not download/repackage the Editor, print private hands or tickets,
 or silently treat exit 0 or a stale index as successful acceptance.
 
 The separate [M5i workflow](../../../.github/workflows/ddz-m5i-cocos-editor-web.yml)
-runs only a **gate-harness self-test** on hosted PR CI. Its actual Editor
-job is **manual workflow_dispatch only**, with a Windows self-hosted GUI
-runner labeled `cocos-creator-3.8.8`, and requires the operator to supply
-the installed Editor executable path. A skipped actual-Editor job is **not
-a completed Editor acceptance**.
+runs only a **gate-harness self-test** on hosted PR CI. Its real Editor
+job is opt-in on a **same-repository** PR: a maintainer applies the
+`run-cocos-editor` label. The workflow can then run on a Windows
+self-hosted logged-in GUI runner labeled `cocos-creator-3.8.8`
+**without merging the Draft branch**. The installed executable path must
+be configured by an administrator as repository variable
+`MYGAMES_COCOS_CREATOR_388_EXE`; no PR submitter or dispatch input
+may supply an arbitrary executable path. A `workflow_dispatch`
+route is also available once the workflow file is present on the default
+branch. On ordinary PR runs, the actual Editor job is deliberately
+**skipped**. A skipped job is **not Editor acceptance**.
 
 After a true build, open `Lobby.scene` in the 3.8.8 Editor, check for
 MissingScript/asset UUID/material and font issues, then launch the Web Desktop
