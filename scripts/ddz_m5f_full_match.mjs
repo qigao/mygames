@@ -1,4 +1,4 @@
-// M5f REAL three-player full-length match, winner and rematch.
+// M5h REAL three-client full-length match and completed rematch.
 // CHttp WebSocket -> one CFlow Owner -> TurboDB WAL/FULL. No mock broker.
 // Original user bearer capability appears only inside a 0600 temp file;
 // never print hand/deck/tokens or archive this file as a CI artifact.
@@ -8,7 +8,7 @@ import {readFileSync, writeFileSync} from 'node:fs';
 const URL='ws://127.0.0.1:1780/ws';
 const manifest=process.env.MYGAMES_M5F_PRIVATE_AUDIT;
 const stage=process.argv[2] ?? 'first';
-assert.ok(manifest && ['first','restart','second-restart'].includes(stage));
+assert.ok(manifest && ['first','restart','second-restart','third-restart'].includes(stage));
 
 const connected=[];
 class Client {
@@ -262,7 +262,8 @@ async function restarted(){
   assert.equal((await b.receive(ack('m5f-rematch-bid-b'))).phase,1);
   c.send('game.bid','m5f-rematch-bid-c',
          {game_id:rematch.game_id,turn_id:'3',bid:3});
-  assert.equal((await c.receive(ack('m5f-rematch-bid-c'))).phase,3);
+  const rematchBidAck=await c.receive(ack('m5f-rematch-bid-c'));
+  assert.equal(rematchBidAck.phase,3);
   b.send('game.snapshot.get','m5f-rematch-awarded',{game_id:rematch.game_id});
   const awarded=await b.receive(pub('m5f-rematch-awarded'));
   publicOnly(awarded);
@@ -275,7 +276,7 @@ async function restarted(){
   assert.equal(count((await c.receive(priv('m5f-rematch-landlord-hand'))).cards_hex),20);
 
   privateFile({
-    ...saved,rematch,
+    ...saved,rematch,rematchBidAck,
     players:members.map(client=>({player_id:client.player_id??client.player,
                                   token:client.token}))
   });
@@ -283,37 +284,164 @@ async function restarted(){
 
 async function secondRestart(){
   const saved=JSON.parse(readFileSync(manifest,'utf8'));
-  const a=await memberResume(saved.players[0].token,
-                             saved.players[0].player_id,saved.rematch.game_id);
-  assert.equal(a.automatic.phase,'playing');
-  assert.equal(a.automatic.landlord_seat,2);
-  a.client.send('game.snapshot.get','m5f-final-db-view',
-                {game_id:saved.rematch.game_id});
-  const current=await a.client.receive(pub('m5f-final-db-view'));
+  const members=[];
+  for(let i=0;i<3;i++){
+    const resumed=await memberResume(saved.players[i].token,
+                                    saved.players[i].player_id,
+                                    saved.rematch.game_id);
+    members.push(resumed.client);
+    assert.equal(resumed.automatic.phase,'playing');
+    assert.equal(resumed.automatic.landlord_seat,2);
+  }
+  const [a,b,c]=members;
+  a.send('game.snapshot.get','m5f-final-db-view',
+         {game_id:saved.rematch.game_id});
+  const current=await a.receive(pub('m5f-final-db-view'));
+  publicOnly(current);
   assert.equal(current.phase,'playing');
   assert.equal(current.landlord_seat,2);
-  a.client.send('game.start','m5f-rematch');
-  assert.deepEqual(await a.client.receive(ack('m5f-rematch')),saved.rematch);
-  a.client.send('game.play','m5f-play-0',{game_id:saved.game_id,
+  assert.equal(current.turn_id,saved.rematchBidAck.turn_id);
+  a.send('game.start','m5f-rematch');
+  assert.deepEqual(await a.receive(ack('m5f-rematch')),saved.rematch);
+  a.send('game.play','m5f-play-0',{game_id:saved.game_id,
     turn_id:'1',cards_hex:saved.firstCard});
-  assert.deepEqual(await a.client.receive(ack('m5f-play-0')),saved.firstPlayAck);
-  a.client.send('game.start','m5f-first-game');
-  assert.deepEqual(await a.client.receive(ack('m5f-first-game')),saved.started);
-  a.client.send('game.snapshot.get','m5f-still-active',
-                {game_id:saved.rematch.game_id});
-  assert.equal((await a.client.receive(pub('m5f-still-active'))).game_id,
-               saved.rematch.game_id);
-  a.client.send('game.snapshot.get','m5f-old-game-id',
-                {game_id:saved.game_id});
-  assert.equal((await a.client.receive(error('m5f-old-game-id'))).code,
+  assert.deepEqual(await a.receive(ack('m5f-play-0')),saved.firstPlayAck);
+  a.send('game.start','m5f-first-game');
+  assert.deepEqual(await a.receive(ack('m5f-first-game')),saved.started);
+  a.send('game.snapshot.get','m5f-old-game-id',
+         {game_id:saved.game_id});
+  assert.equal((await a.receive(error('m5f-old-game-id'))).code,
                'stale_generation_or_turn');
+
+  // Finish an actual SECOND physical 20-card game, not only a new bidding
+  // state. This time seat 2 is the landlord and both OTHER seats really
+  // send PASS after each of the first 19 separate SQLite-committed leads.
+  c.send('game.hand.get','m5h-rematch-hand',
+         {game_id:saved.rematch.game_id});
+  const hand=await c.receive(priv('m5h-rematch-hand'));
+  const cards=bits(hand.cards_hex);
+  assert.equal(cards.length,20);
+  let turn=BigInt(saved.rematchBidAck.turn_id);
+  let sequence=BigInt(saved.rematchBidAck.seq);
+  let rematchFirstPlayAck=null;
+  let rematchFinalAck=null;
+  for(let i=0;i<cards.length;i++){
+    const id='m5h-rematch-play-'+i;
+    c.send('game.play',id,{game_id:saved.rematch.game_id,
+      turn_id:String(turn),cards_hex:oneCard(cards[i])});
+    const played=await c.receive(ack(id));
+    assert.equal(played.action,'play');
+    assert.equal(BigInt(played.turn_id),turn+1n);
+    assert.equal(BigInt(played.seq),sequence+1n);
+    turn=BigInt(played.turn_id);
+    sequence=BigInt(played.seq);
+    if(i===0)rematchFirstPlayAck=played;
+    if(i===19){
+      assert.equal(played.phase,4);
+      rematchFinalAck=played;
+      break;
+    }
+    assert.equal(played.phase,3);
+    a.send('game.pass','m5h-rematch-a-pass-'+i,
+      {game_id:saved.rematch.game_id,turn_id:String(turn)});
+    const passedA=await a.receive(ack('m5h-rematch-a-pass-'+i));
+    assert.equal(passedA.action,'pass');
+    assert.equal(BigInt(passedA.turn_id),turn+1n);
+    assert.equal(BigInt(passedA.seq),sequence+1n);
+    turn=BigInt(passedA.turn_id);
+    sequence=BigInt(passedA.seq);
+    b.send('game.pass','m5h-rematch-b-pass-'+i,
+      {game_id:saved.rematch.game_id,turn_id:String(turn)});
+    const passedB=await b.receive(ack('m5h-rematch-b-pass-'+i));
+    assert.equal(passedB.action,'pass');
+    assert.equal(BigInt(passedB.turn_id),turn+1n);
+    assert.equal(BigInt(passedB.seq),sequence+1n);
+    turn=BigInt(passedB.turn_id);
+    sequence=BigInt(passedB.seq);
+  }
+  assert.ok(rematchFirstPlayAck && rematchFinalAck);
+  assert.ok(BigInt(rematchFinalAck.seq)>BigInt(saved.finalAck.seq));
+  c.send('game.snapshot.get','m5h-second-finished',
+         {game_id:saved.rematch.game_id});
+  const finished=await c.receive(pub('m5h-second-finished'));
+  publicOnly(finished);
+  assert.equal(finished.phase,'finished');
+  assert.equal(finished.winner_seat,2);
+  assert.equal(finished.landlord_seat,2);
+  assert.equal(finished.turn_id,String(turn));
+  assert.deepEqual(finished.remaining,[17,17,0]);
+  assert.deepEqual(finished.score,{
+    base:3,bombs:0,spring:'landlord',multiplier:2,unit:6,
+    delta:[-6,-6,12]
+  });
+  // The terminal command must be replay-only, never a second credit.
+  c.send('game.play','m5h-rematch-play-19',
+    {game_id:saved.rematch.game_id,turn_id:String(turn-1n),
+     cards_hex:oneCard(cards[19])});
+  assert.deepEqual(await c.receive(ack('m5h-rematch-play-19')),
+                   rematchFinalAck);
+  // Original first-match credit and receipts still exist across rematches.
+  a.send('game.play','m5f-play-0',
+    {game_id:saved.game_id,turn_id:'1',cards_hex:saved.firstCard});
+  assert.deepEqual(await a.receive(ack('m5f-play-0')),saved.firstPlayAck);
+  privateFile({
+    ...saved,rematchFinalAck,rematchFirstPlayAck,
+    rematchFirstCard:oneCard(cards[0]),
+    rematchWinnerTurn:String(turn),
+    players:members.map(client=>({player_id:client.player,
+                                  token:client.token}))
+  });
+}
+
+async function thirdRestart(){
+  const saved=JSON.parse(readFileSync(manifest,'utf8'));
+  const members=[];
+  for(let i=0;i<3;i++){
+    const resumed=await memberResume(saved.players[i].token,
+                                    saved.players[i].player_id,
+                                    saved.rematch.game_id);
+    members.push(resumed.client);
+    assert.equal(resumed.automatic.phase,'finished');
+    assert.equal(resumed.automatic.landlord_seat,2);
+    assert.equal(resumed.automatic.winner_seat,2);
+    assert.equal(resumed.automatic.turn_id,saved.rematchWinnerTurn);
+    assert.deepEqual(resumed.automatic.score,{
+      base:3,bombs:0,spring:'landlord',multiplier:2,unit:6,
+      delta:[-6,-6,12]
+    });
+  }
+  const [a,,c]=members;
+  a.send('game.start','m5f-rematch');
+  assert.deepEqual(await a.receive(ack('m5f-rematch')),saved.rematch);
+  c.send('game.play','m5h-rematch-play-0',
+    {game_id:saved.rematch.game_id,
+     turn_id:saved.rematchBidAck.turn_id,
+     cards_hex:saved.rematchFirstCard});
+  assert.deepEqual(await c.receive(ack('m5h-rematch-play-0')),
+                   saved.rematchFirstPlayAck);
+  a.send('game.play','m5f-play-0',
+    {game_id:saved.game_id,turn_id:'1',cards_hex:saved.firstCard});
+  assert.deepEqual(await a.receive(ack('m5f-play-0')),saved.firstPlayAck);
+  a.send('game.start','m5f-first-game');
+  assert.deepEqual(await a.receive(ack('m5f-first-game')),saved.started);
+  c.send('game.snapshot.get','m5h-third-restart-finished',
+         {game_id:saved.rematch.game_id});
+  const current=await c.receive(pub('m5h-third-restart-finished'));
+  publicOnly(current);
+  assert.equal(current.phase,'finished');
+  assert.equal(current.winner_seat,2);
+  assert.deepEqual(current.score,{
+    base:3,bombs:0,spring:'landlord',multiplier:2,unit:6,
+    delta:[-6,-6,12]
+  });
 }
 
 try {
   if(stage==='first')await first();
   else if(stage==='restart')await restarted();
-  else await secondRestart();
-  console.log('MyGames M5f full real match + rematch '+stage+': PASS');
+  else if(stage==='second-restart')await secondRestart();
+  else await thirdRestart();
+  console.log('MyGames M5h real full match + finished rematch '+stage+': PASS');
 } finally {
   for(const client of connected)client.close();
 }

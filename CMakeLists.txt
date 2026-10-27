@@ -205,6 +205,24 @@ if(MYGAMES_ENABLE_TURBODB)
         "${TurboDB_DRIVER_DIR}/turbodb_driver_sqlite${CMAKE_SHARED_MODULE_SUFFIX}"
         "${CMAKE_CURRENT_BINARY_DIR}/mygames-game-owner-ci.sqlite")
 
+    add_executable(mygames_game_results_test
+      tests/ddz_game_results_test.c)
+    target_compile_features(mygames_game_results_test PRIVATE c_std_11)
+    target_compile_definitions(mygames_game_results_test PRIVATE
+      MYGAMES_STORE_FAULT_TESTING=1)
+    target_link_libraries(mygames_game_results_test PRIVATE
+      MyGames::Store MyGames::DouDizhuCheckpoint)
+    if(MSVC)
+      target_compile_options(mygames_game_results_test PRIVATE /W4 /WX)
+    else()
+      target_compile_options(mygames_game_results_test PRIVATE
+        -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME mygames.game_results
+      COMMAND mygames_game_results_test
+        "${TurboDB_DRIVER_DIR}/turbodb_driver_sqlite${CMAKE_SHARED_MODULE_SUFFIX}"
+        "${CMAKE_CURRENT_BINARY_DIR}/mygames-game-results-ci.sqlite")
+
     add_executable(mygames_game_store_test
       tests/ddz_turbodb_game_commit_test.c)
     target_compile_definitions(mygames_game_store_test PRIVATE

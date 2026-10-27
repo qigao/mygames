@@ -44,3 +44,96 @@ server advertises `games` capability only with an admitted real
 TurboDB-backed Owner; no gameplay fallback exists without durable state.
 
 No external art/fonts or proprietary assets were copied.
+
+
+## Real Creator Editor 3.8.8 / Web Desktop gate (M5i)
+
+Source-only `npx tsc`, mocked Creator declarations, `Lobby.scene` JSON
+structure tests, and physical CHttp/CFlow/TurboDB three-player tests **do not**
+prove that Cocos Creator imported the project, resolved all asset UUIDs,
+rendered a graphical game table or produced a real Web Desktop bundle.
+
+For that separate gate, install **Cocos Creator 3.8.8** using the official
+Cocos Dashboard on an interactive Windows/macOS desktop. Review its installed
+version in the Dashboard or Editor About dialog. Then from the repository root:
+
+- Windows: `python scripts/ci/verify_cocos_creator_web.py --creator "C:\\path\\to\\CocosCreator.exe"`
+- macOS: `python3 scripts/ci/verify_cocos_creator_web.py --creator "/Applications/CocosCreator/Creator/3.8.8/CocosCreator.app/Contents/MacOS/CocosCreator"`
+  (adjust both paths to the **actual installed** executable).
+
+The script uses Cocos Creator's **real** `--project apps/cocos --build`
+CLI, pins `buildPath=project://build` independently of prior Editor
+Build-panel settings, and explicitly sets `startScene` to the verified UUID in the tracked
+`Lobby.scene.meta` (`74bddbba-b612-4236-b8ed-d10f871e0d49`), and uses
+a **unique** `outputName=mygames-m5i-web-desktop-<16-hex>` folder
+per invocation, without deleting or reusing previous output.
+It requires documented success exit **36** and nonempty
+`build/<outputName>/index.html` **and**
+`build/<outputName>/src/application.js`. The report stores
+the source HEAD, scene UUID, binary SHA256 fingerprint and hashes of the
+built entry files as nonsecret evidence.
+It writes only `apps/cocos/build/cocos-editor-m5i-evidence.json` with
+nonsecret build metadata and explicitly records that Editor version and
+graphical/browser behavior are **not** established by that alone.
+It does not download/repackage the Editor, print private hands or tickets,
+or silently treat exit 0 or a stale index as successful acceptance.
+
+The separate [M5i workflow](../../../.github/workflows/ddz-m5i-cocos-editor-web.yml)
+runs only a **gate-harness self-test** on hosted PR CI. Its real Editor
+job is opt-in on a **same-repository** PR: a maintainer applies the
+`run-cocos-editor` label. The workflow can then run on a Windows
+self-hosted logged-in GUI runner labeled `cocos-creator-3.8.8`
+**without merging the Draft branch**. The installed executable path must
+be configured by an administrator as repository variable
+`MYGAMES_COCOS_CREATOR_388_EXE`, **and** the expected binary hash in
+`MYGAMES_COCOS_CREATOR_388_SHA256`. The job passes the exact PR HEAD
+and verifies both the Git checkout SHA and the executable hash **before
+launching the Editor**. A local operator may also supply
+`--expected-head` and `--expected-creator-sha256`; when omitted the
+evidence clearly records the missing trusted pins. Git is required to
+establish the physical source HEAD. The trusted executable SHA identifies
+the binary but the operator must still independently verify the installed
+Creator 3.8.8 version through Dashboard/About. No PR submitter or dispatch
+input may supply an arbitrary executable path. A `workflow_dispatch`
+route is also available once the workflow file is present on the default
+branch. On ordinary PR runs, the actual Editor job is deliberately
+**skipped**. A skipped job is **not Editor acceptance**.
+
+After a true build, open `Lobby.scene` in the 3.8.8 Editor, check for
+MissingScript/asset UUID/material and font issues, then launch the Web Desktop
+build against the real loopback gateway using **three separate browser
+sessions**. Verify two fully played rounds, a new landlord on the second
+round, visible public-only settlement, 17/20-card hand layout, disabled
+buttons, no opponent hand exposure, and exact pending-request replay on
+authenticated reconnect. Retain sanitized browser, Editor and WebSocket
+evidence linked to the immutable HEAD. Never upload bearer credentials,
+private cards, shuffle/deck content or SQLite data.
+
+The full real Editor/Web/visual gate remains [Issue #2](https://github.com/qigao/mygames/issues/2)
+OPEN until those manual/interactive checks complete. External WSS/IAM and
+multi-host fencing remain separate production requirements.
+
+
+### Real browser rendering smoke after a successful Editor build
+
+The privileged GUI workflow now continues **after** a real Cocos Creator
+CLI build by running the generated Web Desktop application in the actual
+locally installed **Microsoft Edge GUI**, using pinned
+`playwright-core@1.64.1` (no Playwright browser binary download).
+`scripts/ci/verify_cocos_web_browser.mjs` serves **only** the newly
+attested Creator output on loopback and verifies three isolated browser
+contexts each load the genuine Canvas, complete asset loading without
+uncaught JavaScript errors or missing static resources, and produce a
+real rendered PNG screenshot **in memory**. Only screenshot SHA256 and
+sanitized Canvas/browser metrics are written to
+`apps/cocos/build/cocos-browser-m5i-evidence.json`; no screenshot bytes,
+session tickets, hands or database are archived.
+
+This is a **real-browser start-screen smoke**, not simulated UI execution,
+but it deliberately keeps the actual game backend disconnected. It is
+**not** proof of three-player gameplay, bidding, terminal settlement,
+session replay, Cocos Editor interactive scene import, or visual quality
+review. Those interactive checks remain required for Issue #2. The
+Windows interactive GUI runner must also have Microsoft Edge installed.
+If the browser is absent, or the packaged Cocos runtime fails to load,
+the true GUI job fails rather than silently passing its prior build.
