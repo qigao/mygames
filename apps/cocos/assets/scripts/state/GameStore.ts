@@ -1,6 +1,16 @@
 import {cardsFromMask, cardMaskFromIds} from '../net/Protocol';
 import type {GameAck, GameHand, GameSnapshot} from '../net/Protocol';
 
+function phaseRank(view: GameSnapshot): number {
+    return view.phase === 'bidding' ? 1 :
+        view.phase === 'redeal_required' ? 2 :
+        view.phase === 'playing' ? 3 : 4;
+}
+
+function publicTurn(view: GameSnapshot): bigint {
+    return BigInt('turn_id' in view ? view.turn_id : view.bid_turn_id);
+}
+
 /**
  * UI-only state, not a game authority. Never persist/log a hand or pass it to
  * MQTT, localStorage, RoomStore or a public snapshot. All plays MUST be
@@ -72,63 +82,48 @@ export class GameStore {
         this.seatValue = null;
     }
 
-    /** Server-sourced but never directly executable. Monotonic epoch/game/
-     * bid-turn/game-turn ensures late or duplicate public fanout cannot roll
-     * the UI backwards after a newer confirmed turn or recovered Owner. */
+    /** Server-sourced public state with two separate monotonic fences:
+     * owner epoch must never decrease, and *committed gameplay progress*
+     * must not regress even if an Owner takes a newer epoch. In particular,
+     * a recovered Owner cannot display an old unfinished version of an
+     * already-ACKed FINISHED match or resurrect an older game ID. */
     applySnapshot(next: GameSnapshot): boolean {
         if (!this.roomIdValue || next.room_id !== this.roomIdValue) return false;
-        // An already committed Game ACK is also a monotonic public floor.
-        // An older unsolicited snapshot may arrive after that ACK but
-        // before the fresh snapshot query, and cannot restore old cards.
+        const nextEpoch = BigInt(next.room_epoch);
+        const nextGame = BigInt(next.game_id);
+        const nextPhase = phaseRank(next);
+        const nextTurn = publicTurn(next);
+
+        // The most recent durable Game ACK is a progress floor regardless
+        // of which Owner epoch delivers the subsequent public snapshot.
         if (this.lastAckValue) {
             const ack = this.lastAckValue;
-            const nextEpoch = BigInt(next.room_epoch);
-            const ackEpoch = BigInt(ack.room_epoch);
-            if (nextEpoch < ackEpoch) return false;
-            if (nextEpoch === ackEpoch) {
-                const nextGame = BigInt(next.game_id);
-                const ackGame = BigInt(ack.game_id);
-                if (nextGame < ackGame) return false;
-                if (nextGame === ackGame) {
-                    const phase = next.phase === 'bidding' ? 1 :
-                        next.phase === 'redeal_required' ? 2 :
-                        next.phase === 'playing' ? 3 : 4;
-                    if (phase < ack.phase) return false;
-                    const nextTurn = 'turn_id' in next ?
-                        next.turn_id : next.bid_turn_id;
-                    if (phase === ack.phase &&
-                        BigInt(nextTurn) < BigInt(ack.turn_id)) return false;
-                }
-            }
+            if (nextEpoch < BigInt(ack.room_epoch)) return false;
+            const ackGame = BigInt(ack.game_id);
+            if (nextGame < ackGame) return false;
+            if (nextGame === ackGame &&
+                (nextPhase < ack.phase ||
+                 (nextPhase === ack.phase &&
+                  nextTurn < BigInt(ack.turn_id)))) return false;
         }
         const current = this.currentView;
         if (current) {
-            const nextEpoch = BigInt(next.room_epoch);
-            const prevEpoch = BigInt(current.room_epoch);
-            if (nextEpoch < prevEpoch) return false;
-            if (nextEpoch === prevEpoch) {
-                const nextGame = BigInt(next.game_id);
-                const oldGame = BigInt(current.game_id);
-                if (nextGame < oldGame) return false;
-                if (nextGame === oldGame) {
-                    const rank = (x: GameSnapshot) =>
-                        x.phase === 'bidding' ? 1 : x.phase === 'redeal_required' ?
-                            2 : x.phase === 'playing' ? 3 : 4;
-                    if (rank(next) < rank(current)) return false;
-                    if (rank(next) === rank(current)) {
-                        const n = 'turn_id' in next ?
-                            next.turn_id : next.bid_turn_id;
-                        const p = 'turn_id' in current ?
-                            current.turn_id : current.bid_turn_id;
-                        if (BigInt(n) < BigInt(p) ||
-                            (BigInt(n) === BigInt(p) && this.hydratedValue))
-                            return false;
-                    }
-                }
+            const oldEpoch = BigInt(current.room_epoch);
+            if (nextEpoch < oldEpoch) return false;
+            const oldGame = BigInt(current.game_id);
+            if (nextGame < oldGame) return false;
+            if (nextGame === oldGame) {
+                const oldPhase = phaseRank(current);
+                if (nextPhase < oldPhase ||
+                    (nextPhase === oldPhase &&
+                     (nextTurn < publicTurn(current) ||
+                      (nextTurn === publicTurn(current) &&
+                       nextEpoch === oldEpoch && this.hydratedValue))))
+                    return false;
             }
         }
-        // A new valid public state requires a matching new private member
-        // hand. No stale selectable hand may leak across a turn or new game.
+        // A newer Owner epoch with exactly the same committed game/turn is
+        // still accepted to rehydrate a fresh session and private hand.
         this.currentView = next;
         this.privateHand = null;
         this.awaitingHand = null;
@@ -140,15 +135,21 @@ export class GameStore {
     noteAck(ack: GameAck): boolean {
         if (!this.roomIdValue || ack.room_id !== this.roomIdValue) return false;
         if (this.currentView) {
-            const newerEpoch = BigInt(ack.room_epoch);
-            const existingEpoch = BigInt(this.currentView.room_epoch);
-            if (newerEpoch < existingEpoch) return false;
-            if (newerEpoch === existingEpoch &&
-                BigInt(ack.game_id) < BigInt(this.currentView.game_id))
-                return false;
+            const current = this.currentView;
+            if (BigInt(ack.room_epoch) < BigInt(current.room_epoch)) return false;
+            const ackGame = BigInt(ack.game_id);
+            const currentGame = BigInt(current.game_id);
+            if (ackGame < currentGame) return false;
+            if (ackGame === currentGame &&
+                (ack.phase < phaseRank(current) ||
+                 (ack.phase === phaseRank(current) &&
+                  BigInt(ack.turn_id) < publicTurn(current)))) return false;
         }
-        if (this.lastAckValue && BigInt(ack.seq) < BigInt(this.lastAckValue.seq))
-            return false;
+        // Duplicate Game ACK receipt is NOT a new UI transition. Replayed
+        // receipts are legal at the CFlow Owner but must not trigger another
+        // client refresh or overwrite a newer local progress floor.
+        if (this.lastAckValue &&
+            BigInt(ack.seq) <= BigInt(this.lastAckValue.seq)) return false;
         this.lastAckValue = ack;
         return true;
     }
