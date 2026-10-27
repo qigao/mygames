@@ -225,6 +225,38 @@ mygames_store_status mygames_room_store_commit_game(
     const void *response, size_t response_bytes,
     uint64_t *out_committed_sequence);
 
+/* M5h immutable, NONMONETARY final per-game points. Private hands, deck,
+ * room resume tickets and game/private checkpoint MUST NOT enter this
+ * result. The record is inserted into mg_game_results exactly once ONLY
+ * on an actual PLAYING -> FINISHED transition, inside the SAME transaction
+ * as the private v2 checkpoint, command receipt, Room image and Outbox.
+ * Retried original request IDs are resolved before this insert; a
+ * confirmed replay NEVER awards a second game.
+ */
+typedef struct mygames_store_game_result {
+    uint64_t game_id;
+    uint64_t finish_sequence;
+    mygames_player_id players[MYGAMES_DDZ_SEATS];
+    mygames_ddz_settlement score;
+} mygames_store_game_result;
+
+/* Access is restricted to the trusted unique CFlow Room Owner, not a CHttp
+ * callback or public client. The caller must separately enforce room
+ * membership / principal authorization before exposing this public-only
+ * game result or a per-player score to WebSocket.
+ *
+ * Missing game returns NOT_FOUND and leaves output unchanged.
+ * Invalid/corrupt materialized ledger rows fail closed (CORRUPT).
+ * The points view is a derived aggregate, not a wallet/credits balance.
+ */
+mygames_store_status mygames_room_store_game_result(
+    mygames_room_store *store, const char *room_id, uint64_t game_id,
+    mygames_store_game_result *out_result);
+mygames_store_status mygames_room_store_player_game_points(
+    mygames_room_store *store, const char *room_id,
+    mygames_player_id player_id, int64_t *out_points,
+    uint64_t *out_finished_games);
+
 /* Loads one verified private match from the SAME TurboDB store and checks
  * its epoch/game/sequence against the checkpoint. The caller must ensure
  * secret bytes stay inside its unique, authenticated Game Owner; never
