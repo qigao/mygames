@@ -55,6 +55,13 @@ int main(void) {
     valid("{\"v\":1,\"type\":\"game.hand.get\","
           "\"request_id\":\"req-1\",\"game_id\":\"6\"}",
           MYGAMES_DDZ_GAME_HAND, 6u, 0u, 0u, 0u);
+    valid("{\"v\":1,\"type\":\"game.result.get\","
+          "\"request_id\":\"req-1\",\"game_id\":\"6\"}",
+          MYGAMES_DDZ_GAME_RESULT, 6u, 0u, 0u, 0u);
+    valid("{\"v\":1,\"type\":\"game.standings.get\","
+          "\"request_id\":\"req-1\"}",
+          MYGAMES_DDZ_GAME_STANDINGS, 0u, 0u, 0u, 0u);
+
     n=snprintf(buffer, sizeof(buffer),
                "{\"v\":1,\"type\":\"game.pass\",\"request_id\":\"req-1\","
                "\"game_id\":\"%s\",\"turn_id\":\"1\"}", max_game);
@@ -82,6 +89,18 @@ int main(void) {
     invalid("{\"v\":1,\"type\":\"game.start\",\"request_id\":\"req-1\","
             "\"game_id\":\"1\"}");
     invalid("{\"v\":1,\"type\":\"game.hand.get\",\"request_id\":\"req-1\"}");
+    invalid("{\"v\":1,\"type\":\"game.result.get\",\"request_id\":\"req-1\"}");
+    invalid("{\"v\":1,\"type\":\"game.result.get\",\"request_id\":\"req-1\","
+            "\"game_id\":\"0\"}");
+    invalid("{\"v\":1,\"type\":\"game.result.get\",\"request_id\":\"req-1\","
+            "\"game_id\":\"1\",\"player_id\":\"202\"}");
+    invalid("{\"v\":1,\"type\":\"game.standings.get\",\"request_id\":\"req-1\","
+            "\"room_id\":\"room-1\"}");
+    invalid("{\"v\":1,\"type\":\"game.standings.get\",\"request_id\":\"req-1\","
+            "\"game_id\":\"1\"}");
+    invalid("{\"v\":1,\"type\":\"game.standings.get\",\"request_id\":\"req-1\","
+            "\"request_id\":\"dup\"}");
+
     invalid("{\"v\":1,\"type\":\"game.bid\",\"request_id\":\"req-1\","
             "\"game_id\":\"1\",\"turn_id\":\"2\",\"bid\":4}");
     invalid("{\"v\":1,\"type\":\"game.bid\",\"request_id\":\"req-1\","

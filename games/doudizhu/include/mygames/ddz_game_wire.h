@@ -15,7 +15,9 @@ typedef enum mygames_ddz_game_command_kind {
     MYGAMES_DDZ_GAME_PLAY,
     MYGAMES_DDZ_GAME_PASS,
     MYGAMES_DDZ_GAME_SNAPSHOT,
-    MYGAMES_DDZ_GAME_HAND
+    MYGAMES_DDZ_GAME_HAND,
+    MYGAMES_DDZ_GAME_RESULT,
+    MYGAMES_DDZ_GAME_STANDINGS
 } mygames_ddz_game_command_kind;
 
 typedef struct mygames_ddz_game_wire_command {
@@ -36,7 +38,9 @@ typedef struct mygames_ddz_game_wire_command {
  * game.bid: request_id, game_id, turn_id, bid (integer 0..3).
  * game.play: request_id, game_id, turn_id, cards_hex (nonempty).
  * game.pass: request_id, game_id, turn_id; mask is zero.
- * game.snapshot.get / game.hand.get: request_id, game_id.
+ * game.snapshot.get / game.hand.get / game.result.get: request_id, game_id.
+ * game.standings.get: request_id only. The server infers ROOM from the
+ * authenticated and still seated session, never a client supplied ID.
  * Unrecognized/duplicate/malformed/escaped fields fail before affecting
  * the output or any authoritative Owner/database.
  */
