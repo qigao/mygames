@@ -323,3 +323,72 @@ test('unknown COMMIT keeps the original game request, never guesses success',()=
   client.disconnect();
   globalThis.WebSocket=originalWebSocket;
 });
+
+test('M5h two finished games, landlord rotation and rematch recovery never display stale settlement',()=>{
+  const store=new GameStore();
+  store.bindRoom('room-1','101',0);
+  // Game one ends with seat 0 landlord spring: this is the visible public
+  // settlement, never a source for locally awarding or storing credits.
+  const first={...playing('59',0),phase:'finished',turn_seat:3,
+    last_seat:0,winner_seat:0,score:springScore};
+  assert.equal(store.applySnapshot(first),true);
+  assert.equal(store.snapshot.score.delta[0],12);
+  assert.equal(store.isMyTurn,false);
+  const firstTerminalAck={...startAck,action:'play',request_id:'first-finish',
+    phase:4,turn_id:'59',seq:'18446744073709551607'};
+  assert.equal(store.noteAck(firstTerminalAck),true);
+
+  // Same room, new server-generated game ID and newer committed request.
+  // Old points, old card selection and old terminal display must disappear.
+  const gameTwo='9007199254740995';
+  const newStart={...startAck,request_id:'second-start',
+    game_id:gameTwo,seq:'18446744073709551608'};
+  assert.equal(store.noteAck(newStart),true);
+  const secondBid={...bidding(),game_id:gameTwo};
+  assert.equal(store.applySnapshot(secondBid),true);
+  assert.equal(store.snapshot.phase,'bidding');
+  assert.equal('score' in store.snapshot,false);
+  assert.equal(store.applySnapshot(first),false);
+  assert.deepEqual(store.hand,[]);
+  assert.equal(store.isMyTurn,false);
+
+  // Seat 2 becomes landlord; the local seat 0 is now a farmer.
+  const secondPlay={...playing('1',17),game_id:gameTwo,
+    landlord_seat:2,turn_seat:2,remaining:[17,17,20]};
+  assert.equal(store.applySnapshot(secondPlay),true);
+  assert.equal('score' in store.snapshot,false);
+  store.expectHand('second-private',gameTwo);
+  assert.equal(store.applyPrivateHand(privateHand('second-private',gameId)),false,
+    'First-game private response cannot repopulate a rematch hand');
+  assert.equal(store.applyPrivateHand(privateHand('second-private',gameTwo)),true);
+  assert.equal(store.toggle(0),true);
+  assert.equal(store.selected.length,1);
+
+  const secondScore={base:3,bombs:0,spring:'landlord',
+    multiplier:2,unit:6,delta:[-6,-6,12]};
+  const secondFinalAck={...startAck,game_id:gameTwo,action:'play',
+    request_id:'second-finish',phase:4,turn_id:'59',
+    seq:'18446744073709551614'};
+  assert.equal(store.noteAck(secondFinalAck),true);
+  const secondFinished={...secondPlay,phase:'finished',turn_id:'59',
+    turn_seat:3,winner_seat:2,remaining:[17,17,0],score:secondScore};
+  assert.equal(store.applySnapshot(secondFinished),true);
+  assert.equal(store.snapshot.score.delta[0],-6);
+  assert.equal(store.snapshot.score.delta[2],12);
+  assert.equal(store.isMyTurn,false);
+  assert.deepEqual(store.selected,[]);
+  assert.equal(store.applySnapshot(first),false,
+    'Delayed first-game terminal push may not replace second-game result');
+  assert.equal(store.applySnapshot(secondPlay),false,
+    'Delayed second-game PLAYING push may not undo terminal settlement');
+
+  store.suspend();
+  assert.deepEqual(store.hand,[]);
+  assert.equal(store.hydrated,false);
+  assert.equal(store.applySnapshot(secondFinished),true,
+    'Cold recovery may rehydrate equal terminal game/turn');
+  assert.equal(store.snapshot.score.delta[0],-6);
+  assert.equal(store.applySnapshot(first),false);
+  assert.equal(store.applyPrivateHand(privateHand('second-private',gameTwo)),false,
+    'Unsolicited hand after recovery cannot bypass exact request binding');
+});
