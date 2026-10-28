@@ -218,6 +218,40 @@ test('room history accepts ONLY current authenticated seat and exact request',()
   assert.equal(store.historicalResult,null);
 });
 
+test('history cannot bind an unseated client or survive seat reassignment',()=>{
+  const unseated=new GameStore();
+  unseated.bindRoom('room-1','101',null);
+  unseated.expectStandings('standings-query');
+  assert.equal(unseated.applyStandings(historicalStandings),false,
+               'unseated clients must not accept room totals');
+  unseated.expectHistory('result-query',gameId);
+  assert.equal(unseated.applyHistoricalResult(historicalResult),false,
+               'unseated clients must not accept historical results');
+
+  const seated=new GameStore();
+  seated.bindRoom('room-1','101',0);
+  assert.equal(seated.noteAck(startAck),true);
+  assert.equal(seated.applySnapshot(playing('2',19)),true);
+  seated.expectStandings('standings-query');
+  assert.equal(seated.applyStandings(historicalStandings),true);
+  seated.expectHistory('result-query',gameId);
+  assert.equal(seated.applyHistoricalResult(historicalResult),true);
+
+  // An in-room seat transition is a new authority binding even when the
+  // room and principal IDs remain unchanged.
+  seated.bindRoom('room-1','101',1);
+  assert.equal(seated.localSeat,1);
+  assert.equal(seated.standings,null);
+  assert.equal(seated.historicalResult,null);
+  assert.equal(seated.snapshot,null);
+  assert.equal(seated.lastAck,null);
+  assert.equal(seated.gameId,null);
+  seated.expectStandings('standings-query');
+  assert.equal(seated.applyStandings(historicalStandings),false);
+  seated.expectHistory('result-query',gameId);
+  assert.equal(seated.applyHistoricalResult(historicalResult),false);
+});
+
 test('game UI ignores stale snapshots, stale hand responses and foreign room context',()=>{
   const store=new GameStore();
   store.bindRoom('room-1','101',0);
