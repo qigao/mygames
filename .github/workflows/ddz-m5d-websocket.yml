@@ -114,24 +114,7 @@ jobs:
           set -euo pipefail
           ctest --test-dir build/gateway -C Release --no-tests=error \
             --output-on-failure --timeout 90 \
-            -R '^mygames[.](ws_origin|ddz_game_wire|game_owner|game_store|turbodb_store)      - name: Three real CHttp WebSockets, private hands, cold restart and ACK replay
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 scripts/ci/ci_ddz_m5d_websocket.py \
-            build/gateway/mygames_server \
-            "$TURBODB_ROOT/lib/turbodb/drivers/turbodb_driver_sqlite.so"
-      - name: Retain NONPRIVATE native dependencies and CTest failures only
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: m5d-game-websocket-${{ github.run_id }}
-          retention-days: 14
-          if-no-files-found: ignore
-          path: |
-            build/gateway/m5d-native-dependencies.txt
-            build/gateway/Testing/Temporary/LastTest.log
-
+            -R '^mygames[.](ws_origin|ddz_game_wire|game_owner|game_store|turbodb_store)$'
       - name: Three real CHttp WebSockets, private hands, cold restart and ACK replay
         shell: bash
         run: |
