@@ -14,7 +14,6 @@ name: M5i real Cocos Creator 3.8.8 Editor Web Desktop gate
       - 'tests/cocos_ts_syntax.test.mjs'
       - 'tests/types/cocos-creator-minimal.d.ts'
       - 'scripts/ci/verify_cocos_creator_web.py'
-      - 'tests/cocos_creator_gate_test.py'
       - 'scripts/ci/verify_cocos_web_browser.mjs'
       - '.github/workflows/ddz-m5i-cocos-editor-web.yml'
   # Also available on the default branch after this workflow is merged.
