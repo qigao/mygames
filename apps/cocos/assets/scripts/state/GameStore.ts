@@ -71,13 +71,17 @@ export class GameStore {
     private seatValue: number | null = null;
 
     bindRoom(roomId: string | null, playerId: string | null, seat: number | null): void {
-        if (roomId !== this.roomIdValue || playerId !== this.playerIdValue) {
+        const boundSeat = seat !== null && Number.isInteger(seat) &&
+                          seat >= 0 && seat <= 2 ? seat : null;
+        // A seat change is also an authority change. Drop all pending
+        // history, private hands and gameplay snapshots before rebinding.
+        if (roomId !== this.roomIdValue || playerId !== this.playerIdValue ||
+            boundSeat !== this.seatValue) {
             this.reset();
             this.roomIdValue = roomId;
             this.playerIdValue = playerId;
         }
-        this.seatValue = seat !== null && Number.isInteger(seat) &&
-                         seat >= 0 && seat <= 2 ? seat : null;
+        this.seatValue = boundSeat;
     }
 
     /** Retain only the PUBLIC game ID for a future reconnect. Temporarily
@@ -208,6 +212,7 @@ export class GameStore {
 
     applyStandings(frame: GameStandings): boolean {
         if (!this.roomIdValue || !this.playerIdValue ||
+            this.seatValue === null ||
             this.expectingStandings !== frame.request_id ||
             this.roomIdValue !== frame.room_id ||
             (this.currentView &&
@@ -232,6 +237,7 @@ export class GameStore {
 
     applyHistoricalResult(frame: GameResult): boolean {
         if (!this.roomIdValue || !this.playerIdValue ||
+            this.seatValue === null ||
             frame.room_id !== this.roomIdValue ||
             this.expectingHistory?.requestId !== frame.request_id ||
             this.expectingHistory?.gameId !== frame.game_id ||
