@@ -59,7 +59,8 @@ export interface SessionError extends WireEnvelope {
 export type GameAction = 'start' | 'bid' | 'play' | 'pass';
 export type GameClientCommand =
     'game.start' | 'game.bid' | 'game.play' | 'game.pass' |
-    'game.snapshot.get' | 'game.hand.get';
+    'game.snapshot.get' | 'game.hand.get' |
+    'game.result.get' | 'game.standings.get';
 export type GamePhase = 'bidding' | 'redeal_required' | 'playing' | 'finished';
 export interface GameAck extends WireEnvelope {
     v: 1;
@@ -129,7 +130,37 @@ export interface GameHand extends WireEnvelope {
     game_id: string;
     cards_hex: string;
 }
-export type GameFrame = GameAck | GameError | GameSnapshot | GameHand;
+/* Historical scores are public to the CURRENT authenticated room members
+ * only; they contain no deck, hand, ticket or money. All 64-bit IDs and
+ * cumulative signed totals arrive as LOSSLESS canonical strings. */
+export interface GameResult extends WireEnvelope {
+    v: 1;
+    type: 'game.result';
+    request_id: string;
+    room_id: string;
+    game_id: string;
+    finish_seq: string;
+    players: [string, string, string];
+    landlord_seat: number;
+    winner_seat: number;
+    score: GameScore;
+}
+export interface GameStandingMember {
+    player_id: string;
+    points: string;
+    games: string;
+}
+export interface GameStandings extends WireEnvelope {
+    v: 1;
+    type: 'game.standings';
+    request_id: string;
+    room_id: string;
+    room_epoch: string;
+    checkpoint_seq: string;
+    players: [GameStandingMember, GameStandingMember, GameStandingMember];
+}
+export type GameFrame = GameAck | GameError | GameSnapshot | GameHand |
+    GameResult | GameStandings;
 export type ServerFrame =
     ServerHello | ServerPong | ServerError | RoomAck | RoomError | RoomSnapshot |
     SessionReady | SessionError | GameFrame;
@@ -282,8 +313,86 @@ export function cardMaskFromIds(ids: readonly number[]): string {
     return mask.toString(16).padStart(14, '0');
 }
 
+export function canonicalSignedI64(value: unknown): value is string {
+    if (typeof value !== 'string' ||
+        !/^(?:0|-[1-9][0-9]{0,18}|[1-9][0-9]{0,18})$/.test(value))
+        return false;
+    const n = BigInt(value);
+    return n >= -9223372036854775808n && n <= 9223372036854775807n;
+}
+function canonicalCount(value: unknown): value is string {
+    return value === '0' || canonicalU64(value);
+}
+function validGameScore(
+    value: unknown, base: number, landlord: number, winner: number
+): value is GameScore {
+    if (!record(value) ||
+        !exactFields(value,['base','bombs','spring','multiplier','unit','delta']) ||
+        !Number.isInteger(value.base) || value.base !== base ||
+        (value.base as number) < 1 || (value.base as number) > 3 ||
+        !Number.isInteger(value.bombs) || (value.bombs as number) < 0 ||
+        (value.bombs as number) > 14 ||
+        (value.spring !== 'none' &&
+         value.spring !== 'landlord' && value.spring !== 'farmers') ||
+        !Number.isInteger(value.multiplier) || !Number.isInteger(value.unit) ||
+        !Array.isArray(value.delta) || value.delta.length !== 3 ||
+        !value.delta.every((x: unknown) =>
+            typeof x === 'number' && Number.isSafeInteger(x)) ||
+        (value.delta as number[]).reduce((a: number,b: number) => a+b,0) !== 0 ||
+        value.multiplier !== 2 ** ((value.bombs as number) +
+                        (value.spring !== 'none' ? 1 : 0)) ||
+        value.unit !== (value.base as number) * (value.multiplier as number) ||
+        (value.spring === 'landlord' && winner !== landlord) ||
+        (value.spring === 'farmers' && winner === landlord))
+        return false;
+    const points = value.delta as number[];
+    const unit = value.unit as number;
+    return seatIndex(landlord,false) && seatIndex(winner,false) &&
+        points[landlord] === (winner === landlord ? unit*2 : -unit*2) &&
+        points.every((point,i) =>
+            i === landlord || point === (winner === landlord ? -unit : unit));
+}
+
 function parseGameFrame(value: Record<string, unknown>): GameFrame {
     const common = ['v','type','request_id','room_id','room_epoch','game_id'];
+    if (value.type === 'game.result') {
+        if (!exactFields(value,['v','type','request_id','room_id','game_id',
+                                'finish_seq','players','landlord_seat',
+                                'winner_seat','score']) ||
+            !safeText(value.request_id) || !safeText(value.room_id,39) ||
+            !canonicalU64(value.game_id) ||
+            !canonicalU64(value.finish_seq) ||
+            !Array.isArray(value.players) || value.players.length !== 3 ||
+            !value.players.every((id: unknown) => safePlayer(id)) ||
+            new Set(value.players).size !== 3 ||
+            !record(value.score) ||
+            !validGameScore(value.score, value.score.base as number,
+                            value.landlord_seat as number,
+                            value.winner_seat as number))
+            throw new Error('Invalid historical game result');
+        return value as unknown as GameResult;
+    }
+    if (value.type === 'game.standings') {
+        if (!exactFields(value,['v','type','request_id','room_id',
+                                'room_epoch','checkpoint_seq','players']) ||
+            !safeText(value.request_id) || !safeText(value.room_id,39) ||
+            !canonicalU64(value.room_epoch) ||
+            !canonicalU64(value.checkpoint_seq) ||
+            !Array.isArray(value.players) || value.players.length !== 3)
+            throw new Error('Invalid room standings');
+        const entries = value.players as unknown[];
+        if (!entries.every((entry: unknown) =>
+            record(entry) && exactFields(entry,['player_id','points','games']) &&
+            safePlayer(entry.player_id) &&
+            canonicalSignedI64(entry.points) && canonicalCount(entry.games)))
+            throw new Error('Invalid player standings');
+        const participants = entries as GameStandingMember[];
+        if (new Set(participants.map(p=>p.player_id)).size !== 3 ||
+            participants.some(p=>p.games !== participants[0].games) ||
+            participants.reduce((sum,p)=>sum+BigInt(p.points),0n) !== 0n)
+            throw new Error('Unbalanced historical standings');
+        return value as unknown as GameStandings;
+    }
     if (value.type === 'game.ack') {
         if (!exactFields(value, [...common,'action','phase','turn_id','seq']) ||
             !safeText(value.request_id) || !safeText(value.room_id, 39) ||
@@ -349,43 +458,11 @@ function parseGameFrame(value: Record<string, unknown>): GameFrame {
                 (value.phase === 'finished' &&
                  (value.winner_seat === 3 || value.turn_seat !== 3)))
                 throw new Error('Invalid playing snapshot');
-            if (value.phase === 'finished') {
-                const score = value.score;
-                if (!record(score) ||
-                    !exactFields(score,
-                        ['base','bombs','spring','multiplier','unit','delta']) ||
-                    !Number.isInteger(score.base) || score.base !== value.highest_bid ||
-                    !Number.isInteger(score.bombs) ||
-                    (score.bombs as number) < 0 || (score.bombs as number) > 14 ||
-                    (score.spring !== 'none' &&
-                     score.spring !== 'landlord' && score.spring !== 'farmers') ||
-                    !Number.isInteger(score.multiplier) ||
-                    !Number.isInteger(score.unit) ||
-                    !Array.isArray(score.delta) || score.delta.length !== 3 ||
-                    !score.delta.every((x: unknown) =>
-                        typeof x === 'number' && Number.isSafeInteger(x)) ||
-                    (score.delta as number[]).reduce(
-                        (a: number,b: number) => a + b, 0) !== 0 ||
-                    score.multiplier !== 2 ** ((score.bombs as number) +
-                        (score.spring !== 'none' ? 1 : 0)) ||
-                    score.unit !== (score.base as number) *
-                                    (score.multiplier as number) ||
-                    (score.spring === 'landlord' &&
-                     value.winner_seat !== value.landlord_seat) ||
-                    (score.spring === 'farmers' &&
-                     value.winner_seat === value.landlord_seat))
-                    throw new Error('Invalid authoritative score');
-                const landlord = value.landlord_seat as number;
-                const winner = value.winner_seat as number;
-                const unit = score.unit as number;
-                const deltas = score.delta as number[];
-                if (deltas[landlord] !==
-                        (winner === landlord ? unit * 2 : -unit * 2) ||
-                    deltas.some((x: number,i: number) =>
-                        i !== landlord &&
-                        x !== (winner === landlord ? -unit : unit)))
-                    throw new Error('Invalid zero-sum score');
-            }
+            if (value.phase === 'finished' &&
+                !validGameScore(value.score, value.highest_bid as number,
+                                value.landlord_seat as number,
+                                value.winner_seat as number))
+                throw new Error('Invalid authoritative score');
             return value as unknown as GamePlayingSnapshot;
         }
         throw new Error('Invalid game phase');
@@ -406,7 +483,11 @@ export function encodeGameCommand(
         v: PROTOCOL_VERSION, type, request_id: requestId
     };
     if (type === 'game.start') {
-        if (Object.keys(options).length) throw new Error('Game ID is server-minted');
+        if (Object.keys(options).length)
+            throw new Error('Game ID is server-minted');
+    } else if (type === 'game.standings.get') {
+        if (Object.keys(options).length)
+            throw new Error('Room identity is server-owned');
     } else if (type === 'game.bid') {
         if (!canonicalU64(options.game_id) || !canonicalU64(options.turn_id) ||
             !Number.isInteger(options.bid) || (options.bid ?? -1) < 0 ||
@@ -430,7 +511,8 @@ export function encodeGameCommand(
             throw new Error('Invalid pass');
         payload.game_id = options.game_id;
         payload.turn_id = options.turn_id;
-    } else if (type === 'game.snapshot.get' || type === 'game.hand.get') {
+    } else if (type === 'game.snapshot.get' || type === 'game.hand.get' ||
+               type === 'game.result.get') {
         if (!canonicalU64(options.game_id) || options.turn_id !== undefined ||
             options.cards_hex !== undefined || options.bid !== undefined)
             throw new Error('Invalid game query');

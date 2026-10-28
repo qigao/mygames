@@ -130,6 +130,8 @@ export class LobbyBootstrap extends Component {
             if (this.games.applySnapshot(frame)) {
                 this.renderRoom();
                 // Request only this authenticated session's private cards.
+                if (frame.phase === 'finished')
+                    this.requestGameHistory();
                 if (frame.phase === 'bidding' ||
                     frame.phase === 'playing' || frame.phase === 'finished') {
                     this.execute((socket) => {
@@ -141,6 +143,12 @@ export class LobbyBootstrap extends Component {
             break;
         case 'game.hand':
             if (this.games.applyPrivateHand(frame)) this.renderRoom();
+            break;
+        case 'game.result':
+            if (this.games.applyHistoricalResult(frame)) this.renderRoom();
+            break;
+        case 'game.standings':
+            if (this.games.applyStandings(frame)) this.renderRoom();
             break;
         case 'game.error':
             this.report('游戏操作拒绝：' + frame.code);
@@ -304,6 +312,7 @@ export class LobbyBootstrap extends Component {
             play: () => this.playCards(),
             pass: () => this.passTurn(),
             refresh: () => this.requestGameSnapshot(),
+            history: () => this.requestGameHistory(),
             retryPending: () => this.execute(s => s.retryPendingGameActions()),
             toggleCard: card => {
                 if (this.games.toggle(card)) this.renderGame();
@@ -331,6 +340,24 @@ export class LobbyBootstrap extends Component {
             this.games.suspend();
             socket.requestGameSnapshot(gameId);
             this.renderGame();
+        });
+    }
+
+    /** Results are fetched only after current CFlow session identity is
+     * reattached to this exact Room; no direct ORM or stale hand read.
+     * A previous finished game's immutable score is still accessible after
+     * starting a different rematch game ID. */
+    private requestGameHistory(): void {
+        if (!this.rooms.roomId || !this.playerId || !this.socket?.canPlayGames)
+            return;
+        this.execute(socket => {
+            const id = socket.requestGameStandings();
+            this.games.expectStandings(id);
+            const finished = this.games.lastFinishedGameId;
+            if (finished) {
+                const resultId = socket.requestGameResult(finished);
+                this.games.expectHistory(resultId, finished);
+            }
         });
     }
 

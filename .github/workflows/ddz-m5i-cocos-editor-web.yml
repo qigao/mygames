@@ -3,9 +3,17 @@ name: M5i real Cocos Creator 3.8.8 Editor Web Desktop gate
 'on':
   pull_request:
     types: [opened, synchronize, reopened, labeled]
+    # Requalify M5i's unprivileged gate harness whenever the real Cocos
+    # application or its scene changes. The privileged Editor/Edge job still
+    # requires the explicit same-repository maintainer label below.
     paths:
-      - 'scripts/ci/verify_cocos_creator_web.py'
+      - 'apps/cocos/**'
+      - 'tests/cocos_gameplay.test.mjs'
       - 'tests/cocos_creator_gate_test.py'
+      - 'tests/cocos_scene.test.mjs'
+      - 'tests/cocos_ts_syntax.test.mjs'
+      - 'tests/types/cocos-creator-minimal.d.ts'
+      - 'scripts/ci/verify_cocos_creator_web.py'
       - 'scripts/ci/verify_cocos_web_browser.mjs'
       - '.github/workflows/ddz-m5i-cocos-editor-web.yml'
   # Also available on the default branch after this workflow is merged.

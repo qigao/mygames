@@ -6,12 +6,67 @@ CSPRNG shuffle, or bearer ticket is included in public logs/artifacts.
 """
 import os
 import pathlib
+import socket
 import subprocess
 import sys
 import tempfile
 import time
 import urllib.error
 import urllib.request
+
+
+def websocket_handshake_status(origins):
+    """One real HTTP Upgrade, no bearer/private packet and no mock server."""
+    request = (
+        "GET /ws HTTP/1.1\r\n"
+        "Host: 127.0.0.1:1780\r\n"
+        "Connection: Upgrade\r\n"
+        "Upgrade: websocket\r\n"
+        "Sec-WebSocket-Version: 13\r\n"
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+        + "".join("Origin: " + origin + "\r\n" for origin in origins)
+        + "\r\n"
+    ).encode("ascii")
+    with socket.create_connection(("127.0.0.1", 1780), timeout=5) as connection:
+        connection.settimeout(5)
+        connection.sendall(request)
+        first = bytearray()
+        while b"\r\n" not in first:
+            chunk = connection.recv(512)
+            if not chunk or len(first) + len(chunk) > 4096:
+                raise RuntimeError("WebSocket handshake response missing or oversized")
+            first.extend(chunk)
+        line = bytes(first).split(b"\r\n", 1)[0].split(b" ")
+        if len(line) < 2 or not line[0].startswith(b"HTTP/"):
+            raise RuntimeError("Invalid native CHttp WebSocket handshake status")
+        return int(line[1])
+
+
+def check_browser_origin_admission(phase):
+    # Source-only parsing is not enough: require actual HTTP response before
+    # any CFlow room/session issue. No secret values are ever sent or logged.
+    for origins in (
+        ["https://attacker.example"],
+        ["http://localhost.attacker.example"],
+        ["http://127.0.0.1.evil.example"],
+        ["null"],
+        ["http://localhost:65536"],
+        ["http://localhost", "https://attacker.example"],
+    ):
+        result = websocket_handshake_status(origins)
+        if result != 403:
+            raise AssertionError(
+                f"Untrusted browser Origin admitted unexpectedly: HTTP {result}"
+            )
+    if phase == "restart":
+        # Run an accepted browser origin after the durable gameplay audit so
+        # the native admission's provisional guest cannot perturb game IDs.
+        result = websocket_handshake_status(["http://127.0.0.1:38888"])
+        if result != 101:
+            raise AssertionError(
+                f"Valid local browser Origin was rejected: HTTP {result}"
+            )
+    print("mygames.m5d.browser_origin: PASS (real CHttp HTTP 403/101)", flush=True)
 
 
 def run_server_stage(executable, environment, phase):
@@ -40,10 +95,14 @@ def run_server_stage(executable, environment, phase):
                     time.sleep(0.12)
             if not ready:
                 raise RuntimeError("CFlow game WebSocket health probe expired")
+            if phase == "first":
+                check_browser_origin_admission(phase)
             subprocess.run(
                 ["node", "scripts/ddz_m5d_ws_smoke.mjs", phase],
                 env=environment, timeout=90, check=True,
             )
+            if phase == "restart":
+                check_browser_origin_admission(phase)
         except Exception as exc:
             failure = exc
         finally:

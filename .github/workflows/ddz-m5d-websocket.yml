@@ -4,6 +4,9 @@ name: M5d authoritative game WebSocket and durable Game ACK
   pull_request:
     paths:
       - 'apps/server/main.c'
+      - 'apps/server/ws_origin.c'
+      - 'apps/server/ws_origin.h'
+      - 'tests/ws_origin_test.c'
       - 'games/doudizhu/src/ddz_game_wire.c'
       - 'games/doudizhu/include/mygames/ddz_game_wire.h'
       - 'games/doudizhu/src/ddz_game_owner.c'
@@ -96,7 +99,7 @@ jobs:
         run: |
           set -euo pipefail
           cmake --build build/gateway --parallel 2 --target \
-            mygames_server mygames_ddz_game_wire_test \
+            mygames_server mygames_ws_origin_test mygames_ddz_game_wire_test \
             mygames_game_owner_test mygames_game_store_test \
             mygames_turbodb_store_test
       - name: Audit loaded native ORM and CHttp/Salts SDK closure
@@ -111,7 +114,7 @@ jobs:
           set -euo pipefail
           ctest --test-dir build/gateway -C Release --no-tests=error \
             --output-on-failure --timeout 90 \
-            -R '^mygames[.](ddz_game_wire|game_owner|game_store|turbodb_store)$'
+            -R '^mygames[.](ws_origin|ddz_game_wire|game_owner|game_store|turbodb_store)$'
       - name: Three real CHttp WebSockets, private hands, cold restart and ACK replay
         shell: bash
         run: |

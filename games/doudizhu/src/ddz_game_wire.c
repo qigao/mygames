@@ -122,11 +122,18 @@ static mygames_wire_status game_classify(const char *type, unsigned fields,
             return MYGAMES_WIRE_INVALID;
         cmd->kind = MYGAMES_DDZ_GAME_PASS;
     } else if (!strcmp(type, "game.snapshot.get") ||
-               !strcmp(type, "game.hand.get")) {
+               !strcmp(type, "game.hand.get") ||
+               !strcmp(type, "game.result.get")) {
         if (fields != (GAME_V | GAME_TYPE | GAME_REQ | GAME_ID))
             return MYGAMES_WIRE_INVALID;
         cmd->kind = !strcmp(type, "game.snapshot.get") ?
-            MYGAMES_DDZ_GAME_SNAPSHOT : MYGAMES_DDZ_GAME_HAND;
+            MYGAMES_DDZ_GAME_SNAPSHOT :
+            !strcmp(type, "game.hand.get") ?
+            MYGAMES_DDZ_GAME_HAND : MYGAMES_DDZ_GAME_RESULT;
+    } else if (!strcmp(type, "game.standings.get")) {
+        if (fields != (GAME_V | GAME_TYPE | GAME_REQ))
+            return MYGAMES_WIRE_INVALID;
+        cmd->kind = MYGAMES_DDZ_GAME_STANDINGS;
     } else return MYGAMES_WIRE_UNSUPPORTED_TYPE;
     return MYGAMES_WIRE_OK;
 }

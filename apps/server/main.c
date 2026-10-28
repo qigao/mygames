@@ -3,6 +3,7 @@
  * Never publish this handler to untrusted clients.
  */
 #include <http_server/http.h>
+#include "ws_origin.h"
 #include "mygames/room_directory.h"
 #include "mygames/wire.h"
 #include "mygames/ddz_game_wire.h"
@@ -732,6 +733,127 @@ static void publish_game_snapshot(dev_server_state *state,
     }
 }
 
+/* Only the already authenticated and still ROOM-SEATED CFlow Owner can
+ * read the immutable historical settlement. The client supplies neither
+ * room_id nor player_id; there is no unauthenticated HTTP/ORM accessor.
+ * Queries never change the private match, journal, scores or Outbox. */
+static bool game_result_reply(const mygames_ddz_game_owner *owner,
+                              const mygames_room *room,
+                              const char *request_id, uint64_t game_id,
+                              char *out, size_t capacity,
+                              mygames_store_status *out_status) {
+    mygames_store_game_result value = {0};
+    const mygames_ddz_settlement *score;
+    const char *spring;
+    unsigned int seat;
+    int n;
+    if (!owner || !owner->store || !room || !request_id ||
+        !game_id || !out || !out_status) return false;
+    if (owner->has_match && game_id > owner->private_match.game_id) {
+        *out_status = MYGAMES_STORE_NOT_FOUND;
+        return false;
+    }
+    *out_status = mygames_room_store_game_result(
+        owner->store, owner->room_id, game_id, &value);
+    if (*out_status != MYGAMES_STORE_OK) return false;
+    for (seat = 0u; seat < MYGAMES_DDZ_SEATS; ++seat) {
+        if (room->seats[seat].player == 0u ||
+            room->seats[seat].player != value.players[seat]) {
+            *out_status = MYGAMES_STORE_CORRUPT;
+            return false;
+        }
+    }
+    score = &value.score;
+    spring = score->spring == MYGAMES_DDZ_SPRING_LANDLORD ? "landlord" :
+             score->spring == MYGAMES_DDZ_SPRING_FARMERS ? "farmers" : "none";
+    n = snprintf(out, capacity,
+        "{\"v\":1,\"type\":\"game.result\",\"request_id\":\"%s\","
+        "\"room_id\":\"%s\",\"game_id\":\"%" PRIu64 "\","
+        "\"finish_seq\":\"%" PRIu64 "\","
+        "\"players\":[\"%" PRIu64 "\",\"%" PRIu64 "\",\"%" PRIu64 "\"],"
+        "\"landlord_seat\":%u,\"winner_seat\":%u,"
+        "\"score\":{\"base\":%u,\"bombs\":%u,\"spring\":\"%s\","
+        "\"multiplier\":%" PRIu32 ",\"unit\":%" PRIu32 ","
+        "\"delta\":[%" PRId32 ",%" PRId32 ",%" PRId32 "]}}",
+        request_id, owner->room_id, value.game_id, value.finish_sequence,
+        value.players[0], value.players[1], value.players[2],
+        (unsigned)score->landlord_seat, (unsigned)score->winner_seat,
+        (unsigned)score->bid_base, (unsigned)score->bombs_rockets, spring,
+        score->multiplier, score->unit,
+        score->delta[0], score->delta[1], score->delta[2]);
+    if (n <= 0 || (size_t)n >= capacity) {
+        *out_status = MYGAMES_STORE_CAPACITY;
+        return false;
+    }
+    return true;
+}
+
+/* One SERIAL CFlow Owner is the only database writer. Three read-only
+ * point aggregates are therefore taken at one stable global sequence.
+ * This is room-local nonmonetary history, not a transferable wallet. */
+static bool game_standings_reply(const mygames_ddz_game_owner *owner,
+                                 const mygames_room *room,
+                                 const char *request_id,
+                                 char *out, size_t capacity,
+                                 mygames_store_status *out_status) {
+    int64_t points[MYGAMES_DDZ_SEATS] = {0};
+    uint64_t games[MYGAMES_DDZ_SEATS] = {0};
+    unsigned int seat;
+    int n;
+    if (!owner || !owner->store || !owner->sequence ||
+        !room || !request_id || !out || !out_status) return false;
+    for (seat = 0u; seat < MYGAMES_DDZ_SEATS; ++seat) {
+        if (room->seats[seat].player == 0u) {
+            *out_status = MYGAMES_STORE_CORRUPT;
+            return false;
+        }
+        *out_status = mygames_room_store_player_game_points(
+            owner->store, owner->room_id, room->seats[seat].player,
+            &points[seat], &games[seat]);
+        if (*out_status != MYGAMES_STORE_OK) return false;
+        if (seat && games[seat] != games[0]) {
+            /* A fixed STARTING room has three permanent seats. Every
+             * finalized game must contribute exactly once to all three. */
+            *out_status = MYGAMES_STORE_CORRUPT;
+            return false;
+        }
+    }
+    /* Avoid signed overflow when verifying zero-sum results. */
+    if ((points[1] > 0 && points[2] > INT64_MAX - points[1]) ||
+        (points[1] < 0 && points[2] < INT64_MIN - points[1])) {
+        *out_status = MYGAMES_STORE_CORRUPT;
+        return false;
+    }
+    {
+        const int64_t others = points[1] + points[2];
+        if (others == INT64_MIN || points[0] != -others) {
+            *out_status = MYGAMES_STORE_CORRUPT;
+            return false;
+        }
+    }
+    n = snprintf(out, capacity,
+        "{\"v\":1,\"type\":\"game.standings\",\"request_id\":\"%s\","
+        "\"room_id\":\"%s\",\"room_epoch\":\"%" PRIu64 "\","
+        "\"checkpoint_seq\":\"%" PRIu64 "\","
+        "\"players\":["
+        "{\"player_id\":\"%" PRIu64 "\",\"points\":\"%" PRId64 "\","
+         "\"games\":\"%" PRIu64 "\"},"
+        "{\"player_id\":\"%" PRIu64 "\",\"points\":\"%" PRId64 "\","
+         "\"games\":\"%" PRIu64 "\"},"
+        "{\"player_id\":\"%" PRIu64 "\",\"points\":\"%" PRId64 "\","
+         "\"games\":\"%" PRIu64 "\"}]}",
+        request_id, owner->room_id, owner->epoch, *owner->sequence,
+        room->seats[0].player, points[0], games[0],
+        room->seats[1].player, points[1], games[1],
+        room->seats[2].player, points[2], games[2]);
+    if (n <= 0 || (size_t)n >= capacity) {
+        *out_status = MYGAMES_STORE_CAPACITY;
+        return false;
+    }
+    *out_status = MYGAMES_STORE_OK;
+    return true;
+}
+
 static void ws_handle_game_command(dev_server_state *state, client_peer *client,
                                     const chttp_server_websocket_session *session,
                                     const mygames_ddz_game_wire_command *command) {
@@ -764,6 +886,32 @@ static void ws_handle_game_command(dev_server_state *state, client_peer *client,
          * mismatch. Refuse further writes until an independent disk audit. */
         state->store_halted = true;
         send_game_error(session, command->request_id, "storage_unavailable");
+        return;
+    }
+    if (command->kind == MYGAMES_DDZ_GAME_RESULT ||
+        command->kind == MYGAMES_DDZ_GAME_STANDINGS) {
+        mygames_store_status read_status = MYGAMES_STORE_INVALID;
+        const bool ok = command->kind == MYGAMES_DDZ_GAME_RESULT ?
+            game_result_reply(&owner, room, command->request_id,
+                              command->game_id, view, sizeof(view),
+                              &read_status) :
+            game_standings_reply(&owner, room, command->request_id,
+                                 view, sizeof(view), &read_status);
+        if (ok) {
+            (void)send_text(session, view);
+        } else {
+            if (read_status == MYGAMES_STORE_CORRUPT ||
+                read_status == MYGAMES_STORE_QUARANTINED ||
+                read_status == MYGAMES_STORE_COMMIT_UNKNOWN ||
+                read_status == MYGAMES_STORE_BACKEND_ERROR)
+                state->store_halted = true;
+            send_game_error(session, command->request_id,
+                read_status == MYGAMES_STORE_NOT_FOUND ?
+                    "result_not_found" :
+                read_status == MYGAMES_STORE_CAPACITY ?
+                    "capacity" : "storage_unavailable");
+        }
+        mygames_ddz_game_owner_reset(&owner);
         return;
     }
     if (command->kind == MYGAMES_DDZ_GAME_SNAPSHOT ||
@@ -1355,6 +1503,35 @@ static void room_timer_thread(void *user) {
     }
 }
 
+/* Browser Origin is an admission hint, never a user identity. Reject a
+ * cross-site web page before creating any session/actor work or issuing a
+ * development bearer. Native CLI clients may omit Origin, but this dev
+ * listener remains bound to 127.0.0.1 and is NOT public authentication. */
+static bool ws_is_origin_name(const char *name) {
+    const char *expected = "origin";
+    if (!name) return false;
+    while (*name && *expected) {
+        unsigned char c = (unsigned char)*name++;
+        if (c >= 'A' && c <= 'Z') c = (unsigned char)(c + ('a' - 'A'));
+        if (c != (unsigned char)*expected++) return false;
+    }
+    return *name == '\0' && *expected == '\0';
+}
+
+static bool ws_browser_origin_admitted(const chttp_server_request_view *request) {
+    const char *origin = NULL;
+    size_t i;
+    if (!request || (request->header_count && !request->headers))
+        return false;
+    for (i = 0u; i < request->header_count; ++i) {
+        const chttp_header *header = &request->headers[i];
+        if (!ws_is_origin_name(header->name)) continue;
+        if (origin || !header->value) return false; /* duplicate/empty */
+        origin = header->value;
+    }
+    return mygames_dev_ws_origin_allowed(origin);
+}
+
 static int ws_open(void *user, chttp_websocket *socket,
                    const chttp_server_request_view *request,
                    chttp_server_response *response) {
@@ -1362,7 +1539,12 @@ static int ws_open(void *user, chttp_websocket *socket,
     chttp_server_websocket_session session = {0};
     cflow_admission_status admitted;
     int status;
-    (void)request; (void)response;
+    if (!ws_browser_origin_admitted(request)) {
+        static const char refusal[] = "websocket origin denied";
+        /* CHttp on_open reply rejects Upgrade with HTTP 403, not 101. */
+        return chttp_server_reply(response, 403u, "text/plain",
+                                  refusal, sizeof(refusal) - 1u);
+    }
     status = chttp_server_websocket_session_capture(socket, &session);
     if (status != SALTS_OK) return status;
     admitted = room_submit(state, &session, ROOM_TASK_OPEN, NULL, 0u);

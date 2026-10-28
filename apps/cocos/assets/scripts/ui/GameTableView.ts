@@ -24,6 +24,7 @@ export interface GameTableActions {
     play(): void;
     pass(): void;
     refresh(): void;
+    history(): void;
     retryPending(): void;
     toggleCard(card: number): void;
 }
@@ -48,6 +49,7 @@ export class GameTableView {
     private readonly seats: Label;
     private readonly trick: Label;
     private readonly hint: Label;
+    private readonly standingsLine: Label;
     private readonly handCards: Array<{node: Node; face: Label; id: number}> = [];
     private readonly buttons: Record<string, TableButton> = {};
     private readonly actions: GameTableActions;
@@ -60,7 +62,11 @@ export class GameTableView {
         this.phase = this.text(this.root, 'game-phase', '三人准备完毕后由房主开始游戏', 0, 157, 706, 35, 19, C.text);
         this.seats = this.text(this.root, 'game-seats', '等待完整的公共牌局快照', 0, 109, 706, 37, 17, C.text);
         this.trick = this.text(this.root, 'game-trick', '本轮尚无出牌', 0, 51, 720, 54, 18, C.muted);
-        this.hint = this.text(this.root, 'game-hint', '只显示本玩家的物理手牌；服务端校验所有动作', 0, -146, 730, 31, 15, C.muted);
+        this.standingsLine = this.text(this.root, 'game-history',
+            '本房间累计积分尚未查询', 0, -122, 738, 36, 14, C.gold);
+        this.hint = this.text(this.root, 'game-hint',
+            '只显示本玩家的物理手牌；服务端校验所有动作',
+            0, -156, 730, 20, 14, C.muted);
 
         const row1: Array<[string, string, number, () => void]> = [
             ['start','开始对局',-300,()=>actions.startGame()],
@@ -76,7 +82,7 @@ export class GameTableView {
             ['play','出牌',-225,()=>actions.play()],
             ['pass','过牌',-75,()=>actions.pass()],
             ['retry','重试未确认',75,()=>actions.retryPending()],
-            ['hand','刷新手牌',225,()=>actions.refresh()],
+            ['history','查看房间战绩',225,()=>actions.history()],
         ];
         for (const [key,label,x,callback] of row2)
             this.buttons[key] = this.button(this.root, key, label, x, -230, 137, 38, callback);
@@ -167,6 +173,20 @@ export class GameTableView {
         } else this.trick.string = '地主确定前不能看底牌、牌序或其他玩家手牌';
 
         this.rebuildCards(store);
+        const standings = store.standings;
+        const oldResult = store.historicalResult;
+        this.standingsLine.string = standings ?
+            '房间累计积分：' + standings.players.map((p,i) =>
+                '座位' + (i+1) + ' ' +
+                (p.points.startsWith('-') ? '' : '+') + p.points +
+                '(' + p.games + '局)').join('  ') +
+            (oldResult ? '\n历史局 ' + oldResult.game_id +
+                '：' + oldResult.score.delta.map(p =>
+                    (p >= 0 ? '+' : '') + p).join(' / ') : '') :
+            (oldResult ? '历史局 ' + oldResult.game_id +
+                '：' + oldResult.score.delta.map(p =>
+                    (p >= 0 ? '+' : '') + p).join(' / ') :
+                '房间战绩需当前成员身份验证后查询');
         // Do not permit a second mutable game action while a previous
         // durable COMMIT/ACK is unresolved. Retry uses the ORIGINAL ID.
         const mutable = canPlay && pendingActions === 0;
@@ -200,7 +220,7 @@ export class GameTableView {
             playView.last_cards_hex !== '00000000000000');
         this.enable('retry', canPlay && pendingActions > 0);
         this.enable('refresh', canPlay && !!store.gameId);
-        this.enable('hand', canPlay && !!store.gameId);
+        this.enable('history', canPlay && hasGame);
     }
 
     destroy(): void { this.root.destroy(); }
