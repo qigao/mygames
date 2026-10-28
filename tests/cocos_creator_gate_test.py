@@ -178,5 +178,30 @@ class RealEditorGateHarnessTests(unittest.TestCase):
                           platform_name="win32")
 
 
+    def test_m5i_workflow_tracks_app_changes_but_never_auto_admits_gui(self):
+        # This tests only the GitHub Actions admission CONTRACT. It cannot
+        # substitute for a trusted Windows GUI runner or an Edge render.
+        workflow_path = FILE.parents[2] / ".github/workflows/ddz-m5i-cocos-editor-web.yml"
+        workflow = workflow_path.read_text(encoding="utf-8")
+        pr_trigger = workflow.split("permissions:", 1)[0]
+        self.assertIn("types: [opened, synchronize, reopened, labeled]", pr_trigger)
+        for tracked in (
+            "apps/cocos/**",
+            "tests/cocos_gameplay.test.mjs",
+            "tests/cocos_creator_gate_test.py",
+            "scripts/ci/verify_cocos_creator_web.py",
+            "scripts/ci/verify_cocos_web_browser.mjs",
+        ):
+            self.assertIn("'" + tracked + "'", pr_trigger)
+        editor_job = workflow.split("  actual-editor-web-desktop:", 1)[1]
+        admission = editor_job.split("    runs-on:", 1)[0]
+        self.assertIn("github.event.action == 'labeled'", admission)
+        self.assertIn("github.event.label.name == 'run-cocos-editor'", admission)
+        self.assertIn("github.event.pull_request.head.repo.full_name == github.repository",
+                      admission)
+        self.assertIn("runs-on: [self-hosted, Windows, cocos-creator-3.8.8]",
+                      editor_job)
+
+
 if __name__ == "__main__":
     unittest.main()
