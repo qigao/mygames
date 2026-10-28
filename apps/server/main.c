@@ -3,6 +3,7 @@
  * Never publish this handler to untrusted clients.
  */
 #include <http_server/http.h>
+#include "ws_origin.h"
 #include "mygames/room_directory.h"
 #include "mygames/wire.h"
 #include "mygames/ddz_game_wire.h"
@@ -1502,6 +1503,35 @@ static void room_timer_thread(void *user) {
     }
 }
 
+/* Browser Origin is an admission hint, never a user identity. Reject a
+ * cross-site web page before creating any session/actor work or issuing a
+ * development bearer. Native CLI clients may omit Origin, but this dev
+ * listener remains bound to 127.0.0.1 and is NOT public authentication. */
+static bool ws_is_origin_name(const char *name) {
+    const char *expected = "origin";
+    if (!name) return false;
+    while (*name && *expected) {
+        unsigned char c = (unsigned char)*name++;
+        if (c >= 'A' && c <= 'Z') c = (unsigned char)(c + ('a' - 'A'));
+        if (c != (unsigned char)*expected++) return false;
+    }
+    return *name == '\0' && *expected == '\0';
+}
+
+static bool ws_browser_origin_admitted(const chttp_server_request_view *request) {
+    const char *origin = NULL;
+    size_t i;
+    if (!request || (request->header_count && !request->headers))
+        return false;
+    for (i = 0u; i < request->header_count; ++i) {
+        const chttp_header *header = &request->headers[i];
+        if (!ws_is_origin_name(header->name)) continue;
+        if (origin || !header->value) return false; /* duplicate/empty */
+        origin = header->value;
+    }
+    return mygames_dev_ws_origin_allowed(origin);
+}
+
 static int ws_open(void *user, chttp_websocket *socket,
                    const chttp_server_request_view *request,
                    chttp_server_response *response) {
@@ -1509,7 +1539,12 @@ static int ws_open(void *user, chttp_websocket *socket,
     chttp_server_websocket_session session = {0};
     cflow_admission_status admitted;
     int status;
-    (void)request; (void)response;
+    if (!ws_browser_origin_admitted(request)) {
+        static const char refusal[] = "websocket origin denied";
+        /* CHttp on_open reply rejects Upgrade with HTTP 403, not 101. */
+        return chttp_server_reply(response, 403u, "text/plain",
+                                  refusal, sizeof(refusal) - 1u);
+    }
     status = chttp_server_websocket_session_capture(socket, &session);
     if (status != SALTS_OK) return status;
     admitted = room_submit(state, &session, ROOM_TASK_OPEN, NULL, 0u);
