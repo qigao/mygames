@@ -93,7 +93,7 @@ endif()
 
 if(MYGAMES_ENABLE_GATEWAY)
   find_package(Chttp CONFIG REQUIRED)
-  add_executable(mygames_server apps/server/main.c)
+  add_executable(mygames_server apps/server/main.c apps/server/ws_origin.c)
   target_compile_features(mygames_server PRIVATE c_std_11)
   target_link_libraries(mygames_server PRIVATE MyGames::Room CHttp::Server Salts::Platform Salts::CFlow)
   if(MSVC)
@@ -255,6 +255,19 @@ endif()
 
 
 if(BUILD_TESTING)
+  # Loopback browser Origin protection is a pure C11 policy, never a claim
+  # that the development bearer authenticates users or qualifies public WSS.
+  add_executable(mygames_ws_origin_test
+    tests/ws_origin_test.c apps/server/ws_origin.c)
+  target_compile_features(mygames_ws_origin_test PRIVATE c_std_11)
+  if(MSVC)
+    target_compile_options(mygames_ws_origin_test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_ws_origin_test PRIVATE
+      -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME mygames.ws_origin COMMAND mygames_ws_origin_test)
+
   add_executable(mygames_ddz_game_wire_test tests/ddz_game_wire_test.c)
   target_link_libraries(mygames_ddz_game_wire_test PRIVATE MyGames::Room)
   if(MSVC)
