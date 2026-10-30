@@ -34,6 +34,34 @@ else()
   target_compile_options(mygames_ddz_round PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
 
+# R0: game-agnostic, explicit per-player Monte Carlo returns.
+add_library(mygames_rl_targets STATIC ai/core/src/rl_targets.c)
+add_library(MyGames::RLTargets ALIAS mygames_rl_targets)
+target_compile_features(mygames_rl_targets PUBLIC c_std_11)
+target_include_directories(mygames_rl_targets PUBLIC ai/core/include)
+if(UNIX AND NOT APPLE)
+  target_link_libraries(mygames_rl_targets PUBLIC m)
+endif()
+if(MSVC)
+  target_compile_options(mygames_rl_targets PRIVATE /W4 /WX)
+else()
+  target_compile_options(mygames_rl_targets PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+
+# R1 first native slice: rank-equivalent complete actions via existing
+# authoritative classifier, not a second rules implementation.
+add_library(mygames_ddz_ai_actions STATIC
+  games/doudizhu/src/ddz_ai_actions.c)
+add_library(MyGames::DouDizhuAI ALIAS mygames_ddz_ai_actions)
+target_compile_features(mygames_ddz_ai_actions PUBLIC c_std_11)
+target_include_directories(mygames_ddz_ai_actions PUBLIC games/doudizhu/include)
+target_link_libraries(mygames_ddz_ai_actions PUBLIC MyGames::DouDizhuRound)
+if(MSVC)
+  target_compile_options(mygames_ddz_ai_actions PRIVATE /W4 /WX)
+else()
+  target_compile_options(mygames_ddz_ai_actions PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+
 # M5b: real CSPRNG deal + staged bidding and Game Owner validation.
 # This match library is private game authority, never a network callback or
 # persisted transaction/ACK by itself. Strict C11 and no third-party SDK.
@@ -309,6 +337,23 @@ if(BUILD_TESTING)
     target_compile_options(mygames_ddz_round_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
   endif()
   add_test(NAME mygames.ddz_round COMMAND mygames_ddz_round_test)
+  # R0/R1 reuse the existing core CTest graph; no probe/consumer targets.
+  add_executable(mygames_rl_targets_test tests/rl_targets_test.c)
+  target_compile_features(mygames_rl_targets_test PRIVATE c_std_11)
+  target_link_libraries(mygames_rl_targets_test PRIVATE MyGames::RLTargets)
+  add_executable(mygames_ddz_ai_actions_test tests/ddz_ai_actions_test.c)
+  target_compile_features(mygames_ddz_ai_actions_test PRIVATE c_std_11)
+  target_link_libraries(mygames_ddz_ai_actions_test PRIVATE MyGames::DouDizhuAI)
+  if(MSVC)
+    target_compile_options(mygames_rl_targets_test PRIVATE /W4 /WX)
+    target_compile_options(mygames_ddz_ai_actions_test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_rl_targets_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    target_compile_options(mygames_ddz_ai_actions_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME mygames.rl_targets COMMAND mygames_rl_targets_test)
+  add_test(NAME mygames.ddz_ai_actions COMMAND mygames_ddz_ai_actions_test)
+
 
   add_executable(mygames_room_test tests/room_test.c)
   target_link_libraries(mygames_room_test PRIVATE MyGames::Room)

@@ -6,6 +6,12 @@ name: M5a Dou Dizhu gameplay rules (C11)
       - 'games/doudizhu/src/ddz_round.c'
       - 'games/doudizhu/include/mygames/ddz_round.h'
       - 'tests/ddz_round_test.c'
+      - 'games/doudizhu/include/mygames/ddz_ai_actions.h'
+      - 'games/doudizhu/src/ddz_ai_actions.c'
+      - 'ai/core/include/mygames/rl_targets.h'
+      - 'ai/core/src/rl_targets.c'
+      - 'tests/ddz_ai_actions_test.c'
+      - 'tests/rl_targets_test.c'
       - 'CMakeLists.txt'
       - '.github/workflows/ddz-m5a-rules.yml'
   workflow_dispatch:
@@ -75,7 +81,7 @@ jobs:
             -DMYGAMES_ENABLE_FLOWIE=OFF \
             -DCMAKE_C_FLAGS='-fsanitize=address,undefined -g -fno-omit-frame-pointer -Wall -Wextra -Wpedantic -Werror' \
             -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=address,undefined'
-          cmake --build build/ddz-asan --target mygames_ddz_round_test --parallel 2
+          cmake --build build/ddz-asan --target mygames_ddz_round_test mygames_ddz_ai_actions_test mygames_rl_targets_test --parallel 2
 
       - name: Check all gameplay operations under sanitizers
         shell: bash
@@ -86,4 +92,4 @@ jobs:
           set -euo pipefail
           ctest --test-dir build/ddz-asan --no-tests=error \
             --output-on-failure --timeout 30 --repeat until-fail:20 \
-            -R '^mygames[.]ddz_round$'
+            -R '^mygames[.](ddz_round|ddz_ai_actions|rl_targets)$'
