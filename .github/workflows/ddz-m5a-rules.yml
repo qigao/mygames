@@ -98,9 +98,9 @@ jobs:
           set -euo pipefail
           ctest --test-dir build/ddz-asan --no-tests=error \
             --output-on-failure --timeout 30 --repeat until-fail:20 \
-            -R '^mygames[.](ddz_round|ddz_ai_actions|rl_targets)
+            -R 'mygames[.](ddz_round|ddz_ai_actions|rl_targets)'
 
           ctest --test-dir build/ddz-asan --no-tests=error \
             --output-on-failure --timeout 90 \
-            -R '^mygames[.](ddz_ai_features|ddz_dmc_episode)
+            -R 'mygames[.](ddz_ai_features|ddz_dmc_episode)'
 
