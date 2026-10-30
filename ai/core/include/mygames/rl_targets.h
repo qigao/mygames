@@ -30,7 +30,7 @@ typedef struct mygames_rl_transition {
     uint64_t model_version;
     uint32_t player_count;
     uint32_t actor_id;
-    uint32_t next_actor_id;
+    uint32_t next_actor_id; /* ==player_count only for a terminal step */
     uint32_t time_delta;
     bool terminated;
     bool truncated;

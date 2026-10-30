@@ -105,3 +105,54 @@ There is no installer/consumer project, new workflow family,
 probing CMake logic, second DDZ rule engine or SDK change.
 Keep all parent PRs Draft. Real Cocos Editor/Edge GUI, IAM/WSS
 and production promotion remain separate unqualified gates.
+
+
+## R1 implementation update — actor-only DouZero features and offline samples
+
+MyGames::DouDizhuAIFeatures now uses **only** the acting player's
+already-authorized hand and the public history, which must be extended from
+accepted moves AFTER real Game COMMIT in online service. The current source
+does **not** yet persist full public action history through owner restart;
+there is no implicit backfill from the private checkpoint. Online inference
+must remain disabled until a trusted, authenticated, durable event history
+projection exists. The offline collector does not need that server feature.
+
+The history is append-only, turn-fenced, tracks full public per-player
+played-card aggregates and latest actions per seat, plus the last 15
+chronological public moves. It has 15x54 DouZero action-history encoding
+(left padded) and 319 landlord / 430 farmer role-specific state features.
+Opponent combined unseen cards are reconstructed using (full 54 cards -
+OWN hand - ALL publicly played cards), **never read from the secret hands**.
+A model cannot get other players' hand partition or secret shuffled deck.
+
+This source implements original DouZero feature dimensions and rank-count
+layout, but **pretrained DouZero checkpoint compatibility is NOT claimed**:
+MyGames' house rules, bidding/scoring objective, public trick reset semantics
+and any model weight format must pass independent golden-vector and
+matched-rule numeric tests first. No silent weights fallback.
+
+MyGames::DMCCollector receives an accepted rule result and owns a caller-
+provided bounded fixed-shape in-memory sample array (max 162 out-card
+decisions, not bidding). After an actual finished, authoritative M5g
+settlement, it seals every sample once with either team-WP (+1/-1) or
+the exact nonmonetary signed per-seat game points. No intermediate
+actor-reward mixing; no labels from truncated/incomplete games.
+The target is a completed-data training record, **not yet** a durable
+Replay store, gradient learner or runtime AI opponent.
+
+The R0 RL transition next_actor_id == player_count now explicitly
+represents a terminal transition with no next acting player, instead of
+inventing a next seat after FINISHED.
+
+The new native tests include 54-card real rule operations,
+noninterference under changed opponent hidden hand distribution,
+15-event sliding history, farmer and landlord feature offsets, complete
+actual 3-player C11 match through spring settlement, and DMC labels
+cross-checked against full reward-vector Monte Carlo returns.
+Existing CMake/CTest, M5a three-OS core and Linux ASan+UBSan lane
+are extended without creating extra workflow families or consumer apps.
+
+**Remaining R1 blockers:** persistent trusted committed public move log,
+offline data writer/Reader with provenance and versioned feature ABI,
+PyTorch DMC learner and trained weights with actual paired-deal evaluation,
+and single-Owner fenced bot-seat proposal path. None is complete here.

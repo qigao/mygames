@@ -80,6 +80,37 @@ else()
   target_compile_options(mygames_ddz_match PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
 
+# R1: an AUTHORIZED player's own hand + committed PUBLIC history =>
+# DouZero-shape features. Does not accept full private match/hidden deck.
+add_library(mygames_ddz_ai_features STATIC
+  games/doudizhu/src/ddz_ai_features.c)
+add_library(MyGames::DouDizhuAIFeatures ALIAS mygames_ddz_ai_features)
+target_compile_features(mygames_ddz_ai_features PUBLIC c_std_11)
+target_include_directories(mygames_ddz_ai_features PUBLIC games/doudizhu/include)
+target_link_libraries(mygames_ddz_ai_features PUBLIC MyGames::DouDizhuAI)
+if(MSVC)
+  target_compile_options(mygames_ddz_ai_features PRIVATE /W4 /WX)
+else()
+  target_compile_options(mygames_ddz_ai_features PRIVATE
+    -Wall -Wextra -Wpedantic -Werror)
+endif()
+
+# Pure offline DMC sample collector. Not linked into the CHttp Game Owner.
+# Labels are sealed only after a real full-match final settlement.
+add_library(mygames_ddz_dmc_episode STATIC
+  ai/dmc/src/ddz_dmc_episode.c)
+add_library(MyGames::DMCCollector ALIAS mygames_ddz_dmc_episode)
+target_compile_features(mygames_ddz_dmc_episode PUBLIC c_std_11)
+target_include_directories(mygames_ddz_dmc_episode PUBLIC ai/dmc/include)
+target_link_libraries(mygames_ddz_dmc_episode PUBLIC
+  MyGames::DouDizhuAIFeatures MyGames::DouDizhuMatch)
+if(MSVC)
+  target_compile_options(mygames_ddz_dmc_episode PRIVATE /W4 /WX)
+else()
+  target_compile_options(mygames_ddz_dmc_episode PRIVATE
+    -Wall -Wextra -Wpedantic -Werror)
+endif()
+
 # M5c: portable, fixed-size canonical PRIVATE match state codec. No native
 # file persistence and no public game-state serialization API is provided.
 add_library(mygames_ddz_checkpoint STATIC
@@ -353,6 +384,28 @@ if(BUILD_TESTING)
   endif()
   add_test(NAME mygames.rl_targets COMMAND mygames_rl_targets_test)
   add_test(NAME mygames.ddz_ai_actions COMMAND mygames_ddz_ai_actions_test)
+  # R1 actor-only observation history / feature shape / full C11 match
+  # episode sample tests reuse the existing native core test graph.
+  add_executable(mygames_ddz_ai_features_test tests/ddz_ai_features_test.c)
+  target_compile_features(mygames_ddz_ai_features_test PRIVATE c_std_11)
+  target_link_libraries(mygames_ddz_ai_features_test PRIVATE
+    MyGames::DouDizhuAIFeatures)
+  add_executable(mygames_ddz_dmc_episode_test tests/ddz_dmc_episode_test.c)
+  target_compile_features(mygames_ddz_dmc_episode_test PRIVATE c_std_11)
+  target_link_libraries(mygames_ddz_dmc_episode_test PRIVATE
+    MyGames::DMCCollector MyGames::RLTargets)
+  if(MSVC)
+    target_compile_options(mygames_ddz_ai_features_test PRIVATE /W4 /WX)
+    target_compile_options(mygames_ddz_dmc_episode_test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_ddz_ai_features_test PRIVATE
+      -Wall -Wextra -Wpedantic -Werror)
+    target_compile_options(mygames_ddz_dmc_episode_test PRIVATE
+      -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME mygames.ddz_ai_features COMMAND mygames_ddz_ai_features_test)
+  add_test(NAME mygames.ddz_dmc_episode COMMAND mygames_ddz_dmc_episode_test)
+
 
 
   add_executable(mygames_room_test tests/room_test.c)

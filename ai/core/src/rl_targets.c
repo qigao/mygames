@@ -40,7 +40,8 @@ mygames_rl_status mygames_rl_monte_carlo_returns(
     for (t = 0u; t < step_count; ++t) {
         const mygames_rl_transition *s = &steps[t];
         if (s->episode_id != episode_id || s->player_count != players ||
-            s->actor_id >= players || s->next_actor_id >= players ||
+            s->actor_id >= players || s->next_actor_id > players ||
+            (s->next_actor_id == players && !s->terminated) ||
             (t > 0u && s->state_revision <= steps[t - 1u].state_revision))
             return MYGAMES_RL_INVALID_TRAJECTORY;
         if (s->terminated && s->truncated)

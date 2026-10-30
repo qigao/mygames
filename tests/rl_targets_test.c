@@ -29,6 +29,7 @@ static void test_team_terminal_credit(void) {
     unsigned t;
     for (t = 0u; t < 3u; ++t) episode[t] = example(t);
     episode[2].terminated = true;
+    episode[2].next_actor_id = 3u; /* no actor after terminal */
     episode[2].reward[0] = 12.0;
     episode[2].reward[1] = -6.0;
     episode[2].reward[2] = -6.0;
