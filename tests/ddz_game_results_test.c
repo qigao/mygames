@@ -1,4 +1,5 @@
 #include "mygames/room_store.h"
+#include "mygames/ddz_ai_features.h"
 
 #ifdef NDEBUG
 #undef NDEBUG
@@ -119,6 +120,41 @@ static void assert_public_moves(
     }
 }
 
+/* Full bridge: real committed TurboDB public rows ->
+ * pure C11 history rebuild -> exact authoritative public view.
+ * The training adapter never receives the private match itself. */
+static void assert_rebuilt_public_history(
+    mygames_room_store *store, uint64_t game_id,
+    uint8_t landlord_seat, size_t expected_count,
+    const mygames_ddz_round *trusted_round) {
+    mygames_store_public_move stored[MYGAMES_STORE_PUBLIC_MOVES_MAX] = {{0}};
+    mygames_ddz_ai_public_move actions[MYGAMES_DDZ_AI_MAX_PUBLIC_MOVES] = {{0}};
+    mygames_ddz_public_view authoritative = {0};
+    mygames_ddz_ai_history history = {0};
+    size_t n = 0u, i;
+    assert(trusted_round != NULL);
+    assert(mygames_ddz_round_public_view(
+        trusted_round, &authoritative) == MYGAMES_DDZ_OK);
+    expect_store(mygames_room_store_public_game_moves(
+        store, "room-1", game_id, stored, MYGAMES_STORE_PUBLIC_MOVES_MAX, &n),
+        MYGAMES_STORE_OK);
+    assert(n == expected_count);
+    for (i = 0u; i < n; ++i) {
+        actions[i].turn_id = stored[i].turn_id;
+        actions[i].cards_mask = stored[i].cards_mask;
+        actions[i].actor_seat = stored[i].actor_seat;
+    }
+    assert(mygames_ddz_ai_history_reconstruct(landlord_seat, actions, n,
+        &authoritative, &history) == MYGAMES_DDZ_AI_OK);
+    assert(history.current.turn_id == authoritative.turn_id);
+    assert(history.recent_count == (n < MYGAMES_DDZ_AI_HISTORY_MOVES ?
+            n : MYGAMES_DDZ_AI_HISTORY_MOVES));
+    if (n > 0u) {
+        assert(history.recent_actions[history.recent_count - 1u] ==
+               actions[n - 1u].cards_mask);
+    }
+}
+
 int main(int argc, char **argv) {
     mygames_room_directory rooms;
     mygames_room_store *store = NULL;
@@ -192,6 +228,7 @@ int main(int argc, char **argv) {
             assert(memcmp(&result,&sentinel,sizeof(result))==0);
             assert_total(store,101u,0,0);
             assert_public_moves(store,8u,0u,57u,seq);
+            assert_rebuilt_public_history(store,8u,0u,57u,&last_before.round);
             seq = commit_game(store,&rooms,&match,&next,101u,1u,seq,request,0x77u);
             match = next;
             assert(match.phase == MYGAMES_DDZ_MATCH_FINISHED);
@@ -221,6 +258,7 @@ int main(int argc, char **argv) {
     }
     assert(seq==final_seq);
     assert_public_moves(store,8u,0u,58u,final_seq);
+    assert_rebuilt_public_history(store,8u,0u,58u,&win.round);
     expect_store(mygames_room_store_game_result(store,"room-1",8u,&result),
                  MYGAMES_STORE_OK);
     assert(result.game_id==8u && result.finish_sequence==final_seq &&
@@ -303,6 +341,7 @@ int main(int argc, char **argv) {
     assert(match.phase==MYGAMES_DDZ_MATCH_FINISHED &&
            match.round.winner_seat==1u && match.round.remaining[1]==0u);
     assert_public_moves(store,9u,1u,58u,seq);
+    assert_rebuilt_public_history(store,9u,1u,58u,&match.round);
     expect_store(mygames_room_store_game_result(store,"room-1",9u,&result),
                  MYGAMES_STORE_OK);
     assert(result.finish_sequence==seq && result.game_id==9u &&
@@ -337,6 +376,8 @@ int main(int argc, char **argv) {
     assert(result.finish_sequence==final_seq);
     assert_public_moves(store,8u,0u,58u,final_seq);
     assert_public_moves(store,9u,1u,58u,seq);
+    assert_rebuilt_public_history(store,8u,0u,58u,&win.round);
+    assert_rebuilt_public_history(store,9u,1u,58u,&match.round);
     assert_total(store,101u,6,2);
     assert_total(store,202u,6,2);
     assert_total(store,303u,-12,2);

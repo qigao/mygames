@@ -205,3 +205,31 @@ a native DMC gradient learner, model inference or private AI Replay
 storage. The new SQLite table is a Draft schema addition; no automatic
 migration/reconstruction of history from earlier unjournaled game rows
 is attempted or implied.
+
+
+## R1 restart-safe PUBLIC history reconstruction (candidate)
+
+The pure C11 mygames_ddz_ai_history_reconstruct() consumes only the
+trusted, committed public move tuple (turn, actor seat, cards mask)
+and the landlord seat, and MUST be supplied the independently
+authoritative expected current public round snapshot. It rebuilds
+the 20/17/17 starting counts, current acting seat, comparison move,
+two-PASS trick clearing, physical-card uniqueness, per-seat played
+aggregates and chronological 15-move window, using the same v1
+classifier and public-history validation path as ordinary offline
+self-play. The output is published atomically only if it matches
+the expected authoritative public view exactly.
+
+The existing M5h real TurboDB two-game test now bridges the actual
+SQLite committed history rows to this pure C11 projection, compares
+against the real private match's PUBLIC view at the 57th decision,
+after each finished game, and after process reopen. Neither the ORM
+reader nor the AI observation receives the private hands.
+
+Online inference is STILL DISABLED: a trusted Room Owner must explicitly
+bind the current bot principal and gameplay revision, load history
+through this read API, take the bot's own private hand via the existing
+authenticated owner method, and recheck model proposal turn/epoch
+before the normal Game COMMIT. This candidate implements the data
+reconstruction only. No trained model, actual bot, auth or production
+cutover is claimed.

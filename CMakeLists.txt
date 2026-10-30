@@ -270,7 +270,8 @@ if(MYGAMES_ENABLE_TURBODB)
     target_compile_definitions(mygames_game_results_test PRIVATE
       MYGAMES_STORE_FAULT_TESTING=1)
     target_link_libraries(mygames_game_results_test PRIVATE
-      MyGames::Store MyGames::DouDizhuCheckpoint)
+      MyGames::Store MyGames::DouDizhuCheckpoint
+      MyGames::DouDizhuAIFeatures)
     if(MSVC)
       target_compile_options(mygames_game_results_test PRIVATE /W4 /WX)
     else()

@@ -69,6 +69,30 @@ mygames_ddz_ai_status mygames_ddz_ai_history_append(
     const mygames_ddz_action_result *accepted,
     const mygames_ddz_public_view *next_view);
 
+/* Rebuild a canonical PUBLIC action projection after restart from trusted
+ * committed play/pass rows. This is NOT game authority: it checks the
+ * chronological rows using existing pattern/beat logic and validates
+ * the reconstructed public view against the caller's authenticated,
+ * authoritative current-round snapshot.
+ *
+ * Each row is a public accepted action; there are at most 162 turns.
+ * No match pointer, secret hands/deck, Owner, or ORM handle crosses here.
+ * A stale/missing/malformed event stream fails CLOSED, and output is
+ * untouched on failure. */
+#define MYGAMES_DDZ_AI_MAX_PUBLIC_MOVES 162u
+typedef struct mygames_ddz_ai_public_move {
+    uint64_t turn_id;
+    uint64_t cards_mask;  /* 0 is PASS */
+    uint8_t actor_seat;
+} mygames_ddz_ai_public_move;
+
+mygames_ddz_ai_status mygames_ddz_ai_history_reconstruct(
+    uint8_t landlord_seat,
+    const mygames_ddz_ai_public_move *accepted_moves,
+    size_t move_count,
+    const mygames_ddz_public_view *expected_authoritative_view,
+    mygames_ddz_ai_history *out);
+
 mygames_ddz_ai_status mygames_ddz_ai_observe(
     uint64_t authenticated_own_hand,
     const mygames_ddz_ai_history *public_history,

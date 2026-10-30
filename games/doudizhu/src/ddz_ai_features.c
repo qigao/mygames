@@ -184,6 +184,124 @@ mygames_ddz_ai_status mygames_ddz_ai_history_append(
     return MYGAMES_DDZ_AI_OK;
 }
 
+
+static bool ddz_feature_public_view_equal(
+    const mygames_ddz_public_view *a,
+    const mygames_ddz_public_view *b) {
+    unsigned p;
+    if (a->turn_id != b->turn_id || a->last_cards != b->last_cards ||
+        a->last_move.kind != b->last_move.kind ||
+        a->last_move.high_rank != b->last_move.high_rank ||
+        a->last_move.chain_length != b->last_move.chain_length ||
+        a->last_move.card_count != b->last_move.card_count ||
+        a->landlord_seat != b->landlord_seat ||
+        a->turn_seat != b->turn_seat ||
+        a->last_seat != b->last_seat ||
+        a->winner_seat != b->winner_seat ||
+        a->finished != b->finished)
+        return false;
+    for (p = 0u; p < MYGAMES_DDZ_SEATS; ++p)
+        if (a->remaining[p] != b->remaining[p]) return false;
+    return true;
+}
+
+mygames_ddz_ai_status mygames_ddz_ai_history_reconstruct(
+    uint8_t landlord_seat,
+    const mygames_ddz_ai_public_move *accepted_moves,
+    size_t move_count,
+    const mygames_ddz_public_view *expected_authoritative_view,
+    mygames_ddz_ai_history *out) {
+    mygames_ddz_public_view initial = {0};
+    mygames_ddz_ai_history history = {0};
+    unsigned passes = 0u;
+    size_t i;
+    unsigned p;
+    if (!out || !expected_authoritative_view ||
+        landlord_seat >= MYGAMES_DDZ_SEATS ||
+        move_count > MYGAMES_DDZ_AI_MAX_PUBLIC_MOVES ||
+        (move_count != 0u && !accepted_moves))
+        return MYGAMES_DDZ_AI_INVALID_ARGUMENT;
+    initial.turn_id = UINT64_C(1);
+    initial.landlord_seat = landlord_seat;
+    initial.turn_seat = landlord_seat;
+    initial.last_seat = MYGAMES_DDZ_NO_SEAT;
+    initial.winner_seat = MYGAMES_DDZ_NO_SEAT;
+    for (p = 0u; p < MYGAMES_DDZ_SEATS; ++p)
+        initial.remaining[p] = (uint8_t)(p == landlord_seat ? 20u : 17u);
+    if (mygames_ddz_ai_history_init(&initial, &history) != MYGAMES_DDZ_AI_OK)
+        return MYGAMES_DDZ_AI_INVALID_OBSERVATION;
+    for (i = 0u; i < move_count; ++i) {
+        const mygames_ddz_ai_public_move *row = &accepted_moves[i];
+        mygames_ddz_public_view next = history.current;
+        mygames_ddz_action_result result = {0};
+        mygames_ddz_move classified = {0};
+        unsigned count;
+        uint64_t remaining;
+        if (history.current.finished || history.current.turn_id == UINT64_MAX ||
+            row->turn_id != history.current.turn_id ||
+            row->actor_seat != history.current.turn_seat ||
+            row->actor_seat >= MYGAMES_DDZ_SEATS ||
+            (row->cards_mask & ~MYGAMES_DDZ_CARD_MASK) != 0u)
+            return MYGAMES_DDZ_AI_INVALID_OBSERVATION;
+        result.acting_seat = row->actor_seat;
+        result.played_cards = row->cards_mask;
+        next.turn_id++;
+        next.turn_seat = (uint8_t)((row->actor_seat + 1u) % MYGAMES_DDZ_SEATS);
+        if (row->cards_mask == 0u) {
+            if (next.last_seat == MYGAMES_DDZ_NO_SEAT)
+                return MYGAMES_DDZ_AI_INVALID_OBSERVATION;
+            result.passed = true;
+            ++passes;
+            if (passes == MYGAMES_DDZ_SEATS - 1u) {
+                next.last_seat = MYGAMES_DDZ_NO_SEAT;
+                next.last_cards = UINT64_C(0);
+                next.last_move = (mygames_ddz_move){0};
+                result.trick_cleared = true;
+                passes = 0u;
+            }
+        } else {
+            if (mygames_ddz_classify(row->cards_mask, &classified) != MYGAMES_DDZ_OK ||
+                (next.last_seat != MYGAMES_DDZ_NO_SEAT &&
+                 !mygames_ddz_beats(&classified, &next.last_move)))
+                return MYGAMES_DDZ_AI_INVALID_OBSERVATION;
+            remaining = row->cards_mask;
+            count = 0u;
+            while (remaining != 0u) {
+                ++count;
+                remaining &= remaining - UINT64_C(1);
+            }
+            if (count > next.remaining[row->actor_seat])
+                return MYGAMES_DDZ_AI_INVALID_OBSERVATION;
+            next.remaining[row->actor_seat] =
+                (uint8_t)(next.remaining[row->actor_seat] - count);
+            next.last_seat = row->actor_seat;
+            next.last_cards = row->cards_mask;
+            next.last_move = classified;
+            result.move = classified;
+            passes = 0u;
+            if (next.remaining[row->actor_seat] == 0u) {
+                next.finished = true;
+                next.winner_seat = row->actor_seat;
+                next.turn_seat = MYGAMES_DDZ_NO_SEAT;
+                result.finished = true;
+            }
+        }
+        result.next_turn_id = next.turn_id;
+        result.next_seat = next.turn_seat;
+        result.winner_seat = next.winner_seat;
+        for (p = 0u; p < MYGAMES_DDZ_SEATS; ++p)
+            result.remaining[p] = next.remaining[p];
+        if (mygames_ddz_ai_history_append(&history, &result, &next) !=
+            MYGAMES_DDZ_AI_OK)
+            return MYGAMES_DDZ_AI_INVALID_OBSERVATION;
+    }
+    if (!ddz_feature_public_view_equal(&history.current,
+                                       expected_authoritative_view))
+        return MYGAMES_DDZ_AI_INVALID_OBSERVATION;
+    *out = history;
+    return MYGAMES_DDZ_AI_OK;
+}
+
 mygames_ddz_ai_status mygames_ddz_ai_observe(
     uint64_t authenticated_own_hand,
     const mygames_ddz_ai_history *public_history,

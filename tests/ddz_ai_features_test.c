@@ -130,7 +130,8 @@ static void test_initial_and_following(void) {
 static void test_window_and_terminal(void) {
     mygames_ddz_round round = {0};
     mygames_ddz_public_view view = {0}, following = {0};
-    mygames_ddz_ai_history history = {0};
+    mygames_ddz_ai_history history = {0}, reconstructed = {0};
+    mygames_ddz_ai_public_move moves[MYGAMES_DDZ_AI_MAX_PUBLIC_MOVES] = {0};
     mygames_ddz_ai_observation obs = {0};
     mygames_ddz_ai_features f = {0};
     mygames_ddz_action_result event = {0};
@@ -145,6 +146,9 @@ static void test_window_and_terminal(void) {
         unsigned seat = round.turn_seat;
         REQUIRE(action_count < 65u);
         selected = seat == 0u ? lowest(round.hands[0]) : UINT64_C(0);
+        moves[action_count].turn_id = round.turn_id;
+        moves[action_count].actor_seat = (uint8_t)seat;
+        moves[action_count].cards_mask = selected;
         REQUIRE(mygames_ddz_round_submit(&round, seat, round.turn_id,
                                           selected, &event) == MYGAMES_DDZ_OK);
         REQUIRE(mygames_ddz_round_public_view(&round, &following) == MYGAMES_DDZ_OK);
@@ -162,6 +166,37 @@ static void test_window_and_terminal(void) {
     REQUIRE(popcount64(history.played_by_seat[0]) == 20u);
     REQUIRE(history.played_by_seat[1] == 0u && history.played_by_seat[2] == 0u);
     REQUIRE(history.current.finished && history.current.remaining[0] == 0u);
+    REQUIRE(mygames_ddz_ai_history_reconstruct(0u, moves, action_count,
+                &following, &reconstructed) == MYGAMES_DDZ_AI_OK);
+    REQUIRE(reconstructed.recent_count == history.recent_count &&
+            reconstructed.bomb_count == history.bomb_count &&
+            reconstructed.current.finished);
+    for (i = 0u; i < MYGAMES_DDZ_SEATS; ++i) {
+        REQUIRE(reconstructed.played_by_seat[i] == history.played_by_seat[i]);
+        REQUIRE(reconstructed.last_action_by_seat[i] ==
+                history.last_action_by_seat[i]);
+    }
+    for (i = 0u; i < MYGAMES_DDZ_AI_HISTORY_MOVES; ++i) {
+        REQUIRE(reconstructed.recent_actions[i] == history.recent_actions[i]);
+        REQUIRE(reconstructed.recent_seats[i] == history.recent_seats[i]);
+    }
+    {
+        const mygames_ddz_ai_history before = reconstructed;
+        const mygames_ddz_public_view terminal = following;
+        mygames_ddz_public_view wrong = following;
+        moves[1].actor_seat = 0u; /* Must be farmer seat 1. */
+        REQUIRE(mygames_ddz_ai_history_reconstruct(0u, moves, action_count,
+                    &terminal, &reconstructed) == MYGAMES_DDZ_AI_INVALID_OBSERVATION);
+        REQUIRE(memcmp(&reconstructed, &before, sizeof(before)) == 0);
+        moves[1].actor_seat = 1u;
+        wrong.turn_id++;
+        REQUIRE(mygames_ddz_ai_history_reconstruct(0u, moves, action_count,
+                    &wrong, &reconstructed) == MYGAMES_DDZ_AI_INVALID_OBSERVATION);
+        REQUIRE(memcmp(&reconstructed, &before, sizeof(before)) == 0);
+        REQUIRE(mygames_ddz_ai_history_reconstruct(0u, moves, action_count - 1u,
+                    &terminal, &reconstructed) == MYGAMES_DDZ_AI_INVALID_OBSERVATION);
+        REQUIRE(memcmp(&reconstructed, &before, sizeof(before)) == 0);
+    }
     {
         mygames_ddz_ai_observation guard;
         memset(&guard, 0x7c, sizeof(guard));
