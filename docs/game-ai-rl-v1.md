@@ -156,3 +156,52 @@ are extended without creating extra workflow families or consumer apps.
 offline data writer/Reader with provenance and versioned feature ABI,
 PyTorch DMC learner and trained weights with actual paired-deal evaluation,
 and single-Owner fenced bot-seat proposal path. None is complete here.
+
+
+## R1 durable PUBLIC action journal (new candidate)
+
+The M5k candidate extends the EXISTING TurboDB GameStore transaction
+with mg_game_public_moves, an append-only canonical public-only row
+keyed by (room_id,game_id,turn_id) and unique committed Outbox sequence.
+On every accepted game.play / game.pass, the existing Owner-backed
+game_store_candidate calculates the newly REVEALED physical-card mask
+from the prior and successor authoritative rounds. A PASS is encoded by
+the zero mask. It inserts this row BEFORE the same atomic COMMIT that
+publishes the private M5c checkpoint, original Game ACK receipt, public
+game.state_committed Outbox and (on terminal turn) M5h credit.
+
+This does NOT append the secret shuffled deck, hidden private hands,
+undealt bottom cards, login credentials, RNG seed, model state or
+uncommitted speculative actions to any public source. The old PUBLIC
+Outbox schema is unchanged: no raw-match blob or second event producer.
+A failed transaction leaves neither a new action history row nor a Game
+ACK. Replayed command receipts produce no second row or score credit.
+
+A trusted CFlow Owner may call
+mygames_room_store_public_game_moves() to read up to 162 canonical
+public actions for a specified room/game, including historical finished
+games after a process restart and Owner epoch claim. One SQLite SELECT
+snapshot is validated in full: contiguous turn IDs starting at 1,
+strictly increasing committed sequence IDs, physical-card no-reuse,
+seat turn order, valid v1 move patterns and comparisons, legal PASS
+placement, and correct maximum per-seat card counts. All error paths
+leave caller's output action buffer unchanged; capacity reports an
+exact required row count. Empty history is not proof that the game ID
+exists or the querying principal has permission.
+
+The actual TurboDB M5h ledger CTest covers first/second full real
+58-decision matches with different landlords, injected rollback
+before the final Outbox, duplicate/contradictory request replay,
+capacity-atomic read, and both games still readable after SQLite reopen
+and Owner epoch changes.
+
+**Still a boundary:** The read API is privileged infrastructure, not
+a public WebSocket endpoint or an AI worker credential. The unique
+Owner must map these rows to a validated actor-only observation and
+rebuild the last 15 moves before safely enabling online DMC, after
+checking seat authorization and current game/turn against the
+authoritative persisted match. This commit does not activate live bots,
+a native DMC gradient learner, model inference or private AI Replay
+storage. The new SQLite table is a Draft schema addition; no automatic
+migration/reconstruction of history from earlier unjournaled game rows
+is attempted or implied.

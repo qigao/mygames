@@ -66,6 +66,59 @@ static uint64_t commit_game(mygames_room_store *store,
     assert(next_seq == seq+UINT64_C(1));
     return next_seq;
 }
+/* The public DMC history is an append-only projection of accepted commands.
+ * Keep the score ledger independent. Count-only / undersized reads must not
+ * mutate the destination, and both completed games survive process reopen. */
+static void assert_public_moves(
+    mygames_room_store *store, uint64_t game_id,
+    uint8_t landlord_seat, size_t expected_count,
+    uint64_t last_sequence) {
+    mygames_store_public_move moves[MYGAMES_STORE_PUBLIC_MOVES_MAX];
+    mygames_store_public_move sentinel[MYGAMES_STORE_PUBLIC_MOVES_MAX];
+    size_t count = 999u, i, nonpass = 0u, passes = 0u;
+    uint64_t consumed = UINT64_C(0), previous_seq = UINT64_C(0);
+    memset(moves, 0x5a, sizeof(moves));
+    memcpy(sentinel, moves, sizeof(moves));
+    if (expected_count != 0u) {
+        expect_store(mygames_room_store_public_game_moves(
+            store, "room-1", game_id, NULL, 0u, &count),
+            MYGAMES_STORE_CAPACITY);
+        assert(count == expected_count);
+        count = 999u;
+        expect_store(mygames_room_store_public_game_moves(
+            store, "room-1", game_id, moves, expected_count - 1u, &count),
+            MYGAMES_STORE_CAPACITY);
+        assert(count == expected_count);
+        assert(memcmp(moves, sentinel, sizeof(moves)) == 0);
+    }
+    count = 999u;
+    expect_store(mygames_room_store_public_game_moves(
+        store, "room-1", game_id, moves,
+        MYGAMES_STORE_PUBLIC_MOVES_MAX, &count), MYGAMES_STORE_OK);
+    assert(count == expected_count);
+    for (i = 0u; i < count; ++i) {
+        const mygames_store_public_move *m = &moves[i];
+        assert(m->turn_id == i + 1u);
+        assert(m->actor_seat == (uint8_t)((landlord_seat + i) % 3u));
+        assert(m->committed_sequence > previous_seq);
+        previous_seq = m->committed_sequence;
+        if (i % 3u == 0u) {
+            assert(m->cards_mask != 0u);
+            assert((consumed & m->cards_mask) == 0u);
+            consumed |= m->cards_mask;
+            ++nonpass;
+        } else {
+            assert(m->cards_mask == 0u);
+            ++passes;
+        }
+    }
+    if (count > 0u) {
+        assert(nonpass == (count + 2u) / 3u);
+        assert(passes == count - nonpass);
+        assert(previous_seq == last_sequence);
+    }
+}
+
 int main(int argc, char **argv) {
     mygames_room_directory rooms;
     mygames_room_store *store = NULL;
@@ -102,6 +155,7 @@ int main(int argc, char **argv) {
     assert_total(store,101u,0,0);
     assert_total(store,202u,0,0);
     assert_total(store,303u,0,0);
+    assert_public_moves(store,8u,0u,0u,0u); /* no private start leaked */
 
     assert(mygames_ddz_match_start(&match,room,1u,8u)==MYGAMES_DDZ_MATCH_OK);
     seq = commit_game(store,&rooms,NULL,&match,101u,1u,seq,"game-start",0x21u);
@@ -137,6 +191,7 @@ int main(int argc, char **argv) {
                 store,"room-1",8u,&result),MYGAMES_STORE_NOT_FOUND);
             assert(memcmp(&result,&sentinel,sizeof(result))==0);
             assert_total(store,101u,0,0);
+            assert_public_moves(store,8u,0u,57u,seq);
             seq = commit_game(store,&rooms,&match,&next,101u,1u,seq,request,0x77u);
             match = next;
             assert(match.phase == MYGAMES_DDZ_MATCH_FINISHED);
@@ -165,6 +220,7 @@ int main(int argc, char **argv) {
         match=next;
     }
     assert(seq==final_seq);
+    assert_public_moves(store,8u,0u,58u,final_seq);
     expect_store(mygames_room_store_game_result(store,"room-1",8u,&result),
                  MYGAMES_STORE_OK);
     assert(result.game_id==8u && result.finish_sequence==final_seq &&
@@ -190,17 +246,20 @@ int main(int argc, char **argv) {
         MYGAMES_STORE_REPLAY);
     assert(returned_seq==final_seq);
     assert_total(store,101u,12,1);
+    assert_public_moves(store,8u,0u,58u,final_seq);
     digest[0]^=0xffu;
     expect_store(mygames_room_store_commit_game(
         store,101u,&rooms,"room-1",&last_before,&win,1u,final_seq-1u,
         "play-19",digest,game_ack,sizeof(game_ack)-1u,&returned_seq),
         MYGAMES_STORE_REQUEST_CONFLICT);
     assert_total(store,101u,12,1);
+    assert_public_moves(store,8u,0u,58u,final_seq);
 
     assert(mygames_ddz_match_start(&rematch,room,1u,9u)==MYGAMES_DDZ_MATCH_OK);
     seq=commit_game(store,&rooms,&match,&rematch,101u,1u,seq,"rematch-9",0x88u);
     expect_store(mygames_room_store_game_result(store,"room-1",9u,&result),
                  MYGAMES_STORE_NOT_FOUND);
+    assert_public_moves(store,9u,1u,0u,0u);
     assert_total(store,101u,12,1);
 
     /* SECOND real completed match with a DIFFERENT landlord: owner passes,
@@ -243,6 +302,7 @@ int main(int argc, char **argv) {
     }
     assert(match.phase==MYGAMES_DDZ_MATCH_FINISHED &&
            match.round.winner_seat==1u && match.round.remaining[1]==0u);
+    assert_public_moves(store,9u,1u,58u,seq);
     expect_store(mygames_room_store_game_result(store,"room-1",9u,&result),
                  MYGAMES_STORE_OK);
     assert(result.finish_sequence==seq && result.game_id==9u &&
@@ -275,6 +335,8 @@ int main(int argc, char **argv) {
     expect_store(mygames_room_store_game_result(store,"room-1",8u,&result),
                  MYGAMES_STORE_OK);
     assert(result.finish_sequence==final_seq);
+    assert_public_moves(store,8u,0u,58u,final_seq);
+    assert_public_moves(store,9u,1u,58u,seq);
     assert_total(store,101u,6,2);
     assert_total(store,202u,6,2);
     assert_total(store,303u,-12,2);

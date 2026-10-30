@@ -225,6 +225,31 @@ mygames_store_status mygames_room_store_commit_game(
     const void *response, size_t response_bytes,
     uint64_t *out_committed_sequence);
 
+/* M5k: independently reconstructable PUBLIC-only accepted play sequence.
+ * One row per COMMITTED game.play / game.pass, in original turn order.
+ * No hand partition, hidden deck/kitty, seat credential, or raw checkpoint.
+ * Authorize the room/identity on the unique trusted CFlow Owner BEFORE
+ * calling this API. Do not expose as an unauthenticated WebSocket endpoint.
+ *
+ * Reading from a fresh store handle after restart is supported. Missing
+ * rows on a never-played game return count 0, not proof that a game exists.
+ * Capacity reports exact required count without mutating output bytes.
+ * All other errors also leave the output untouched. The row set is checked
+ * against the canonical v1 public rule sequence before publication.
+ */
+#define MYGAMES_STORE_PUBLIC_MOVES_MAX 162u
+typedef struct mygames_store_public_move {
+    uint64_t turn_id;
+    uint64_t committed_sequence;
+    uint64_t cards_mask; /* 0 means publicly observable PASS */
+    uint8_t actor_seat;
+} mygames_store_public_move;
+
+mygames_store_status mygames_room_store_public_game_moves(
+    mygames_room_store *store, const char *room_id, uint64_t game_id,
+    mygames_store_public_move *out_moves, size_t capacity,
+    size_t *out_count);
+
 /* M5h immutable, NONMONETARY final per-game points. Private hands, deck,
  * room resume tickets and game/private checkpoint MUST NOT enter this
  * result. The record is inserted into mg_game_results exactly once ONLY
