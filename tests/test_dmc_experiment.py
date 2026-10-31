@@ -16,8 +16,9 @@ from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "ai" / "dmc"))
 from ai.dmc.replay import read_episode
-from ai.dmc.experiment import optimizer_policy_flags
+from experiment import optimizer_policy_flags
 
 
 def main() -> int:
