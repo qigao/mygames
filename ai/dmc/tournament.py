@@ -183,14 +183,32 @@ def bootstrap(values: list[float], seed: int = 2048,
     ]
 
 
+def schedule_seeds(count: int, schedule: str) -> list[int]:
+    """Test-only deterministic shuffle schedules, disjoint by construction.
+
+    Distinct seed identities are not a claim of true OS entropy or
+    fully IID game sampling. The holdout schedule must remain untouched
+    during model tuning. This function imports NO Torch/NumPy.
+    """
+    if not 1 <= count <= 256 or schedule not in ("development", "holdout"):
+        raise ValueError("invalid paired-deal schedule or independent cluster count")
+    sources = {"development": 0xBADCAC1, "holdout": 0xBADCAC2}
+    result = random.Random(sources[schedule]).sample(range(1, 2**32), count)
+    if schedule == "holdout":
+        previous = set(random.Random(sources["development"]).sample(
+            range(1, 2**32), count))
+        if not previous.isdisjoint(result):
+            raise RuntimeError("holdout shuffled deal seeds overlap development")
+    return result
+
+
 def evaluate(args) -> dict:
     import torch
     torch.set_num_threads(2)
     native = load_native(args.native_library)
     callback, calls, failures, _ = frozen_scorer(
         args.checkpoint, args.model_version)
-    rng = random.Random(0xBADCAC1)
-    seeds = rng.sample(range(1, 2**32), args.seed_clusters)
+    seeds = schedule_seeds(args.seed_clusters, args.seed_schedule)
     clusters = []
     for index, seed in enumerate(seeds):
         signed_win = 0
@@ -244,6 +262,7 @@ def evaluate(args) -> dict:
         "paired_complete_matches": 6 * len(clusters),
         "independent_shuffle_clusters": len(clusters),
         "baseline": args.baseline,
+        "test_seed_schedule": args.seed_schedule,
         "candidate_win_rate": (1.0 + sum(wins) / len(wins)) / 2.0,
         "candidate_mean_nonmonetary_points":
             sum(points) / len(points),
@@ -272,6 +291,10 @@ def main():
     parser.add_argument("--seed-clusters", type=int, default=30)
     parser.add_argument("--baseline", choices=("shed-most", "legal-index"),
                         required=True)
+    parser.add_argument("--seed-schedule",
+                        choices=("development", "holdout"),
+                        default="development",
+                        help="holdout is a disjoint TEST-ONLY seed schedule")
     parser.add_argument("--identity-clusters", type=int, default=2)
     parser.add_argument("--include-aggregates", action="store_true")
     args = parser.parse_args()

@@ -1014,3 +1014,99 @@ thresholds; then compare KFCore optimized role-Q inference
 against the existing float32 reference on full legal-action
 sets and latency budgets. Current model FAILS the stronger
 baseline criterion, and PR #22 remains DRAFT/UNMERGED.
+
+
+## R5b — revised private DMC training and disjoint HOLDOUT tournament
+
+After observing R5's initial 30-cluster development-tournament
+scores, the training data were expanded using the same original
+native C11 OS-CSPRNG game generator and legal/terminal rules,
+in a SEPARATE private offline experiment:
+
+  train       240 COMPLETE games / 10170 accepted actions
+  validation   48 COMPLETE games /  2002 accepted actions
+  test         48 COMPLETE games /  1953 accepted actions
+
+This is a distinct corpus from R4's 36/12/12 samples.
+The trained candidate remains a SINGLE selected
+DouZeroQ architecture with three independent role heads.
+It was trained from scratch with real Torch 2.10 CPU,
+400 RMSprop gradient steps PER ROLE (batch=32,
+learning rate 1e-4, seed=31), then saved and reloaded
+as IMMUTABLE checkpoint-v3, NEW model_version=3,
+behavior source model_version=1. Checkpoint SHA256:
+da82f275e5c3d0fb1cc77a8f4d309f49cc6e41fe5da3ed3d2cc3952ad34a8ee5
+
+On the new separate 48-game native test Replay, off-policy
+prediction MSE was landlord 0.6721, landlord_up 0.7055,
+landlord_down 0.7372. The previous candidate v2,
+evaluated on those SAME 48 test games, got 0.7955,
+0.8177 and 0.8213 respectively. However v3's
+validation-set MSE remained 0.9347, 1.0967,
+1.0747 (landlord/up/down), exposing instability or
+overfitting; therefore training loss and test Q-MSE
+are NOT promotion criteria by themselves.
+
+R5 development tournament reused its first 30 test-only
+shuffle/deal seeds for model-to-model DIAGNOSTIC
+comparison. Frozen v3 under 180 native paired matches
+per baseline (three landlord seats, two swapped teams):
+
+  vs shed-most: 26.6667% model win, 95% cluster
+    bootstrap 19.4444%-34.4444%,
+    nonmonetary points/game -5.0667,
+    interval -7.4 .. -3.1333
+  vs legal-index: 74.4444% model win, 95% cluster
+    bootstrap 68.8889%-79.4444%,
+    points/game +4.6667,
+    interval +3.2667 .. +6.0333
+
+Because those DEVELOPMENT seeds were already observed,
+new version ai/dmc/tournament.py explicitly supports two
+DISJOINT seed schedules:
+  --seed-schedule development (fixed 0xBADCAC1 test PRNG)
+  --seed-schedule holdout     (fixed 0xBADCAC2 test PRNG)
+and verifies there are NO repeated deal seed identities
+between the two schedules. A selected frozen model MUST
+be evaluated on HOLDOUT seeds, not on the schedule used
+while choosing/training/checkpoint versions. These are
+reproducible TEST-ONLY deterministic shuffles, not
+OS-CSPRNG game sources or guaranteed IID population
+sampling; results are protocol-specific exploratory
+bootstrap estimates.
+
+NEW, unseen holdout results on v3 (30 distinct
+holdout-deal clusters per baseline; 180 complete C11
+paired matches and 12 additional A-vs-A identity-null
+games in each comparison, ZERO Q scorer failures):
+
+  vs shed-most: 26.6667% model win,
+    95% cluster bootstrap 20.5556%-33.3333%,
+    average nonmonetary team points -4.2667,
+    interval -5.5667 .. -2.9
+  vs legal-index: 78.3333% model win,
+    95% cluster bootstrap 72.7778%-83.8889%,
+    average nonmonetary team points +5.2333,
+    interval +4.0 .. +6.5333
+
+Every model move was chosen from COMPLETE canonical C11
+legal masks using the same version-bound pure native
+DMCQSelector and frozen PyTorch Q. Every game reaches
+the original M5a/M5b/M5g C11 terminal settlement.
+The model never saw shuffled decks/opponents' hands,
+and no private Replay bytes/weights were uploaded.
+The result is a legitimate OFFLINE learned-policy
+gameplay comparison, NOT a user/public deployment.
+
+Promotion gate MUST require (a) frozen model reliably
+beats the stronger shed-most baseline: held-out
+95% deal-cluster bootstrap LOWER bounds for win rate
+above 50% AND average nonmonetary team points above 0;
+(b) robust results against multiple baselines;
+(c) optimized KFCore model/provider parity/latency
+and all prior IAM/Owner gates. Current v3 FAILS
+(a) badly, therefore **NO online Bot, merge/release,
+or general strategic-superiority claim is justified**.
+Additional on-policy C11 trajectories and larger
+diverse self-play training with new untouched holdouts
+are needed before another promotion trial.

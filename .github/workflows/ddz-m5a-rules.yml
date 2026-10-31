@@ -37,6 +37,7 @@ name: M5a Dou Dizhu gameplay rules (C11)
       - 'ai/dmc/src/ddz_dmc_tournament.c'
       - 'tests/ddz_dmc_tournament_test.c'
       - 'ai/dmc/tournament.py'
+      - 'tests/test_dmc_tournament_schedules.py'
       - 'tests/test_dmc_train_contract.py'
       - 'tests/test_dmc_replay_reader.py'
       - 'ai/dmc/include/mygames/ddz_dmc_selfplay.h'
@@ -121,6 +122,7 @@ jobs:
           python3 -m py_compile ai/dmc/frozen_q.py ai/dmc/model.py ai/dmc/train_dmc.py tests/test_dmc_frozen_q_torch.py ai/dmc/export_q_cpu.py tests/test_dmc_q_cpu_parity_torch.py tests/test_dmc_real_replay_parity_torch.py ai/dmc/tournament.py
           ./build/ddz/mygames_ddz_dmc_paired_eval_test > "$paired_summary"
           python3 tests/test_dmc_paired_stats.py "$paired_summary"
+          python3 tests/test_dmc_tournament_schedules.py
           ./build/ddz/mygames_ddz_dmc_generate --private-dir "$corpus_dir"             --episodes 3 --first-id 9101 --objective win-sign
           python3 tests/test_dmc_corpus.py "$corpus_dir"             "$(pwd)/build/ddz/mygames_ddz_dmc_generate"
           python3 ai/dmc/experiment.py --native-generator             "$(pwd)/build/ddz/mygames_ddz_dmc_generate"             --private-root "$experiment_root"             --source-revision "$(git rev-parse HEAD)" --first-id 9201             --train-games 3 --validation-games 3 --test-games 3             --objective win-sign
