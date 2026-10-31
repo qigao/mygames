@@ -27,8 +27,18 @@
 #define DMC_GENERATOR_MAX_EPISODES 96u
 #define DMC_GENERATOR_MAX_LEGAL 65536u
 
+/* External source identity is NOT Replay-v1's numeric model_version.
+ * All these heuristics are untrained behavior model_version=1; a verified
+ * private source manifest must preserve this separately selected policy. */
+typedef enum dmc_baseline_mode {
+    DMC_BASELINE_MIXED_V1 = 0,
+    DMC_BASELINE_SHED_MOST_V1,
+    DMC_BASELINE_LEGAL_INDEX_V1
+} dmc_baseline_mode;
+
 typedef struct dmc_baseline {
     uint64_t episode_id;
+    dmc_baseline_mode behavior;
     uint64_t decisions;
     uint64_t role_decisions[MYGAMES_DDZ_SEATS];
 } dmc_baseline;
@@ -51,9 +61,23 @@ static uint32_t scramble(uint32_t n) {
     return n;
 }
 
-/* Explicit non-learning baseline mixture; actor's own hand and PUBLIC
- * observation are the ONLY decision inputs. Seed is episode identity,
- * never a peek at either opponent's hidden cards or secret deck. */
+static bool parse_behavior(const char *name, dmc_baseline_mode *out) {
+    if (!name || !out) return false;
+    if (strcmp(name, "mixed-v1") == 0)
+        *out = DMC_BASELINE_MIXED_V1;
+    else if (strcmp(name, "shed-most") == 0)
+        *out = DMC_BASELINE_SHED_MOST_V1;
+    else if (strcmp(name, "legal-index") == 0)
+        *out = DMC_BASELINE_LEGAL_INDEX_V1;
+    else
+        return false;
+    return true;
+}
+
+/* Explicit non-learning behavior source: the acting player's own hand and
+ * PUBLIC observation are the ONLY policy inputs. The legacy default
+ * mixture is retained bit-for-bit when --behavior is omitted. The hashed
+ * legal-index seed is episode identity, never another seat's hidden cards. */
 static bool select_baseline(
     void *context, const mygames_ddz_ai_observation *observation,
     const uint64_t *legal, size_t count, uint64_t *out) {
@@ -65,7 +89,13 @@ static bool select_baseline(
     if (actor >= MYGAMES_DDZ_SEATS ||
         observation->public_history.current.remaining[actor] == 0u)
         return false;
-    if (((baseline->episode_id + (uint64_t)actor) & UINT64_C(1)) == 0u) {
+    if (baseline->behavior != DMC_BASELINE_MIXED_V1 &&
+        baseline->behavior != DMC_BASELINE_SHED_MOST_V1 &&
+        baseline->behavior != DMC_BASELINE_LEGAL_INDEX_V1)
+        return false;
+    if (baseline->behavior == DMC_BASELINE_SHED_MOST_V1 ||
+        (baseline->behavior == DMC_BASELINE_MIXED_V1 &&
+         ((baseline->episode_id + (uint64_t)actor) & UINT64_C(1)) == 0u)) {
         size_t best = 0u;
         unsigned most = 0u;
         for (i = 0u; i < count; ++i) {
@@ -178,23 +208,27 @@ int main(int argc, char **argv) {
     uint64_t episodes_u64 = 0u, first_id = 0u;
     unsigned games, i;
     mygames_ddz_dmc_objective objective;
+    dmc_baseline_mode behavior = DMC_BASELINE_MIXED_V1;
+    const char *behavior_name = "mixed-v1";
     mygames_ddz_dmc_sample *samples = NULL;
     uint8_t *bytes = NULL;
     mygames_room room = {0};
     uint64_t total_moves = UINT64_C(0);
     uint64_t total_role[MYGAMES_DDZ_SEATS] = {0u};
     int dirfd;
-    if (argc != 9 ||
+    if ((argc != 9 && argc != 11) ||
         strcmp(argv[1], "--private-dir") != 0 ||
         strcmp(argv[3], "--episodes") != 0 ||
         strcmp(argv[5], "--first-id") != 0 ||
         strcmp(argv[7], "--objective") != 0 ||
+        (argc == 11 && strcmp(argv[9], "--behavior") != 0) ||
         !parse_u64(argv[4], &episodes_u64) ||
         !parse_u64(argv[6], &first_id) ||
         episodes_u64 > DMC_GENERATOR_MAX_EPISODES ||
         first_id > (uint64_t)INT64_MAX - (episodes_u64 - 1u)) {
         fputs("usage: mygames_ddz_dmc_generate --private-dir PRIVATE_0700 "
-              "--episodes 1..96 --first-id POSITIVE --objective win-sign|game-points\n",
+              "--episodes 1..96 --first-id POSITIVE --objective win-sign|game-points "
+              "[--behavior mixed-v1|shed-most|legal-index]\n",
               stderr);
         return 2;
     }
@@ -206,6 +240,13 @@ int main(int argc, char **argv) {
     else {
         fputs("unsupported DMC objective\n", stderr);
         return 2;
+    }
+    if (argc == 11) {
+        if (!parse_behavior(argv[10], &behavior)) {
+            fputs("unsupported DMC source behavior; no implicit fallback\n", stderr);
+            return 2;
+        }
+        behavior_name = argv[10];
     }
     dirfd = open_private_directory(path);
     if (dirfd < 0) {
@@ -238,6 +279,7 @@ int main(int argc, char **argv) {
         cfg.max_legal_actions = DMC_GENERATOR_MAX_LEGAL;
         cfg.offline_landlord_seat = (uint8_t)((episode_id - UINT64_C(1)) % 3u);
         policy.episode_id = episode_id;
+        policy.behavior = behavior;
         if (mygames_ddz_dmc_selfplay_run(&room, &cfg,
                 select_baseline, &policy, samples,
                 MYGAMES_DDZ_DMC_MAX_STEPS, &episode, &settlement) !=
@@ -260,11 +302,23 @@ int main(int argc, char **argv) {
         for (role = 0u; role < MYGAMES_DDZ_SEATS; ++role)
             total_role[role] += policy.role_decisions[role];
     }
-    printf("MYGAMES_PRIVATE_CORPUS_V1 episodes=%u steps=%" PRIu64
-           " landlord=%" PRIu64 " landlord_up=%" PRIu64
-           " landlord_down=%" PRIu64 " objective=%s\n",
-           games, total_moves, total_role[0], total_role[1],
-           total_role[2], argv[8]);
+    if (argc == 11) {
+        /* The explicit behavior label is public AGGREGATE provenance only.
+         * Replay-v1's model_version stays 1 for all untrained baselines;
+         * an independently verified private source manifest is still
+         * REQUIRED before multi-source training admission. */
+        printf("MYGAMES_PRIVATE_CORPUS_V2 behavior=%s episodes=%u steps=%" PRIu64
+               " landlord=%" PRIu64 " landlord_up=%" PRIu64
+               " landlord_down=%" PRIu64 " objective=%s\n",
+               behavior_name, games, total_moves, total_role[0], total_role[1],
+               total_role[2], argv[8]);
+    } else {
+        printf("MYGAMES_PRIVATE_CORPUS_V1 episodes=%u steps=%" PRIu64
+               " landlord=%" PRIu64 " landlord_up=%" PRIu64
+               " landlord_down=%" PRIu64 " objective=%s\n",
+               games, total_moves, total_role[0], total_role[1],
+               total_role[2], argv[8]);
+    }
     free(samples);
     free(bytes);
     (void)close(dirfd);
