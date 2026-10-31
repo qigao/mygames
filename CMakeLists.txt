@@ -450,6 +450,26 @@ if(BUILD_TESTING)
   endif()
   add_test(NAME mygames.ddz_dmc_selfplay
     COMMAND mygames_ddz_dmc_selfplay_test)
+  # This hook lives ONLY in BUILD_TESTING builds. A production
+  # DMCSelfPlay library never contains a deterministic/deck-injection path.
+  target_compile_definitions(mygames_ddz_dmc_selfplay PRIVATE
+    MYGAMES_DDZ_MATCH_TESTING=1)
+  add_executable(mygames_ddz_dmc_paired_eval_test
+    tests/ddz_dmc_paired_eval_test.c)
+  target_compile_features(mygames_ddz_dmc_paired_eval_test PRIVATE c_std_11)
+  target_compile_definitions(mygames_ddz_dmc_paired_eval_test PRIVATE
+    MYGAMES_DDZ_MATCH_TESTING=1)
+  target_link_libraries(mygames_ddz_dmc_paired_eval_test PRIVATE
+    MyGames::DMCSelfPlay)
+  if(MSVC)
+    target_compile_options(mygames_ddz_dmc_paired_eval_test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_ddz_dmc_paired_eval_test PRIVATE
+      -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME mygames.ddz_dmc_paired_eval
+    COMMAND mygames_ddz_dmc_paired_eval_test)
+
 
 
 

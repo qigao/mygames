@@ -423,3 +423,48 @@ dataset. Held-out prediction MSE/MAE may be measured only on fresh
 episode IDs; such off-policy metrics are NOT a real game win-rate
 or proof of strategic learning. True paired-deal competition remains
 an independent gate.
+
+
+## M5k R2 test-only matched-shuffle policy assessment
+
+A TEST-ONLY symbol, mygames_ddz_dmc_selfplay_test_entropy(), reuses the
+existing M5b mygames_ddz_match_start_test_entropy() to make the EXACT
+same 54-card shuffle available under two different policy assignments.
+This function and the deterministic entropy provider are compiled into
+MyGames::DMCSelfPlay ONLY with BUILD_TESTING=ON. Production
+BUILD_TESTING=OFF never includes the test-seeded entry point and
+continues to use the unchanged OS CSPRNG admission path.
+
+One test-only candidate policy sheds the most cards; a separate legal
+hash-index baseline chooses among the supplied legal moves. Both see
+only the currently acting player's authorized observation and legal
+candidate list, never a secret match/deck. A complete paired comparison
+per shuffle/landlord seat runs (A landlord vs B farmers) AND
+(B landlord vs A farmers) with that same shuffled deck. Every played
+move, bid/pass, terminal settlement and DMC label still goes through
+the SINGLE original C11 rules engine, not a parallel simulator.
+
+For the identity-null gate, A-vs-A and its swapped team assignment
+MUST yield the identical terminal winner and M5g score, and the
+candidate's aggregate signed win and points MUST cancel exactly.
+The CTest exercises all THREE landlord seat rotations and at least
+two independently seeded test-only shuffled deals. It prints only
+PUBLIC aggregate signed-win and nonmonetary game-point totals:
+no private hand/kitty/card order/actor seed/player credential.
+No real-player source data or trained model is used.
+
+ai/dmc/paired_stats.py consumes those aggregate seed-cluster rows. The
+unit of bootstrap uncertainty is ONE independent 54-card shuffle,
+not one of the six correlated matches within its 3-seat rotation.
+For fewer than 30 independently sampled deal clusters, 95% bootstrap
+intervals are explicitly NULL and results are marked
+NOT statistically qualified. A synthetic 30-deal all-zero null
+example verifies the interval math, but does NOT qualify the
+actual 2-deal source CI sample as learned AI performance.
+
+This is a **structural, symmetric evaluation harness**, not a
+claim that the untrained shed-most policy beats a random baseline.
+A true checkpoint-vs-heuristic experiment still requires a versioned
+native policy inference adapter, independent seeded sets large enough
+for uncertainty, and the explicit offline paired-score matrix.
+Neither LightZero, MuZero nor another DDZ game engine has been added.

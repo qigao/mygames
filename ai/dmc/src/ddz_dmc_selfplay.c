@@ -2,7 +2,11 @@
 
 #include <stdlib.h>
 
-mygames_ddz_dmc_selfplay_status mygames_ddz_dmc_selfplay_run(
+/* Match seed remains private to THIS trusted offline simulation.
+ * It is never passed to the policy callback. A null seed always means
+ * the OS CSPRNG path; non-null requires the TESTING-only call below. */
+static mygames_ddz_dmc_selfplay_status ddz_selfplay_execute(
+    const mygames_ddz_match *test_prestarted,
     const mygames_room *started_room,
     const mygames_ddz_dmc_selfplay_config *cfg,
     mygames_ddz_dmc_policy_fn policy, void *policy_context,
@@ -30,10 +34,26 @@ mygames_ddz_dmc_selfplay_status mygames_ddz_dmc_selfplay_run(
         (cfg->objective != MYGAMES_DDZ_DMC_WIN_SIGN &&
          cfg->objective != MYGAMES_DDZ_DMC_GAME_POINTS))
         return MYGAMES_DDZ_SELFPLAY_INVALID;
-    if (mygames_ddz_match_start(
+    if (test_prestarted != NULL) {
+        unsigned i;
+        if (started_room->phase != MYGAMES_ROOM_STARTING ||
+            started_room->players != MYGAMES_DDZ_SEATS ||
+            mygames_ddz_match_validate(test_prestarted) !=
+                MYGAMES_DDZ_MATCH_OK ||
+            test_prestarted->phase != MYGAMES_DDZ_MATCH_BIDDING ||
+            test_prestarted->room_epoch != cfg->room_epoch ||
+            test_prestarted->game_id != cfg->game_id)
+            return MYGAMES_DDZ_SELFPLAY_INVALID;
+        for (i = 0u; i < MYGAMES_DDZ_SEATS; ++i)
+            if (!started_room->seats[i].ready ||
+                test_prestarted->players[i] != started_room->seats[i].player)
+                return MYGAMES_DDZ_SELFPLAY_INVALID;
+        match = *test_prestarted;
+    } else if (mygames_ddz_match_start(
             &match, started_room, cfg->room_epoch,
-            cfg->game_id) != MYGAMES_DDZ_MATCH_OK)
+            cfg->game_id) != MYGAMES_DDZ_MATCH_OK) {
         return MYGAMES_DDZ_SELFPLAY_ENGINE_FAILED;
+    }
     landlord = cfg->offline_landlord_seat;
     /* Rotate game roles without inventing a second bidding rule: each
      * preceding bidder makes a valid PASS(0), then the specified seat
@@ -146,3 +166,37 @@ done:
     free(legal);
     return result;
 }
+
+mygames_ddz_dmc_selfplay_status mygames_ddz_dmc_selfplay_run(
+    const mygames_room *started_room,
+    const mygames_ddz_dmc_selfplay_config *config,
+    mygames_ddz_dmc_policy_fn policy, void *policy_context,
+    mygames_ddz_dmc_sample *owned_samples, size_t sample_capacity,
+    mygames_ddz_dmc_episode *out_episode,
+    mygames_ddz_settlement *out_settlement) {
+    return ddz_selfplay_execute(NULL, started_room, config, policy,
+        policy_context, owned_samples, sample_capacity,
+        out_episode, out_settlement);
+}
+
+#if defined(MYGAMES_DDZ_MATCH_TESTING)
+mygames_ddz_dmc_selfplay_status mygames_ddz_dmc_selfplay_test_entropy(
+    const mygames_room *started_room,
+    const mygames_ddz_dmc_selfplay_config *config,
+    mygames_ddz_test_entropy_fn fill, void *entropy_context,
+    mygames_ddz_dmc_policy_fn policy, void *policy_context,
+    mygames_ddz_dmc_sample *owned_samples, size_t sample_capacity,
+    mygames_ddz_dmc_episode *out_episode,
+    mygames_ddz_settlement *out_settlement) {
+    mygames_ddz_match prepared = {0};
+    if (!started_room || !config || !fill || !policy)
+        return MYGAMES_DDZ_SELFPLAY_INVALID;
+    if (mygames_ddz_match_start_test_entropy(
+            &prepared, started_room, config->room_epoch, config->game_id,
+            fill, entropy_context) != MYGAMES_DDZ_MATCH_OK)
+        return MYGAMES_DDZ_SELFPLAY_ENGINE_FAILED;
+    return ddz_selfplay_execute(&prepared, started_room, config, policy,
+        policy_context, owned_samples, sample_capacity,
+        out_episode, out_settlement);
+}
+#endif

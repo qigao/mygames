@@ -28,6 +28,9 @@ name: M5a Dou Dizhu gameplay rules (C11)
       - 'ai/dmc/include/mygames/ddz_dmc_selfplay.h'
       - 'ai/dmc/src/ddz_dmc_selfplay.c'
       - 'tests/ddz_dmc_selfplay_test.c'
+      - 'tests/ddz_dmc_paired_eval_test.c'
+      - 'ai/dmc/paired_stats.py'
+      - 'tests/test_dmc_paired_stats.py'
       - 'CMakeLists.txt'
       - '.github/workflows/ddz-m5a-rules.yml'
   workflow_dispatch:
@@ -86,11 +89,14 @@ jobs:
           fixture="$(mktemp)"
           selfplay_train="$(mktemp)"
           selfplay_validation="$(mktemp)"
-          trap 'rm -f "$fixture" "$selfplay_train" "$selfplay_validation"' EXIT
+          paired_summary="$(mktemp)"
+          trap 'rm -f "$fixture" "$selfplay_train" "$selfplay_validation" "$paired_summary"' EXIT
           ./build/ddz/mygames_ddz_dmc_episode_test "$fixture"
           python3 tests/test_dmc_replay_reader.py "$fixture"
           ./build/ddz/mygames_ddz_dmc_selfplay_test "$selfplay_train" "$selfplay_validation"
           python3 tests/test_dmc_train_contract.py "$selfplay_train" "$selfplay_validation"
+          ./build/ddz/mygames_ddz_dmc_paired_eval_test > "$paired_summary"
+          python3 tests/test_dmc_paired_stats.py "$paired_summary"
 
   pure-source-asan:
     name: Pure C11 rules / Linux ASan+UBSan
@@ -112,7 +118,7 @@ jobs:
             -DMYGAMES_ENABLE_FLOWIE=OFF \
             -DCMAKE_C_FLAGS='-fsanitize=address,undefined -g -fno-omit-frame-pointer -Wall -Wextra -Wpedantic -Werror' \
             -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=address,undefined'
-          cmake --build build/ddz-asan --target mygames_ddz_round_test mygames_ddz_ai_actions_test mygames_rl_targets_test mygames_ddz_ai_features_test mygames_ddz_dmc_episode_test mygames_ddz_dmc_selfplay_test --parallel 2
+          cmake --build build/ddz-asan --target mygames_ddz_round_test mygames_ddz_ai_actions_test mygames_rl_targets_test mygames_ddz_ai_features_test mygames_ddz_dmc_episode_test mygames_ddz_dmc_selfplay_test mygames_ddz_dmc_paired_eval_test --parallel 2
 
       - name: Check all gameplay operations under sanitizers
         shell: bash
@@ -127,5 +133,5 @@ jobs:
 
           ctest --test-dir build/ddz-asan --no-tests=error \
             --output-on-failure --timeout 180 \
-            -R 'mygames[.](ddz_ai_features|ddz_dmc_episode|ddz_dmc_selfplay)'
+            -R 'mygames[.](ddz_ai_features|ddz_dmc_episode|ddz_dmc_selfplay|ddz_dmc_paired_eval)'
 

@@ -58,6 +58,22 @@ mygames_ddz_dmc_selfplay_status mygames_ddz_dmc_selfplay_run(
     mygames_ddz_dmc_episode *out_episode,
     mygames_ddz_settlement *out_settlement);
 
+#if defined(MYGAMES_DDZ_MATCH_TESTING)
+/* NON-PRODUCTION test-only entry. Reuses the existing M5b entropy hook
+ * to replay one exactly identical shuffled physical deck under swapped
+ * policies and landlord seat rotations. This symbol is NOT present in
+ * BUILD_TESTING=OFF builds, and never injects an external shuffle into a
+ * live Owner or production MyGames::DMCSelfPlay session. */
+mygames_ddz_dmc_selfplay_status mygames_ddz_dmc_selfplay_test_entropy(
+    const mygames_room *started_room,
+    const mygames_ddz_dmc_selfplay_config *config,
+    mygames_ddz_test_entropy_fn fill, void *entropy_context,
+    mygames_ddz_dmc_policy_fn policy, void *policy_context,
+    mygames_ddz_dmc_sample *owned_samples, size_t sample_capacity,
+    mygames_ddz_dmc_episode *out_episode,
+    mygames_ddz_settlement *out_settlement);
+#endif
+
 #ifdef __cplusplus
 }
 #endif
