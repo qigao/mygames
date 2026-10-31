@@ -127,6 +127,21 @@ else()
     -Wall -Wextra -Wpedantic -Werror)
 endif()
 
+# Offline-only C11 Self-Play. The policy callback sees ONLY its own
+# authorized Observation + full legal mask list; no CFlow or SQLite owner.
+add_library(mygames_ddz_dmc_selfplay STATIC
+  ai/dmc/src/ddz_dmc_selfplay.c)
+add_library(MyGames::DMCSelfPlay ALIAS mygames_ddz_dmc_selfplay)
+target_compile_features(mygames_ddz_dmc_selfplay PUBLIC c_std_11)
+target_include_directories(mygames_ddz_dmc_selfplay PUBLIC ai/dmc/include)
+target_link_libraries(mygames_ddz_dmc_selfplay PUBLIC MyGames::DMCReplay)
+if(MSVC)
+  target_compile_options(mygames_ddz_dmc_selfplay PRIVATE /W4 /WX)
+else()
+  target_compile_options(mygames_ddz_dmc_selfplay PRIVATE
+    -Wall -Wextra -Wpedantic -Werror)
+endif()
+
 # M5c: portable, fixed-size canonical PRIVATE match state codec. No native
 # file persistence and no public game-state serialization API is provided.
 add_library(mygames_ddz_checkpoint STATIC
@@ -422,6 +437,20 @@ if(BUILD_TESTING)
   endif()
   add_test(NAME mygames.ddz_ai_features COMMAND mygames_ddz_ai_features_test)
   add_test(NAME mygames.ddz_dmc_episode COMMAND mygames_ddz_dmc_episode_test)
+  add_executable(mygames_ddz_dmc_selfplay_test
+    tests/ddz_dmc_selfplay_test.c)
+  target_compile_features(mygames_ddz_dmc_selfplay_test PRIVATE c_std_11)
+  target_link_libraries(mygames_ddz_dmc_selfplay_test PRIVATE
+    MyGames::DMCSelfPlay)
+  if(MSVC)
+    target_compile_options(mygames_ddz_dmc_selfplay_test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_ddz_dmc_selfplay_test PRIVATE
+      -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME mygames.ddz_dmc_selfplay
+    COMMAND mygames_ddz_dmc_selfplay_test)
+
 
 
 

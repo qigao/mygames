@@ -296,3 +296,46 @@ rather than a training replay store. Separate acceptance still requires
 many independent seeds and opponents, genuine bounded Self-Play
 workers, paired-deal seat-rotated evaluation and a KFCore inference
 binding with exact feature/model numerical agreement.
+
+
+## R1 bounded native OFFLINE self-play (next slice)
+
+MyGames::DMCSelfPlay exercises the actual C11 M5b/M5a secure game,
+landlord bid3, legal action generator, exact actor-only observation,
+rule-authorized turn transitions and terminal M5g settlement in-process.
+There is NO network request, Room Owner state mutation, CHttp, Flowie,
+SQLite Game ACK or new competing rules implementation. Card dealing
+uses the actual OS CSPRNG only. The single first-player bid3 is an
+EXPLICIT non-learning baseline: AI bidding remains a separate phase.
+
+The policy callback sees ONLY the acting seat's own authorized hand
+and public chronological history, plus the complete array of
+legal physical-card masks. All callbacks must choose EXACTLY one
+offered action. An invalid proposal, callback refusal, exhausted
+bounded action list, insufficient episode sample capacity or a
+truncated match produces an explicit non-success status and NO sealed
+training labels. No silent first-legal, random model or other fallback.
+
+Once finished, the sampler verifies the authoritative settlement,
+seals the actor-correct WP or nonmonetary score labels and returns
+a caller-owned episode for the private DMCReplay v1 codec.
+A test-only reproducible xorshift selects among candidates using
+its own local policy RNG; the ACTUAL game deck is still securely
+randomized. That random baseline is not a trained game AI and
+does not claim realistic bidding strategy.
+
+The existing M5a native/ASan/UBSan CTest now exercises three
+independent securely shuffled complete real games, verifying
+reward vectors, Replay serialization, exact actor/role target and
+failure semantics for an illegal policy and forced truncation.
+The existing Linux CI additionally uses this self-play output as a
+private ephemeral Replay and runs the actual Python --verify-only
+trainer entry point. The fixture is securely temp-created and deleted,
+without uploading bytes as a GitHub CI artifact.
+
+Still missing: high-volume bounded parallel Actors/Replay persistence
+with private ownership and metadata, proof of unbiased training-policy
+sampling under many games, real PyTorch gradient runtime CI (PyTorch
+is deliberately NOT installed as an unpinned CI dependency), and
+paired-deal seat-rotated evaluation with trained weights. The
+first code path is a functional native sampler, not trained skill.
