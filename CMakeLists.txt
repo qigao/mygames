@@ -549,6 +549,36 @@ if(BUILD_TESTING)
   add_test(NAME mygames.ddz_dmc_q_cpu
     COMMAND mygames_ddz_dmc_q_cpu_test)
 
+  # Paired frozen model tournament: TEST-ONLY reuse of existing M5b entropy
+  # hook. Built ONLY under BUILD_TESTING, never a production CFlow/CHttp Bot.
+  add_library(mygames_ddz_dmc_tournament STATIC
+    ai/dmc/src/ddz_dmc_tournament.c)
+  target_compile_features(mygames_ddz_dmc_tournament PRIVATE c_std_11)
+  target_compile_definitions(mygames_ddz_dmc_tournament PRIVATE
+    MYGAMES_DDZ_MATCH_TESTING=1)
+  target_include_directories(mygames_ddz_dmc_tournament PUBLIC
+    ai/dmc/include)
+  target_link_libraries(mygames_ddz_dmc_tournament PUBLIC
+    MyGames::DMCQSelector)
+  add_executable(mygames_ddz_dmc_tournament_test
+    tests/ddz_dmc_tournament_test.c)
+  target_compile_features(mygames_ddz_dmc_tournament_test PRIVATE c_std_11)
+  target_link_libraries(mygames_ddz_dmc_tournament_test PRIVATE
+    mygames_ddz_dmc_tournament)
+  if(MSVC)
+    target_compile_options(mygames_ddz_dmc_tournament PRIVATE /W4 /WX)
+    target_compile_options(mygames_ddz_dmc_tournament_test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_ddz_dmc_tournament PRIVATE
+      -Wall -Wextra -Wpedantic -Werror)
+    target_compile_options(mygames_ddz_dmc_tournament_test PRIVATE
+      -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME mygames.ddz_dmc_tournament
+    COMMAND mygames_ddz_dmc_tournament_test)
+
+
+
 
 
 

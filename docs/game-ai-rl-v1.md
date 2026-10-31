@@ -907,3 +907,110 @@ deal clusters and confidence intervals; the optimized KFCore
 runtime must prove numeric parity and throughput versus this
 slow C11 reference. Do NOT infer a trained win rate or
 production Bot qualification from lower Q-target MSE.
+
+
+## M5k R5 — first ACTUAL frozen model legal-action tournament (2026-10-31)
+
+The first real model-versus-baseline TOURNAMENT has now run, using
+exact native public-source rules, a PRIVATE trained v3 checkpoint
+with SHA256
+d883272867820c855ab7d902faa5696ccf690c10de295c90a4131ac071998bc4
+and actual v2 model weights learned on 36 independent OS-shuffled
+C11 training games (80 RMSprop gradient updates per role).
+The checkpoint bytes and game Replay feature rows remain PRIVATE.
+
+New source: ai/dmc/include/mygames/ddz_dmc_tournament.h and
+ai/dmc/src/ddz_dmc_tournament.c, compiled ONLY when
+BUILD_TESTING=ON with MYGAMES_DDZ_MATCH_TESTING=1.
+It invokes the existing selfplay_test_entropy() in the SINGLE
+authoritative M5a/M5b/M5g native game engine and streams
+the acting player's x/z/action features through the already
+fenced MyGames::DMCQSelector. PyTorch NEVER sees a private
+Match, shuffled deck, kitty or opponents' hidden hands.
+No alternative/DDZ Python rules, test shuffle in production
+or fallback scorer is provided. Any callback error, incomplete
+Q, NaN/Inf, illegal action, stale model or rule error ABORTS
+the entire candidate game without publishing a terminal result.
+An isolated no-Torch CTest validates exact known same-deck,
+team-swap and A-vs-A identity-null cancellation, as well as
+model failure/NaN/omitted score/version rejection. This new
+CTest is added to existing M5a 3-OS/ASan CI, with no separate
+installer, consumer project or workflow.
+
+New opt-in offline Python entrypoint ai/dmc/tournament.py loads
+ONE exact private checkpoint v3 (weights_only) and exposes a
+batched Q callback for canonical C11 candidate actions. It
+caches the frozen LSTM history context and fixed first-layer
+projection ONLY within the same actor observation, and
+spot-checks its results against direct full PyTorch forward
+with 2e-5 tolerance; this is exact network algebra, not a
+heuristic replacement. The evaluator forms each cluster from
+one exact TEST-ONLY seed's physical shuffled deck, all THREE
+landlord positions, and TWO swapped candidate/baseline team
+assignments (six completed C11 games per independent shuffle).
+Two identity-check clusters also run A-vs-A model on all seats
+under swapped labels to prove deterministic terminal
+winner, signed win and nonmonetary points cancellation.
+It prints only aggregates: no seed list, hidden hands,
+physical cards or raw Replay/model bytes. Importantly these
+test-only deterministic seeds are NOT OS CSPRNG samples and
+should NOT be confused with the independent real-data generator.
+
+Measured private local experiment: 30 distinct pseudo-random
+test-deal seeds per baseline, exact same 30 seeds for both
+comparisons; 180 model-versus-baseline native COMPLETE games
+and 12 extra A-vs-A identity-null games per comparison.
+Each 95% bootstrap interval resamples the 30 seed/deal
+CLUSTERS (not the 180 correlated games/turns); 4000
+replicates with fixed statistical seed. Outcomes:
+
+  Baseline: deterministic "shed-most-cards"
+    frozen model team win rate: 11.1111%
+    exploratory 95% cluster bootstrap: 7.2222%..15.5556%
+    candidate mean nonmonetary team points/game: -7.4667
+    point interval: -9.8 .. -5.6667
+    score-provider failures: ZERO
+
+  Baseline: observation-hashed canonical legal-index
+    frozen model team win rate: 53.8889%
+    exploratory 95% cluster bootstrap: 48.3333%..60.0%
+    candidate mean nonmonetary team points/game: +0.8
+    point interval: -0.3333 .. +2.1333
+    score-provider failures: ZERO
+
+These are ACTUAL model-selected/legal/native settled game
+results, unlike earlier MSE-based claims. They show this
+SMALL-CORPUS model performs VERY POORLY against shed-most
+and does NOT demonstrate statistically reliable superiority
+over the hashed legal-index baseline. The fixed, limited
+test-only shuffle-seed distribution and 30 clusters constrain
+any wider interpretation. No competitive win-rate claim is
+made beyond these two explicitly defined baseline protocols,
+and NO promotion/live Bot authorization follows.
+The two complete 30-cluster runs completed locally in about
+30.5 and 31.6 seconds with observation-level LSTM caching
+and 1..64 canonical legal-action scoring batches, respectively.
+This measures the local Python+native reference architecture,
+NOT optimized KFCore production throughput.
+
+Example on an offline machine with configured PyTorch and the
+native TEST-ONLY shared library built from exact repo source:
+
+    python3 ai/dmc/tournament.py \
+      --checkpoint PRIVATE/models/dmc-v3-real-replay.pt \
+      --native-library PRIVATE/build/libddz_tournament.so \
+      --model-version 2 --seed-clusters 30 \
+      --identity-clusters 2 --baseline shed-most
+
+Repeat with --baseline legal-index. No private weights,
+replays or raw actions may be uploaded into ordinary CI.
+Actual C11 control/ABI tests continue in the existing CI.
+
+STRICT remaining gate: collect materially larger,
+diversely generated REAL OS-CSPRNG Self-Play training
+data; retrain and independently validate a frozen model
+against the stronger baseline with upper/lower uncertainty
+thresholds; then compare KFCore optimized role-Q inference
+against the existing float32 reference on full legal-action
+sets and latency budgets. Current model FAILS the stronger
+baseline criterion, and PR #22 remains DRAFT/UNMERGED.
