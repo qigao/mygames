@@ -84,10 +84,16 @@ def publish_verified_roles(stage: Path, private_root: Path, report: dict) -> Non
     exception rolls back private publication; a process crash leaves
     no final completion marker, so no model set is admitted.
     """
+    # Once the FINAL marker is published, staging hard-links have nlink=2
+    # until cleanup. Reject immutable re-publication by identity BEFORE
+    # inspecting provisional stage-file link counts, not as a false ACL error.
+    check_private_directory(private_root)
+    completed = private_root / "q_onnx_manifest_v1.json"
+    if completed.exists() or completed.is_symlink():
+        raise FileExistsError("immutable three-role ONNX model set already published")
     if set(report["role_packages"]) != set(ROLES.values()):
         raise ValueError("cannot publish incomplete three-role ONNX set")
     check_private_directory(stage)
-    check_private_directory(private_root)
     if {p.name for p in stage.iterdir()} != set(ROLES.values()):
         raise ValueError("three-role ONNX staging directory contains incomplete/extra entries")
     for name in ROLES.values():
