@@ -22,7 +22,7 @@ from replay import OBJECTIVE_GAME_POINTS, OBJECTIVE_WIN_SIGN, Episode, read_epis
 
 ROLES = {0: "landlord", 1: "landlord_up", 2: "landlord_down"}
 OBJECTIVES = {"win-sign": OBJECTIVE_WIN_SIGN, "game-points": OBJECTIVE_GAME_POINTS}
-CHECKPOINT_FORMAT = "mygames-douzero-dmc-v2"
+CHECKPOINT_FORMAT = "mygames-douzero-dmc-v3"
 
 
 def load_checked(paths: Sequence[str], rules_version: int,
@@ -94,7 +94,8 @@ def evaluate_rows(model, rows, device, batch_size: int) -> dict:
 
 
 def load_model_checkpoint(path: str | Path, *, expected_rules: int,
-                          expected_objective: str, torch, device):
+                          expected_objective: str, expected_model_version: int,
+                          torch, device):
     from model import DouZeroQ, FEATURE_CONTRACT, MODEL_FORMAT
     p = Path(path)
     if not p.is_file() or p.stat().st_size > 160 * 1024 * 1024:
@@ -103,7 +104,8 @@ def load_model_checkpoint(path: str | Path, *, expected_rules: int,
     payload = torch.load(p, weights_only=True, map_location=device)
     if not isinstance(payload, dict) or set(payload) != {
         "format", "model_architecture", "feature_contract", "rules_version",
-        "objective", "source_model_versions", "train_episode_ids",
+        "objective", "source_model_versions", "candidate_model_version",
+        "train_episode_ids",
         "validation_episode_ids", "training_steps_per_role", "seed",
         "role_state_dicts",
     } or payload["format"] != CHECKPOINT_FORMAT or \
@@ -111,6 +113,13 @@ def load_model_checkpoint(path: str | Path, *, expected_rules: int,
             payload["feature_contract"] != FEATURE_CONTRACT or \
             payload["rules_version"] != expected_rules or \
             payload["objective"] != expected_objective or \
+            type(payload["candidate_model_version"]) is not int or \
+            payload["candidate_model_version"] != expected_model_version or \
+            not (0 < expected_model_version < 2**64) or \
+            not isinstance(payload["source_model_versions"], list) or \
+            not payload["source_model_versions"] or \
+            not all(type(v) is int and 0 < v < expected_model_version
+                    for v in payload["source_model_versions"]) or \
             not isinstance(payload["role_state_dicts"], dict) or \
             set(payload["role_state_dicts"]) != set(ROLES.values()):
         raise ValueError("checkpoint ABI/rules/objective/roles mismatch")
@@ -142,7 +151,9 @@ def publish_private_checkpoint(destination: Path, payload: dict, torch,
             os.fsync(output.fileno())
         loaded, _ = load_model_checkpoint(
             tmp_name, expected_rules=payload["rules_version"],
-            expected_objective=payload["objective"], torch=torch, device=device)
+            expected_objective=payload["objective"],
+            expected_model_version=payload["candidate_model_version"],
+            torch=torch, device=device)
         for role in ROLES:
             few = validation_by_role[role][:max(1, min(batch_size, 4))]
             z, xa, _ = batch_tensors(few, device)
@@ -203,6 +214,7 @@ def train(episodes: list[Episode], by_role: dict[int, list],
         "rules_version": args.rules_version,
         "objective": args.objective,
         "source_model_versions": sorted({e.model_version for e in episodes}),
+        "candidate_model_version": args.model_version,
         "train_episode_ids": sorted(e.episode_id for e in episodes),
         "validation_episode_ids": sorted(e.episode_id for e in validation),
         "training_steps_per_role": args.steps,
@@ -211,7 +223,8 @@ def train(episodes: list[Episode], by_role: dict[int, list],
     }
     sha256 = publish_private_checkpoint(Path(args.output), payload, torch,
                                         device, val_roles, models, args.batch_size)
-    return {"checkpoint_sha256": sha256, "train_last_batch_mse": final_train_loss,
+    return {"checkpoint_sha256": sha256, "candidate_model_version": args.model_version,
+            "train_last_batch_mse": final_train_loss,
             "validation_before": before, "validation_after": after}
 
 
@@ -228,6 +241,8 @@ def main() -> int:
     parser.add_argument("--rules-version", type=int, default=1)
     parser.add_argument("--objective", choices=sorted(OBJECTIVES), required=True)
     parser.add_argument("--output", help="new immutable private model checkpoint")
+    parser.add_argument("--model-version", type=int,
+                        help="new frozen model ID, strictly newer than all replay source models")
     parser.add_argument("--checkpoint", help="trusted immutable checkpoint for evaluation")
     parser.add_argument("--steps", type=int, default=1000)
     parser.add_argument("--batch-size", type=int, default=64)
@@ -238,14 +253,21 @@ def main() -> int:
     if args.rules_version <= 0 or args.steps <= 0 or args.batch_size <= 0 or \
             not (0.0 < args.learning_rate <= 1.0):
         parser.error("positive version/steps/batch-size and 0<lr<=1 required")
-    if args.train and (not args.validation_replay or not args.output or args.checkpoint):
-        parser.error("--train requires --validation-replay and --output (no --checkpoint)")
-    if args.evaluate_only and (not args.checkpoint or args.output or args.validation_replay):
-        parser.error("--evaluate-only requires --checkpoint and no output/validation-replay")
-    if args.verify_only and (args.output or args.checkpoint):
-        parser.error("--verify-only does not accept model checkpoint paths")
+    if args.train and (not args.validation_replay or not args.output or args.checkpoint
+                       or args.model_version is None):
+        parser.error("--train requires --validation-replay, --output and --model-version")
+    if args.evaluate_only and (not args.checkpoint or args.output or args.validation_replay
+                               or args.model_version is None):
+        parser.error("--evaluate-only requires --checkpoint and --model-version, no output/validation-replay")
+    if args.model_version is not None and not 0 < args.model_version < 2**64:
+        parser.error("model-version must fit a positive uint64")
+    if args.verify_only and (args.output or args.checkpoint or
+                             args.model_version is not None):
+        parser.error("--verify-only does not accept model checkpoint paths or model version")
     episodes, by_role = load_checked(args.replay, args.rules_version,
                                      OBJECTIVES[args.objective])
+    if args.train and args.model_version <= max(e.model_version for e in episodes):
+        raise ValueError("candidate model-version must exceed every Replay source model version")
     report = {
         "episodes": len(episodes),
         "completed_steps": sum(len(e.samples) for e in episodes),
@@ -267,10 +289,12 @@ def main() -> int:
         models, payload = load_model_checkpoint(args.checkpoint,
                                 expected_rules=args.rules_version,
                                 expected_objective=args.objective,
+                                expected_model_version=args.model_version,
                                 torch=torch, device=device)
         for role in ROLES:
             if not by_role[role]:
                 raise ValueError("evaluation missing one role")
+        report["candidate_model_version"] = payload["candidate_model_version"]
         report["checkpoint_training_episode_ids"] = payload["train_episode_ids"]
         report["checkpoint_validation_episode_ids"] = payload["validation_episode_ids"]
         excluded = set(payload["train_episode_ids"]) | set(payload["validation_episode_ids"])

@@ -700,3 +700,53 @@ duplicated and reordered individually valid candidate masks. The
 extra legal-list generation is a known throughput cost to measure before
 training millions of native Q-proposal turns; correctness is required
 before pursuing caching or optimization.
+
+
+## R3 immutable trained model version and frozen PyTorch Q provider
+
+A real DMC Replay records the behavior/source-model snapshot, which
+MUST NOT be confused with the NEW trained Q weights version. The
+training CLI now requires an explicit positive uint64 --model-version
+STRICTLY greater than every source Replay model_version. A newer
+candidate cannot accidentally reuse the behavior version 1/12.
+
+The private checkpoint contract advances from unpromoted v2 to v3:
+strict field candidate_model_version, exact 3-role architecture,
+feature/rules/objective/source-version identities, immutable training
+and model-tuning validation IDs. torch.load(weights_only=True)
+requires the expected model version and rejects mismatched weights
+before evaluating predictions or publishing a source revision. The
+operator-only experiment.py --train passes the same version into
+actual PyTorch training AND independent held-out evaluation. The
+existing M5a Python admission test refuses source-version reuse
+and missing/forbidden candidate model IDs WITHOUT installing Torch.
+
+ai/dmc/frozen_q.py is the configured-Torch-only offline scoring
+provider. It consumes ONLY role-specific x (319/430), z (810) and
+1..64 canonical rank-count action (54) numeric feature arrays and
+one previously accepted immutable checkpoint. It validates all binary
+dimensions, strict model/rules/objective identity, finite float32
+Q outputs, and returns an exact per-action score vector. It has
+NO hidden cards, no C11 rules replica, no fallback model, no
+network/Room Owner handle, and does NOT itself authorize actions.
+Its output is a future provider binding input to the existing pure
+C11 DMCQSelector; native Q parity and KFCore production inference
+remain independent acceptance gates.
+
+A local configured PyTorch 2.10 CPU smoke executed actual gradient
+steps for all THREE roles on synthetic numerical features and verified
+bit-identical frozen score outputs vs direct Torch evaluation.
+This was NOT training on the native C11 Replay corpus and cannot
+qualify any strategy win rate.
+
+
+The independent optional smoke entry
+python3 tests/test_dmc_frozen_q_torch.py requires an EXPLICITLY
+configured PyTorch 2.10+ CPU environment and exercises actual
+RMSprop backward/optimizer steps for all three roles, strict
+checkpoint-v3 reload, 3/3 frozen Q numeric parity and negative
+version/rules/objective/batch-size cases. The sample features in
+this optional smoke are SYNTHETIC and do not establish an observed
+C11-native game win rate. The ordinary M5a Linux CI only checks
+Python source syntax and its existing true native Replay privacy
+contracts; it does NOT install heavyweight unpinned Torch wheels.

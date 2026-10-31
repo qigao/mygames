@@ -40,6 +40,24 @@ def main() -> int:
                              "--objective", "win-sign")
     assert missing_validation.returncode != 0
     assert "--validation-replay" in missing_validation.stderr
+    # A frozen model has its OWN immutable ID, newer than source-policy 12.
+    # Validate this before importing Torch or creating checkpoint bytes.
+    missing_model_id = run("--train", "--replay", first,
+                           "--validation-replay", second,
+                           "--objective", "win-sign",
+                           "--output", "forbidden-untrained.pt")
+    assert missing_model_id.returncode != 0
+    assert "--model-version" in missing_model_id.stderr
+    stale_model_id = run("--train", "--replay", first,
+                         "--validation-replay", second,
+                         "--objective", "win-sign",
+                         "--output", "forbidden-untrained.pt",
+                         "--model-version", "12")
+    assert stale_model_id.returncode != 0
+    assert "candidate model-version must exceed" in stale_model_id.stderr
+    verify_with_model = run("--verify-only", "--replay", first,
+                            "--objective", "win-sign", "--model-version", "13")
+    assert verify_with_model.returncode != 0
     # Verification must not import torch or create any model checkpoint.
     print("mygames.dmc_episode_disjoint_train_contract: PASS")
     return 0

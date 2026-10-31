@@ -294,7 +294,7 @@ def train_and_test(root: Path, manifest: dict, repo: Path, args) -> dict:
     modeldir = root / "models"
     modeldir.mkdir(mode=0o700, exist_ok=False)
     check_private_dir(modeldir)
-    checkpoint = modeldir / "dmc-unpromoted-v2.pt"
+    checkpoint = modeldir / "dmc-unpromoted-v3.pt"
     base = [sys.executable, str(repo / "ai/dmc/train_dmc.py")]
     train_files = file_list(root, manifest["splits"]["train"])
     val_files = file_list(root, manifest["splits"]["validation"])
@@ -303,7 +303,8 @@ def train_and_test(root: Path, manifest: dict, repo: Path, args) -> dict:
         "--train", "--replay", *train_files,
         "--validation-replay", *val_files,
         "--objective", manifest["objective"], "--rules-version", "1",
-        "--output", str(checkpoint), "--steps", str(args.steps),
+        "--output", str(checkpoint), "--model-version", str(args.model_version),
+        "--steps", str(args.steps),
         "--batch-size", str(args.batch_size), "--learning-rate",
         str(args.learning_rate), "--device", args.device,
         "--seed", str(args.seed)
@@ -311,7 +312,8 @@ def train_and_test(root: Path, manifest: dict, repo: Path, args) -> dict:
     held_out = json.loads(execute(base + [
         "--evaluate-only", "--replay", *test_files,
         "--objective", manifest["objective"], "--rules-version", "1",
-        "--checkpoint", str(checkpoint), "--device", args.device,
+        "--checkpoint", str(checkpoint), "--model-version", str(args.model_version),
+        "--device", args.device,
         "--batch-size", str(args.batch_size)
     ], cwd=repo))
     digest = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
@@ -336,6 +338,8 @@ def main() -> int:
     parser.add_argument("--objective", choices=("win-sign", "game-points"), required=True)
     parser.add_argument("--train", action="store_true",
                         help="actually optimize PyTorch Q and test on independent games")
+    parser.add_argument("--model-version", type=int,
+                        help="new frozen model ID, > every source behavior model version")
     parser.add_argument("--reuse", action="store_true",
                         help="verify and reuse immutable existing private manifest; no new games")
     parser.add_argument("--steps", type=int, default=1000)
@@ -347,6 +351,11 @@ def main() -> int:
     if args.steps < 1 or args.batch_size < 1 or args.seed < 0 or \
             not 0 < args.learning_rate <= 1:
         parser.error("invalid optimizer configuration")
+    if args.train and (args.model_version is None or
+                       not 1 < args.model_version < 2**64):
+        parser.error("--train requires --model-version > native source model 1")
+    if not args.train and args.model_version is not None:
+        parser.error("--model-version is only valid with --train")
     repo = Path(__file__).resolve().parents[2]
     manifest = (verify_existing_manifest(args, repo) if args.reuse
                 else build_experiment(args, repo))
