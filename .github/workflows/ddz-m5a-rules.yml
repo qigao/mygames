@@ -120,6 +120,43 @@ jobs:
           python3 tests/test_dmc_corpus.py "$corpus_dir"             "$(pwd)/build/ddz/mygames_ddz_dmc_generate"
           python3 ai/dmc/experiment.py --native-generator             "$(pwd)/build/ddz/mygames_ddz_dmc_generate"             --private-root "$experiment_root"             --source-revision "$(git rev-parse HEAD)" --first-id 9201             --train-games 3 --validation-games 3 --test-games 3             --objective win-sign
           python3 tests/test_dmc_experiment.py "$experiment_root"             "$(pwd)/build/ddz/mygames_ddz_dmc_generate" "$(git rev-parse HEAD)"
+      # Temporary PR #22-only PUBLIC SOURCE bundle for independently reproducing
+      # offline C11 Self-Play -> private PyTorch training on a disconnected host.
+      # Do NOT add Replay/weights/CI temporary directories to this artifact.
+      - name: Bundle public exact-HEAD DMC source (PR22 only)
+        if: github.event.pull_request.number == 22
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar -czf mygames-dmc-public-source.tar.gz \
+            games/doudizhu/include/mygames/room.h \
+            games/doudizhu/include/mygames/ddz_round.h \
+            games/doudizhu/include/mygames/ddz_match.h \
+            games/doudizhu/include/mygames/ddz_ai_actions.h \
+            games/doudizhu/include/mygames/ddz_ai_features.h \
+            games/doudizhu/src/room.c \
+            games/doudizhu/src/ddz_round.c \
+            games/doudizhu/src/ddz_match.c \
+            games/doudizhu/src/ddz_ai_actions.c \
+            games/doudizhu/src/ddz_ai_features.c \
+            ai/dmc/include/mygames/ddz_dmc_episode.h \
+            ai/dmc/include/mygames/ddz_dmc_replay.h \
+            ai/dmc/include/mygames/ddz_dmc_selfplay.h \
+            ai/dmc/src/ddz_dmc_episode.c \
+            ai/dmc/src/ddz_dmc_replay.c \
+            ai/dmc/src/ddz_dmc_selfplay.c \
+            ai/dmc/src/ddz_dmc_generate.c \
+            ai/dmc/model.py ai/dmc/train_dmc.py ai/dmc/replay.py \
+            ai/dmc/experiment.py ai/dmc/frozen_q.py ai/dmc/export_q_cpu.py
+          test -s mygames-dmc-public-source.tar.gz
+      - name: Publish only PUBLIC game source (never private Replay/weights)
+        if: github.event.pull_request.number == 22
+        uses: actions/upload-artifact@v4
+        with:
+          name: m5k-public-dmc-source-${{ github.event.pull_request.head.sha }}
+          path: mygames-dmc-public-source.tar.gz
+          retention-days: 1
+          if-no-files-found: error
 
   pure-source-asan:
     name: Pure C11 rules / Linux ASan+UBSan
