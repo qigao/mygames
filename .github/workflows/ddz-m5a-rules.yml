@@ -18,6 +18,11 @@ name: M5a Dou Dizhu gameplay rules (C11)
       - 'ai/dmc/src/ddz_dmc_episode.c'
       - 'tests/ddz_ai_features_test.c'
       - 'tests/ddz_dmc_episode_test.c'
+      - 'ai/dmc/include/mygames/ddz_dmc_replay.h'
+      - 'ai/dmc/src/ddz_dmc_replay.c'
+      - 'ai/dmc/replay.py'
+      - 'ai/dmc/train_dmc.py'
+      - 'tests/test_dmc_replay_reader.py'
       - 'CMakeLists.txt'
       - '.github/workflows/ddz-m5a-rules.yml'
   workflow_dispatch:
@@ -66,6 +71,17 @@ jobs:
           ctest --test-dir build/ddz -C Debug --no-tests=error
           --output-on-failure --timeout 30 --repeat until-fail:20
           -R '^mygames[.]ddz_round$'
+
+
+      - name: Verify private C11 Replay v1 against Python learner reader
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          fixture="$(mktemp)"
+          trap 'rm -f "$fixture"' EXIT
+          ./build/ddz/mygames_ddz_dmc_episode_test "$fixture"
+          python3 tests/test_dmc_replay_reader.py "$fixture"
 
   pure-source-asan:
     name: Pure C11 rules / Linux ASan+UBSan

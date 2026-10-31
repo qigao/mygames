@@ -1,4 +1,5 @@
 #include "mygames/ddz_dmc_episode.h"
+#include "mygames/ddz_dmc_replay.h"
 #include "mygames/rl_targets.h"
 
 #include <stdio.h>
@@ -25,7 +26,7 @@ static uint64_t lowest(uint64_t mask) {
     return mask & (~mask + UINT64_C(1));
 }
 
-static void test_offline_complete_match(void) {
+static void test_offline_complete_match(const char *fixture_path) {
     mygames_room room = {0};
     mygames_ddz_match match = {0}, next = {0};
     mygames_ddz_bid_result bid = {0};
@@ -151,11 +152,107 @@ static void test_offline_complete_match(void) {
             (actor == landlord ? MYGAMES_DDZ_AI_LANDLORD_FEATURES :
                                  MYGAMES_DDZ_AI_FARMER_FEATURES));
     }
+    /* R1 private replay v1: a completed, authorized C11 match only.
+     * The serialized bytes are caller-owned, never a public Outbox event. */
+    {
+        uint8_t *encoded;
+        mygames_ddz_dmc_sample *decoded;
+        mygames_ddz_dmc_episode reconstructed = {0};
+        mygames_ddz_dmc_episode before = {0};
+        size_t bytes = 0u, actual = 0u, required = 0u, k;
+        const double original = samples[0].target;
+        encoded = (uint8_t *)malloc(MYGAMES_DDZ_DMC_REPLAY_MAX_BYTES);
+        decoded = (mygames_ddz_dmc_sample *)calloc(
+            MYGAMES_DDZ_DMC_MAX_STEPS, sizeof(*decoded));
+        REQUIRE(encoded != NULL && decoded != NULL);
+        REQUIRE(mygames_ddz_dmc_replay_encode(
+            &episode, NULL, 0u, &bytes) == MYGAMES_DDZ_REPLAY_OK);
+        REQUIRE(bytes == MYGAMES_DDZ_DMC_REPLAY_HEADER_BYTES +
+                 episode.count * MYGAMES_DDZ_DMC_REPLAY_RECORD_BYTES +
+                 MYGAMES_DDZ_DMC_REPLAY_TRAILER_BYTES);
+        memset(encoded, 0x71, bytes);
+        actual = 0u;
+        REQUIRE(mygames_ddz_dmc_replay_encode(
+            &episode, encoded, bytes - 1u, &actual) == MYGAMES_DDZ_REPLAY_CAPACITY);
+        REQUIRE(actual == bytes);
+        for (k = 0u; k < bytes; ++k) REQUIRE(encoded[k] == 0x71);
+        REQUIRE(mygames_ddz_dmc_replay_encode(
+            &episode, encoded, bytes, &actual) == MYGAMES_DDZ_REPLAY_OK);
+        REQUIRE(actual == bytes);
+        REQUIRE(mygames_ddz_dmc_replay_decode(
+            encoded, bytes, NULL, NULL, 0u, &required) == MYGAMES_DDZ_REPLAY_OK);
+        REQUIRE(required == episode.count);
+        memset(&reconstructed, 0x4c, sizeof(reconstructed));
+        before = reconstructed;
+        required = 999u;
+        REQUIRE(mygames_ddz_dmc_replay_decode(
+            encoded, bytes, &reconstructed, decoded, 1u,
+            &required) == MYGAMES_DDZ_REPLAY_CAPACITY);
+        REQUIRE(required == episode.count &&
+                memcmp(&reconstructed, &before, sizeof(before)) == 0);
+        for (k = 0u; k < MYGAMES_DDZ_DMC_MAX_STEPS; ++k)
+            REQUIRE(decoded[k].episode_id == 0u);
+        required = 0u;
+        REQUIRE(mygames_ddz_dmc_replay_decode(
+            encoded, bytes, &reconstructed, decoded, MYGAMES_DDZ_DMC_MAX_STEPS,
+            &required) == MYGAMES_DDZ_REPLAY_OK);
+        REQUIRE(required == episode.count && reconstructed.sealed &&
+                reconstructed.terminated &&
+                reconstructed.episode_id == episode.episode_id &&
+                reconstructed.model_version == episode.model_version &&
+                reconstructed.objective == MYGAMES_DDZ_DMC_GAME_POINTS &&
+                reconstructed.terminal_winner == episode.terminal_winner &&
+                reconstructed.count == episode.count);
+        for (k = 0u; k < episode.count; ++k) {
+            REQUIRE(decoded[k].source_turn_id == samples[k].source_turn_id &&
+                    decoded[k].chosen_cards == samples[k].chosen_cards &&
+                    decoded[k].actor_seat == samples[k].actor_seat &&
+                    decoded[k].role == samples[k].role &&
+                    decoded[k].target == samples[k].target &&
+                    decoded[k].features.x_count == samples[k].features.x_count &&
+                    memcmp(decoded[k].features.x_no_action,
+                           samples[k].features.x_no_action,
+                           MYGAMES_DDZ_AI_MAX_FEATURES) == 0 &&
+                    memcmp(decoded[k].features.z, samples[k].features.z,
+                           MYGAMES_DDZ_AI_HISTORY_FEATURES) == 0 &&
+                    memcmp(decoded[k].action_features,
+                           samples[k].action_features,
+                           MYGAMES_DDZ_AI_CARD_FEATURES) == 0);
+        }
+        if (fixture_path) {
+            FILE *fp = fopen(fixture_path, "wb");
+            REQUIRE(fp != NULL);
+            REQUIRE(fwrite(encoded, 1u, bytes, fp) == bytes);
+            REQUIRE(fclose(fp) == 0);
+        }
+        before = reconstructed;
+        encoded[MYGAMES_DDZ_DMC_REPLAY_HEADER_BYTES + 32u] ^= 1u;
+        required = 777u;
+        REQUIRE(mygames_ddz_dmc_replay_decode(
+            encoded, bytes, &reconstructed, decoded, MYGAMES_DDZ_DMC_MAX_STEPS,
+            &required) == MYGAMES_DDZ_REPLAY_CORRUPT);
+        REQUIRE(required == 777u &&
+                memcmp(&reconstructed, &before, sizeof(before)) == 0);
+        encoded[MYGAMES_DDZ_DMC_REPLAY_HEADER_BYTES + 32u] ^= 1u;
+        REQUIRE(mygames_ddz_dmc_replay_decode(
+            encoded, bytes - 1u, &reconstructed, decoded,
+            MYGAMES_DDZ_DMC_MAX_STEPS, &required) == MYGAMES_DDZ_REPLAY_CORRUPT);
+        REQUIRE(memcmp(&reconstructed, &before, sizeof(before)) == 0);
+        samples[0].target += 1.0;
+        actual = 888u;
+        REQUIRE(mygames_ddz_dmc_replay_encode(
+            &episode, encoded, bytes, &actual) == MYGAMES_DDZ_REPLAY_INVALID);
+        REQUIRE(actual == 888u);
+        samples[0].target = original;
+        free(encoded);
+        free(decoded);
+    }
     free(samples);
     free(wp_samples);
 }
 
-int main(void) {
-    test_offline_complete_match();
+int main(int argc, char **argv) {
+    if (argc != 1 && argc != 2) return 2;
+    test_offline_complete_match(argc == 2 ? argv[1] : NULL);
     return 0;
 }

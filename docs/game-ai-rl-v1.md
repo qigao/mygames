@@ -233,3 +233,66 @@ authenticated owner method, and recheck model proposal turn/epoch
 before the normal Game COMMIT. This candidate implements the data
 reconstruction only. No trained model, actual bot, auth or production
 cutover is claimed.
+
+
+## R1 Private Replay v1 + offline DMC learner (2026-10-31 candidate)
+
+MyGames::DMCReplay is a pure C11 canonical, little-endian codec. Only
+a complete mygames_ddz_dmc_episode_seal() can be serialized.
+It rechecks the original actor/role mapping, source turn IDs, model/rules
+version, native 54-card action-to-feature encoding, exact (319/430,
+810,54) binary arrays, role-specific Win-Sign or Game-Points labels,
+and the true terminal winner. A truncated episode cannot yield data.
+The byte array is encoded by fields; NO raw memcpy(struct) disk image.
+No C11 core filesystem I/O or hidden inference dependency is added.
+
+Exact v1 format:
+
+* Magic bytes: MGDMC001. 64-byte header includes explicit v1, sealed,
+  episode ID, source model snapshot, rules version, reward objective,
+  step count, landlord/winner, record/payload sizes and zero-reserved.
+* Each play/pass sample is exactly 1,326 bytes in little-endian:
+  source turn u64, chosen physical mask u64, actor u8, role u8,
+  state-feature length u16, zero-reserved u32, signed IEEE754 f64 target,
+  430 padded state int8s, 810 chronological history int8s and 54 action
+  int8s. Landlord state is 319 entries + 111 ZERO bytes of padding.
+* CRC32 IEEE trailer (4 bytes) detects accidental corruption, NOT
+  forgery or authenticity. Only a trusted, private producer may publish
+  a replay file. No private replay bytes, own hand, opponent union or
+  raw feature data may enter logs, public MQTT, Cocos or CI artifacts.
+
+The reader validates the WHOLE file before publishing decoded
+samples, including CRC, canonical padding, turn/role consistency and
+true player-specific reward labels. Query and small output buffer errors
+do not modify caller outputs. Maximum supported episode is 162
+accepted gameplay decisions; bidding and unrecoverably truncated games
+are deliberately unsupported in v1.
+
+The standard-library-only ai/dmc/replay.py independently decodes and
+validates the C11 file layout and reward targets; the existing M5a
+Linux workflow executes tests/test_dmc_replay_reader.py against a
+REAL full C11 game fixture generated in memory by the existing
+mygames_ddz_dmc_episode_test CTest. A temporary private file is
+removed on completion. No standalone installer/consumer project or
+new CI workflow is created.
+
+ai/dmc/train_dmc.py --train is the actual offline PyTorch learner:
+three role-specific LSTM (5x162 to 128) and 512-wide action-conditioned
+MLP heads, per-role MSE on complete-episode Monte Carlo returns,
+bounded minibatches, RMSprop and gradient norm clipping. The train
+command REQUIRES configured PyTorch; it never silently switches
+engines or invents model weights. --verify-only needs no PyTorch.
+Checkpoints are newly written into a caller-controlled PRIVATE
+directory with atomic replacement and explicit model/objective/source
+metadata; they are NOT installed production inference weights.
+
+This is a viable learning data and algorithm path, not an evaluation
+of chess/real DouDizhu skill. The current test fixture contains one
+scripted deterministic policy (20 landlord singles; 38 farmer PASS)
+and cannot demonstrate learning quality. No bot is enabled, no
+real-player training data is collected by default, and the M5h score
+ledger remains the authoritative nonmonetary business record
+rather than a training replay store. Separate acceptance still requires
+many independent seeds and opponents, genuine bounded Self-Play
+workers, paired-deal seat-rotated evaluation and a KFCore inference
+binding with exact feature/model numerical agreement.

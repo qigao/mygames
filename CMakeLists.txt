@@ -111,6 +111,22 @@ else()
     -Wall -Wextra -Wpedantic -Werror)
 endif()
 
+# R1 private, versioned and canonical DMC Replay codec. This target owns
+# NO file/network/SQLite handle. It checks every complete terminal label
+# before serializing (no struct memcpy or unqualified source fallback).
+add_library(mygames_ddz_dmc_replay STATIC
+  ai/dmc/src/ddz_dmc_replay.c)
+add_library(MyGames::DMCReplay ALIAS mygames_ddz_dmc_replay)
+target_compile_features(mygames_ddz_dmc_replay PUBLIC c_std_11)
+target_include_directories(mygames_ddz_dmc_replay PUBLIC ai/dmc/include)
+target_link_libraries(mygames_ddz_dmc_replay PUBLIC MyGames::DMCCollector)
+if(MSVC)
+  target_compile_options(mygames_ddz_dmc_replay PRIVATE /W4 /WX)
+else()
+  target_compile_options(mygames_ddz_dmc_replay PRIVATE
+    -Wall -Wextra -Wpedantic -Werror)
+endif()
+
 # M5c: portable, fixed-size canonical PRIVATE match state codec. No native
 # file persistence and no public game-state serialization API is provided.
 add_library(mygames_ddz_checkpoint STATIC
@@ -394,7 +410,7 @@ if(BUILD_TESTING)
   add_executable(mygames_ddz_dmc_episode_test tests/ddz_dmc_episode_test.c)
   target_compile_features(mygames_ddz_dmc_episode_test PRIVATE c_std_11)
   target_link_libraries(mygames_ddz_dmc_episode_test PRIVATE
-    MyGames::DMCCollector MyGames::RLTargets)
+    MyGames::DMCReplay MyGames::RLTargets)
   if(MSVC)
     target_compile_options(mygames_ddz_ai_features_test PRIVATE /W4 /WX)
     target_compile_options(mygames_ddz_dmc_episode_test PRIVATE /W4 /WX)
