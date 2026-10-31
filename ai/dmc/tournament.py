@@ -21,7 +21,6 @@ import json
 import random
 from pathlib import Path
 
-import numpy as np
 
 from train_dmc import load_model_checkpoint, torch_runtime
 
@@ -71,6 +70,7 @@ def load_native(path: Path):
 
 
 def frozen_scorer(checkpoint: Path, model_version: int):
+    import numpy as np
     import torch
     torch, device = torch_runtime("cpu", seed=1)
     models, metadata = load_model_checkpoint(
