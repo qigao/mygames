@@ -179,11 +179,31 @@ def train(episodes: list[Episode], by_role: dict[int, list],
     from model import DouZeroQ, MODEL_FORMAT, FEATURE_CONTRACT, batch_tensors
     runtime, device = torch_runtime(args.device, args.seed)
     assert runtime is torch
+    if Path(args.output).exists() or Path(args.output).is_symlink():
+        raise FileExistsError("immutable checkpoint already exists; refuse optimizer overwrite")
     rng = random.Random(args.seed)
+    sampling = getattr(args, "sampling", "transition")
+    selection = getattr(args, "checkpoint_policy", "final")
+    interval = getattr(args, "validation_interval", 20)
+    strict_baseline = getattr(args, "require_validation_advantage", False)
+    if sampling not in ("transition", "episode-source-outcome") or \
+            selection not in ("final", "best-validation") or interval < 1:
+        raise ValueError("invalid DMC sampling/checkpoint policy or evaluation interval")
+    samplers = {}
+    if sampling == "episode-source-outcome":
+        from train_policy import make_role_sampler
+        if {e.model_version for e in episodes} != {e.model_version for e in validation}:
+            raise ValueError("train/validation source-policy cohorts differ")
+        # Entire episodes must include WIN and LOSS for EVERY role/source
+        # in both independent pools before allocating any role model.
+        for role in ROLES:
+            samplers[role] = make_role_sampler(episodes, role)
+            make_role_sampler(validation, role)
     models = {role: DouZeroQ(role).to(device) for role in ROLES}
     before = {ROLES[r]: evaluate_rows(models[r], val_roles[r], device,
                                        args.batch_size) for r in ROLES}
     final_train_loss = {}
+    best_step = {}
     for role in ROLES:
         model = models[role]
         optimizer = torch.optim.RMSprop(model.parameters(), lr=args.learning_rate,
@@ -191,8 +211,13 @@ def train(episodes: list[Episode], by_role: dict[int, list],
         rows = by_role[role]
         if not rows:
             raise ValueError(f"no training samples for role {ROLES[role]}")
-        for _step in range(args.steps):
-            batch = [rows[rng.randrange(len(rows))] for _ in range(args.batch_size)]
+        lowest_mse = float("inf")
+        best_weights = None
+        selected_at = 0
+        for step in range(1, args.steps + 1):
+            batch = (samplers[role].batch(rng, args.batch_size)
+                     if sampling == "episode-source-outcome" else
+                     [rows[rng.randrange(len(rows))] for _ in range(args.batch_size)])
             z, xa, target = batch_tensors(batch, device)
             model.train()
             predicted = model(z, xa)
@@ -201,12 +226,34 @@ def train(episodes: list[Episode], by_role: dict[int, list],
                 raise RuntimeError("nonfinite DMC training loss")
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=40.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=40.0,
+                                           error_if_nonfinite=True)
             optimizer.step()
+            if selection == "best-validation" and (step % interval == 0 or
+                                                    step == args.steps):
+                metric = evaluate_rows(model, val_roles[role], device,
+                                       args.batch_size)
+                if metric["mse"] < lowest_mse:
+                    lowest_mse = metric["mse"]
+                    selected_at = step
+                    # Clone immutable tensors: state_dict otherwise aliases
+                    # continuously updated live optimizer parameters.
+                    best_weights = {key: value.detach().clone()
+                                    for key, value in model.state_dict().items()}
+        if selection == "best-validation":
+            if best_weights is None:
+                raise RuntimeError("no valid complete-episode validation snapshot")
+            model.load_state_dict(best_weights, strict=True)
+        else:
+            selected_at = args.steps
         final_train_loss[ROLES[role]] = float(loss.detach().cpu())
+        best_step[ROLES[role]] = selected_at
         model.eval()
     after = {ROLES[r]: evaluate_rows(models[r], val_roles[r], device,
                                       args.batch_size) for r in ROLES}
+    if strict_baseline:
+        from train_policy import require_validation_advantage
+        require_validation_advantage(after)
     payload = {
         "format": CHECKPOINT_FORMAT,
         "model_architecture": MODEL_FORMAT,
@@ -225,7 +272,10 @@ def train(episodes: list[Episode], by_role: dict[int, list],
                                         device, val_roles, models, args.batch_size)
     return {"checkpoint_sha256": sha256, "candidate_model_version": args.model_version,
             "train_last_batch_mse": final_train_loss,
-            "validation_before": before, "validation_after": after}
+            "validation_before": before, "validation_after": after,
+            "sampling": sampling, "checkpoint_policy": selection,
+            "selected_validation_step_by_role": best_step,
+            "validation_zero_baseline_gate": bool(strict_baseline)}
 
 
 def main() -> int:
@@ -249,10 +299,23 @@ def main() -> int:
     parser.add_argument("--learning-rate", type=float, default=0.0001)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--sampling", choices=("transition", "episode-source-outcome"),
+                        default="transition",
+                        help="optional whole-game/behavior-source/outcome balanced sampling")
+    parser.add_argument("--checkpoint-policy", choices=("final", "best-validation"),
+                        default="final",
+                        help="restore per-role best validation MSE snapshot before publication")
+    parser.add_argument("--validation-interval", type=int, default=20)
+    parser.add_argument("--require-validation-advantage", action="store_true",
+                        help="reject checkpoint if ANY role fails validation zero-Q baseline")
     args = parser.parse_args()
     if args.rules_version <= 0 or args.steps <= 0 or args.batch_size <= 0 or \
-            not (0.0 < args.learning_rate <= 1.0):
-        parser.error("positive version/steps/batch-size and 0<lr<=1 required")
+            not (0.0 < args.learning_rate <= 1.0) or args.validation_interval < 1:
+        parser.error("positive version/steps/batch-size/interval and 0<lr<=1 required")
+    if not args.train and (args.sampling != "transition" or
+                           args.checkpoint_policy != "final" or
+                           args.require_validation_advantage):
+        parser.error("optimizer sampling and checkpoint-selection options require --train")
     if args.train and (not args.validation_replay or not args.output or args.checkpoint
                        or args.model_version is None):
         parser.error("--train requires --validation-replay, --output and --model-version")

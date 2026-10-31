@@ -1260,3 +1260,78 @@ that the newly fitted policy outperforms previous source v3
 in SAME-DECK competitions. The candidate v4 has held-out Q
 regression improvements but fails its separate validation
 zero-Q MSE baseline. No deployment or release is allowed.
+
+
+## R7 validation-aware DMC training; full-game/source/outcome sampling
+
+The previous trainer selected every batch uniformly from accepted MOVES,
+giving long matches disproportionate gradient weight, and always published
+the very LAST optimizer weights even if an earlier tuning-validation snapshot
+was better. These are plausible contributors to v4 instability, NOT a
+proved explanation.
+
+New opt-in --sampling episode-source-outcome draws a BEHAVIOR source model
+version uniformly, then one winner/loser sign uniformly, then one COMPLETE
+native Game episode uniformly, and finally one acting-role move uniformly.
+No action legality or C11 return is regenerated. It requires both outcome
+classes for ALL three roles under EVERY behavior source in both training
+and tuning-validation splits. Train/validation must contain the exact same
+source version set; missing classes/sources fail closed. A source-model
+version number alone is NOT checkpoint authentication; private source
+manifests/SHA-256 remain separate acceptance and model-mixing proof.
+
+New opt-in --checkpoint-policy best-validation snapshots each role at the
+minimum tuning-validation decision-MSE across positive-step intervals
+--validation-interval N and final optimizer step; it CLONES immutable
+parameter tensors before continuing optimizer updates. The private
+optimizer report includes selected_validation_step_by_role.
+Checkpoint-v3 field training_steps_per_role still records the total
+performed update count, not the selected earlier snapshot step.
+
+--require-validation-advantage is a STRICT optional publication gate:
+ALL three roles must have finite validation MSE strictly below their
+zero-Q validation baseline or NO model checkpoint is published.
+That is a minimum regression admission, NOT proof of game strength.
+Existing behavior stays the default: transition sampling + final-step
+checkpoint. No production Game Owner changes or Torch added to CI.
+
+Pure stdlib tests/test_dmc_training_policy.py checks synthetic whole-game
+source/sign/game weighting, repeatability, duplicate and missing outcome
+rejection and strict zero-Q admission. Actual C11 Replay-v1 reader
+contract remains separately enforced by the existing M5a workflow.
+
+Offline operator example (prevalidated private native Replay, configured
+PyTorch required, no model download/fallback):
+
+    python3 ai/dmc/train_dmc.py --train \
+      --replay PRIVATE/train/*.mgdmc \
+      --validation-replay PRIVATE/validation/*.mgdmc \
+      --objective win-sign --rules-version 1 \
+      --model-version NEW_ID --output PRIVATE/models/candidate-v3.pt \
+      --steps 400 --batch-size 32 --learning-rate 0.0001 \
+      --sampling episode-source-outcome \
+      --checkpoint-policy best-validation \
+      --validation-interval 20 --require-validation-advantage
+
+Independent local exploratory experiment restored PUBLIC exact C11 source
+a2f47f09419ccca708ae48ef06f4cf3bdcb83110 and used the genuine
+OS-CSPRNG, authoritative untrained v1 self-play generator:
+96 complete TRAIN games / 4,025 moves, separate 24-game
+tuning-validation / 981 moves and 24-game final TEST / 1,017 moves.
+Exact different episode ID ranges, same Torch 2.10 CPU seed 31,
+160 optimizer updates per role, batch 32, LR=1e-4.
+Only the sampling/selection policy differed. Offline return-Q MSE:
+
+                                  landlord    landlord_up    landlord_down
+    Old FINAL-step validation       1.0311      0.7893         1.1908
+    New BEST validation             0.7661      0.6441         0.9085
+    Old unseen test                 0.8619      0.8446         0.7126
+    New unseen test                 0.7832      1.0106         0.7858
+
+All three roles improved on the VALIDATION data used for selection.
+Independent TEST was MIXED: landlord improved, farmer_down worsened,
+farmer_up even exceeded zero-Q MSE 1.0. Thus no universal
+out-of-sample improvement, stronger opponent win rate, v5 promotion,
+or learned competitive advantage has been proven. This test has
+already been observed; use entirely new reserved held-out games
+for next model selection and tournament qualification.
