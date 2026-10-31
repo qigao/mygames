@@ -171,6 +171,26 @@ else()
     -Wall -Wextra -Wpedantic -Werror)
 endif()
 
+# Numerical conformance ONLY: pure C11 float32 LSTM + Q-reference CPU
+# backend for frozen, role-specific PyTorch weight images. It is deliberately
+# slower than KFCore and is NOT silently installed as inference fallback.
+add_library(mygames_ddz_dmc_q_cpu STATIC
+  ai/dmc/src/ddz_dmc_q_cpu.c
+  ai/dmc/src/ddz_dmc_q_cpu_adapter.c)
+add_library(MyGames::DMCQCPUReference ALIAS mygames_ddz_dmc_q_cpu)
+target_compile_features(mygames_ddz_dmc_q_cpu PUBLIC c_std_11)
+target_include_directories(mygames_ddz_dmc_q_cpu PUBLIC ai/dmc/include)
+target_link_libraries(mygames_ddz_dmc_q_cpu PUBLIC MyGames::DMCQSelector)
+if(UNIX AND NOT APPLE)
+  target_link_libraries(mygames_ddz_dmc_q_cpu PUBLIC m)
+endif()
+if(MSVC)
+  target_compile_options(mygames_ddz_dmc_q_cpu PRIVATE /W4 /WX)
+else()
+  target_compile_options(mygames_ddz_dmc_q_cpu PRIVATE
+    -Wall -Wextra -Wpedantic -Werror)
+endif()
+
 # M5c: portable, fixed-size canonical PRIVATE match state codec. No native
 # file persistence and no public game-state serialization API is provided.
 add_library(mygames_ddz_checkpoint STATIC
@@ -513,6 +533,23 @@ if(BUILD_TESTING)
   endif()
   add_test(NAME mygames.ddz_dmc_q_selector
     COMMAND mygames_ddz_dmc_q_selector_test)
+  # Real portable C11 reference implementation; no Python/Torch runtime
+  # or CI-published weights. Zero-model golden, CRC, version and nonfinite.
+  add_executable(mygames_ddz_dmc_q_cpu_test
+    tests/ddz_dmc_q_cpu_test.c)
+  target_compile_features(mygames_ddz_dmc_q_cpu_test PRIVATE c_std_11)
+  target_link_libraries(mygames_ddz_dmc_q_cpu_test PRIVATE
+    MyGames::DMCQCPUReference)
+  if(MSVC)
+    target_compile_options(mygames_ddz_dmc_q_cpu_test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_ddz_dmc_q_cpu_test PRIVATE
+      -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME mygames.ddz_dmc_q_cpu
+    COMMAND mygames_ddz_dmc_q_cpu_test)
+
+
 
 
 

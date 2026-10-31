@@ -25,6 +25,13 @@ name: M5a Dou Dizhu gameplay rules (C11)
       - 'ai/dmc/model.py'
       - 'ai/dmc/frozen_q.py'
       - 'tests/test_dmc_frozen_q_torch.py'
+      - 'ai/dmc/include/mygames/ddz_dmc_q_cpu.h'
+      - 'ai/dmc/include/mygames/ddz_dmc_q_cpu_adapter.h'
+      - 'ai/dmc/src/ddz_dmc_q_cpu.c'
+      - 'ai/dmc/src/ddz_dmc_q_cpu_adapter.c'
+      - 'ai/dmc/export_q_cpu.py'
+      - 'tests/ddz_dmc_q_cpu_test.c'
+      - 'tests/test_dmc_q_cpu_parity_torch.py'
       - 'tests/test_dmc_train_contract.py'
       - 'tests/test_dmc_replay_reader.py'
       - 'ai/dmc/include/mygames/ddz_dmc_selfplay.h'
@@ -106,7 +113,7 @@ jobs:
           python3 tests/test_dmc_replay_reader.py "$fixture"
           ./build/ddz/mygames_ddz_dmc_selfplay_test "$selfplay_train" "$selfplay_validation"
           python3 tests/test_dmc_train_contract.py "$selfplay_train" "$selfplay_validation"
-          python3 -m py_compile ai/dmc/frozen_q.py ai/dmc/model.py ai/dmc/train_dmc.py tests/test_dmc_frozen_q_torch.py
+          python3 -m py_compile ai/dmc/frozen_q.py ai/dmc/model.py ai/dmc/train_dmc.py tests/test_dmc_frozen_q_torch.py ai/dmc/export_q_cpu.py tests/test_dmc_q_cpu_parity_torch.py
           ./build/ddz/mygames_ddz_dmc_paired_eval_test > "$paired_summary"
           python3 tests/test_dmc_paired_stats.py "$paired_summary"
           ./build/ddz/mygames_ddz_dmc_generate --private-dir "$corpus_dir"             --episodes 3 --first-id 9101 --objective win-sign
@@ -134,7 +141,7 @@ jobs:
             -DMYGAMES_ENABLE_FLOWIE=OFF \
             -DCMAKE_C_FLAGS='-fsanitize=address,undefined -g -fno-omit-frame-pointer -Wall -Wextra -Wpedantic -Werror' \
             -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=address,undefined'
-          cmake --build build/ddz-asan --target mygames_ddz_round_test mygames_ddz_ai_actions_test mygames_rl_targets_test mygames_ddz_ai_features_test mygames_ddz_dmc_episode_test mygames_ddz_dmc_selfplay_test mygames_ddz_dmc_paired_eval_test mygames_ddz_dmc_q_selector_test --parallel 2
+          cmake --build build/ddz-asan --target mygames_ddz_round_test mygames_ddz_ai_actions_test mygames_rl_targets_test mygames_ddz_ai_features_test mygames_ddz_dmc_episode_test mygames_ddz_dmc_selfplay_test mygames_ddz_dmc_paired_eval_test mygames_ddz_dmc_q_selector_test mygames_ddz_dmc_q_cpu_test --parallel 2
 
       - name: Check all gameplay operations under sanitizers
         shell: bash
@@ -149,5 +156,5 @@ jobs:
 
           ctest --test-dir build/ddz-asan --no-tests=error \
             --output-on-failure --timeout 180 \
-            -R 'mygames[.](ddz_ai_features|ddz_dmc_episode|ddz_dmc_selfplay|ddz_dmc_paired_eval|ddz_dmc_q_selector)'
+            -R 'mygames[.](ddz_ai_features|ddz_dmc_episode|ddz_dmc_selfplay|ddz_dmc_paired_eval|ddz_dmc_q_selector|ddz_dmc_q_cpu)'
 

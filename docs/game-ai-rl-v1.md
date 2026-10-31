@@ -750,3 +750,79 @@ this optional smoke are SYNTHETIC and do not establish an observed
 C11-native game win rate. The ordinary M5a Linux CI only checks
 Python source syntax and its existing true native Replay privacy
 contracts; it does NOT install heavyweight unpinned Torch wheels.
+
+
+## R3 numeric PyTorch to native C11 Q reference (2026-10-31 candidate)
+
+ai/dmc/export_q_cpu.py is an explicitly requested, private offline
+export of a previously immutable checkpoint-v3. It calls the existing
+load_model_checkpoint(weights_only=True) admission. All three
+role-specific tensors must exactly match the existing
+mygames-douzero-q-v1 architecture, be finite float32, and use a
+newer, expected immutable model version. Each role is serialized in
+one CANONICAL little-endian float32 file, NOT a raw native struct or
+unsafe pickle. Format MGQF0001 has a 64-byte header: version=1,
+explicit model version, rules version, objective, role 0/1/2,
+319/430 state-feature length, exact float count, payload bytes,
+CRC32 field and zero-reserved. CRC32 is for accidental corruption,
+NOT a signature or proof of trust. It requires an existing 0700
+caller-owned private export directory and writes 0600 files via
+same-directory temp+fsync, hard-link NO-CLOBBER and dir fsync.
+A manifest with SHA256/source checkpoint digest is committed last.
+A half-export never produces a qualified model manifest.
+
+MyGames::DMCQCPUReference is a pure C11 STATIC module and a
+numerical parity/conformance oracle, not an optimized inference
+provider. A caller supplies serialized bytes and owned float32
+memory; the loader independently verifies lengths, CRC32, finite
+weights, exact model/rules/role/objective and reserved bytes BEFORE
+publishing the model view. It never touches the output model or
+arena on a malformed/truncated/nonfinite/old-version input.
+The supported three per-role float counts are 1,457,665 landlord,
+1,514,497 landlord_up, and 1,514,497 landlord_down.
+
+The native reference reconstructs PyTorch's exact LSTM 5x162
+sequence with hidden=128 (gate order i,f,g,o), then concatenates
+the context with acting-role 319/430 binary state and 54 action
+features, evaluates five ReLU 512-wide linear layers and one
+scalar Q head. It reuses the LSTM context across 1..64 distinct
+candidate actions in a batch. The inputs MUST be binary; no
+hidden opponent hand, new card classifier, HTTP or ORM enters
+this model. All output floats must be finite; errors leave the
+caller's entire output buffer unchanged. A small C11 adapter
+exposes the reference backend as an explicitly selected
+MyGames::DMCQSelector score callback, so the sole M5a legal-list
+generator and admission fences remain authoritative. The
+reference is NOT deployed as an automatic CPU fallback.
+
+mygames.ddz_dmc_q_cpu is a native portable CTest within the
+EXISTING root CMake/CTest and M5a three-OS + Linux ASan/UBSan
+workflow: tests three role-specific zero-weight images, exact
+FC6.bias=1.5 numeric output, version mismatch, CRC corruption,
+rechecksummed +Inf weight, too-small arena and non-binary/oversized
+Q inputs. It does NOT need PyTorch or install any external SDK.
+
+An independent optional configured-Torch parity script,
+tests/test_dmc_q_cpu_parity_torch.py, executes a REAL backward
+optimizer update per role using SYNTHETIC binary features,
+exports a genuine v3 PyTorch state_dict, runs the C11 scorer
+with the SAME feature/action vectors, and compares all 12 Q
+outputs against PyTorch. Local PyTorch 2.10.0+cpu + NumPy 2.3.5
+produced maximum absolute errors of:
+landlord 1.862645149230957e-8;
+landlord_up 4.470348358154297e-8;
+landlord_down 1.4901161193847656e-8.
+It also rejects bad CRC and stale model version. These values
+are an ACTUAL Torch/C11 NUMERIC parity result but still only
+synthetic inputs, NOT native-game Replay training, an independent
+trained opponent evaluation, or an acceptable production KFCore
+performance profile. This standalone optional script compiles
+the existing library source directly and is not a new installer/
+consumer target or CI workflow.
+
+Next separate gates: (1) run the already-implemented native C11
+Replay -> PyTorch v3 training on materially more independent
+completed OS-shuffled episodes; (2) prove native/KFCore optimized
+backend parity and batched throughput under real legal-action
+sizes; (3) paired-deck swapped-team 3-seat model-vs-baseline
+tournament with sufficient independent seed clusters.
