@@ -343,12 +343,53 @@ def train(episodes: list[Episode], by_role: dict[int, list],
     return report
 
 
+def compare_frozen_complete_games(models_a, models_b,
+                                  episodes: list[Episode], device,
+                                  batch_size: int) -> dict:
+    """Private paired native-Replay Q scoring, WITHOUT revealing game rows."""
+    import torch
+    from model import batch_tensors
+    from train_policy import paired_complete_game_mse
+    if batch_size <= 0 or batch_size > 65536:
+        raise ValueError("paired scorer batch size out of bounds")
+    records = []
+    for episode in episodes:
+        entry = {"episode_id": episode.episode_id, "roles": {}}
+        for role in ROLES:
+            rows = [step for step in episode.samples if step.role == role]
+            if not rows:
+                raise ValueError("paired heldout game missing acting role")
+            sum_a = sum_b = sum_zero = 0.0
+            for start in range(0, len(rows), batch_size):
+                z, xa, targets = batch_tensors(
+                    rows[start:start + batch_size], device)
+                with torch.no_grad():
+                    a = models_a[role](z, xa)
+                    b = models_b[role](z, xa)
+                    if not torch.isfinite(a).all().item() or \
+                            not torch.isfinite(b).all().item():
+                        raise ValueError("nonfinite paired Q prediction")
+                    sum_a += torch.square(a - targets).sum().item()
+                    sum_b += torch.square(b - targets).sum().item()
+                    sum_zero += torch.square(targets).sum().item()
+            entry["roles"][ROLES[role]] = {
+                "count": len(rows),
+                "a_mse": sum_a / len(rows),
+                "b_mse": sum_b / len(rows),
+                "zero_q_mse": sum_zero / len(rows),
+            }
+        records.append(entry)
+    return paired_complete_game_mse(records)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--verify-only", action="store_true")
     mode.add_argument("--train", action="store_true")
     mode.add_argument("--evaluate-only", action="store_true")
+    mode.add_argument("--compare-frozen", action="store_true",
+                      help="private paired held-out Q-MSE for TWO frozen candidates")
     parser.add_argument("--replay", nargs="+", required=True,
                         help="private, complete native C11 DMC Replay v1 files")
     parser.add_argument("--validation-replay", nargs="+",
@@ -359,6 +400,9 @@ def main() -> int:
     parser.add_argument("--model-version", type=int,
                         help="new frozen model ID, strictly newer than all replay source models")
     parser.add_argument("--checkpoint", help="trusted immutable checkpoint for evaluation")
+    parser.add_argument("--compare-checkpoint", help="second distinct immutable checkpoint")
+    parser.add_argument("--compare-model-version", type=int,
+                        help="second candidate model ID (positive uint64)")
     parser.add_argument("--steps", type=int, default=1000)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--learning-rate", type=float, default=0.0001)
@@ -387,8 +431,20 @@ def main() -> int:
     if args.evaluate_only and (not args.checkpoint or args.output or args.validation_replay
                                or args.model_version is None):
         parser.error("--evaluate-only requires --checkpoint and --model-version, no output/validation-replay")
+    if args.compare_frozen and (not args.checkpoint or not args.compare_checkpoint
+                                or args.model_version is None or
+                                args.compare_model_version is None or
+                                args.model_version == args.compare_model_version or
+                                args.output or args.validation_replay):
+        parser.error("--compare-frozen needs TWO distinct frozen checkpoints/model IDs; no optimizer outputs")
+    if not args.compare_frozen and (args.compare_checkpoint is not None or
+                                    args.compare_model_version is not None):
+        parser.error("second checkpoint/model version requires --compare-frozen")
     if args.model_version is not None and not 0 < args.model_version < 2**64:
         parser.error("model-version must fit a positive uint64")
+    if args.compare_model_version is not None and not (
+            0 < args.compare_model_version < 2**64):
+        parser.error("compare-model-version must fit a positive uint64")
     if args.verify_only and (args.output or args.checkpoint or
                              args.model_version is not None):
         parser.error("--verify-only does not accept model checkpoint paths or model version")
@@ -430,6 +486,33 @@ def main() -> int:
             raise ValueError("independent evaluation must exclude training and tuning-validation episodes")
         report["metrics"] = {ROLES[r]: evaluate_rows(models[r], by_role[r],
                              device, args.batch_size) for r in ROLES}
+    elif args.compare_frozen:
+        torch, device = torch_runtime(args.device, args.seed)
+        first, one = load_model_checkpoint(
+            args.checkpoint, expected_rules=args.rules_version,
+            expected_objective=args.objective,
+            expected_model_version=args.model_version,
+            torch=torch, device=device)
+        second, two = load_model_checkpoint(
+            args.compare_checkpoint, expected_rules=args.rules_version,
+            expected_objective=args.objective,
+            expected_model_version=args.compare_model_version,
+            torch=torch, device=device)
+        if not all(by_role[r] for r in ROLES):
+            raise ValueError("paired heldout missing an actor role")
+        observed = {e.episode_id for e in episodes}
+        for payload in (one, two):
+            excluded = set(payload["train_episode_ids"]) | set(
+                payload["validation_episode_ids"])
+            if observed & excluded:
+                raise ValueError("paired heldout leaks training/tuning episodes")
+            if any(e.model_version >= payload["candidate_model_version"]
+                   for e in episodes):
+                raise ValueError("paired model not newer than Replay behavior source")
+        report["candidate_model_versions"] = [
+            one["candidate_model_version"], two["candidate_model_version"]]
+        report["paired_complete_game_mse"] = compare_frozen_complete_games(
+            first, second, episodes, device, args.batch_size)
     print(json.dumps(report, sort_keys=True))
     return 0
 

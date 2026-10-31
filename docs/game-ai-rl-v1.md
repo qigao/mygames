@@ -1535,3 +1535,41 @@ python3 ai/dmc/experiment.py COMMON_VERIFIED_ARGS --reuse \
 `--first-id`, train/validation/test counts and `--objective`;
 include the optional R7d source-checkout/learner-revision pair when
 different exact commits are intentionally used.
+
+## R8b — joint frozen A/B Q evaluation with complete-game bootstrap
+
+The opt-in `experiment.py --evaluate-trials A B` now scores BOTH
+frozen models in a SINGLE offline Torch evaluator, after the existing
+private holdout consumption lock was published. Every actual sealed C11
+Replay GAME is replayed for the same THREE actor roles by BOTH frozen
+models, with individual role decisions averaged INSIDE that complete
+episode first. The private evaluator emits only role-level aggregates,
+never individual game IDs, raw private features, cards or actions.
+
+The report explicitly distinguishes:
+- `a_transition_mse` / `b_transition_mse` (legacy decision-weighted);
+- `a_equal_game_mse` / `b_equal_game_mse` (game-cluster-weighted);
+- `b_reduction_equal_game_mse` (A minus B; positive means B better);
+- `bootstrap_95_b_reduction`, available only after at least **30**
+  independent complete games, based on deterministic **4,000**
+  seeded bootstrap replicates of complete-game clusters, NOT individual
+  decisions or seats. The SAME episode resampling indices are shared
+  across all three role metrics.
+
+The pure-stdlib negative regression deliberately constructs 29 short
+games and one long difficult game to show decision-weighted MSE can
+select the opposite model from equal-game MSE. Malformed/missing roles,
+duplicate games, nonfinite scores and invalid counts reject before
+publication; fewer than 30 independent games yield NO interval.
+
+This is strictly an **exploratory, offline RETURN-Q** regression
+comparison. It does NOT establish improved DDZ game win rate, a
+sampling-error guarantee for an adaptively observed test set, or an
+eligible production model. The earlier TEST cohorts and R5 shuffle
+schedules are already observed; do not reuse them as supposedly fresh.
+Next mandatory skill gate remains a separately frozen model versus
+strong shed-most, paired in identical FULL C11 shuffled deals with
+3 landlord-seat rotations and swapped-team role assignment, NEW
+unobserved seeds and per-deal-cluster uncertainty; KFCore parity and
+single-owner bot security remain distinct.
+

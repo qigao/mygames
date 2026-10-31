@@ -14,7 +14,8 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "ai" / "dmc"))
 
 from replay import Episode, Sample
-from train_policy import make_role_sampler, require_validation_advantage
+from train_policy import (make_role_sampler, require_validation_advantage,
+                          paired_complete_game_mse)
 
 
 def episode(ep_id, source, landlord_wins, length):
@@ -116,6 +117,47 @@ def main():
         invalid = {k: dict(v) for k, v in valid.items()}
         invalid["landlord_down"]["mse"] = unacceptable
         require_rejected(lambda: require_validation_advantage(invalid))
+    # Synthetic comparison arithmetic only, NOT real trained DDZ skill.
+    # Short and long games must contribute equally to cluster inference.
+    complete_games = [
+        {"episode_id": i + 1, "roles": {
+            role: {"count": 20 if i == 0 else 1,
+                   "a_mse": 12.0 if i == 0 else 0.0,
+                   "b_mse": 1.0, "zero_q_mse": 1.0}
+            for role in ("landlord", "landlord_up", "landlord_down")}}
+        for i in range(30)
+    ]
+    score = paired_complete_game_mse(complete_games)
+    assert score["independent_complete_games"] == 30
+    assert score["resampling_unit"].startswith("whole sealed game")
+    assert score["exploratory_interval_available"]
+    assert not score["trained_gameplay_skill_qualified"]
+    for role in ("landlord", "landlord_up", "landlord_down"):
+        row = score["roles"][role]
+        assert abs(row["a_equal_game_mse"] - 0.4) < 1e-12
+        assert row["b_equal_game_mse"] == row["zero_q_equal_game_mse"] == 1.0
+        assert abs(row["b_reduction_equal_game_mse"] + 0.6) < 1e-12
+        assert row["a_transition_mse"] > row["b_transition_mse"]
+        assert len(row["bootstrap_95_b_reduction"]) == 2
+    assert paired_complete_game_mse(complete_games) == score
+    small = paired_complete_game_mse(complete_games[:29])
+    assert small["exploratory_interval_available"] is False
+    assert small["roles"]["landlord"]["bootstrap_95_b_reduction"] is None
+    for invalid in (
+        complete_games + [complete_games[0]],
+        [{**complete_games[0], "episode_id": 0}] + complete_games[1:],
+        [{**complete_games[0], "roles": {"landlord": complete_games[0]["roles"]["landlord"]}}]
+        + complete_games[1:],
+        [{**complete_games[0], "roles": {
+            **complete_games[0]["roles"], "landlord": {
+                **complete_games[0]["roles"]["landlord"], "a_mse": float("nan")}}}]
+        + complete_games[1:],
+        [{**complete_games[0], "roles": {
+            **complete_games[0]["roles"], "landlord": {
+                **complete_games[0]["roles"]["landlord"], "count": 0}}}]
+        + complete_games[1:],
+    ):
+        require_rejected(lambda bad=invalid: paired_complete_game_mse(bad))
     print("mygames.dmc_episode_source_outcome_sampling: PASS")
 
 

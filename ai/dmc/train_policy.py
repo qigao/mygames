@@ -127,3 +127,88 @@ def require_validation_advantage(metrics: dict) -> None:
                 baseline <= 0 or mse >= baseline):
             raise ValueError(
                 f"validation zero-Q baseline gate failed for {role}; no checkpoint published")
+
+def paired_complete_game_mse(games: Sequence[dict], *,
+                             replicates: int = 4000) -> dict:
+    """Paired A/B return-Q comparison; one COMPLETE episode = one cluster.
+
+    Each role has per-game average squared errors for the SAME immutable
+    Replay episode. A positive 'b_reduction' means B has lower Q-target MSE.
+    Reports are exploratory and must not be used as game-skill admission.
+    """
+    roles = ("landlord", "landlord_up", "landlord_down")
+    if not 1 <= len(games) <= 4096 or not 1 <= replicates <= 10000:
+        raise ValueError("invalid bounded complete-game comparison")
+    seen = set()
+    by_role = {r: [] for r in roles}
+    for game in games:
+        if not isinstance(game, dict) or \
+                type(game.get("episode_id")) is not int or \
+                game["episode_id"] <= 0 or game["episode_id"] in seen or \
+                not isinstance(game.get("roles"), dict) or \
+                set(game["roles"]) != set(roles):
+            raise ValueError("duplicate/incomplete paired complete game")
+        seen.add(game["episode_id"])
+        for role in roles:
+            rec = game["roles"][role]
+            if not isinstance(rec, dict) or set(rec) != {
+                    "count", "a_mse", "b_mse", "zero_q_mse"} or \
+                    type(rec["count"]) is not int or \
+                    not 1 <= rec["count"] <= 162:
+                raise ValueError("invalid role count in paired complete game")
+            for key in ("a_mse", "b_mse", "zero_q_mse"):
+                v = rec[key]
+                if type(v) not in (int, float) or not isfinite(v) or v < 0:
+                    raise ValueError("nonfinite/invalid paired MSE: " + key)
+            by_role[role].append(rec)
+    n = len(games)
+    rng = random.Random(0xC0FFEE51)
+    sufficient = n >= 30
+    boot = {r: [] for r in roles}
+    if sufficient:
+        for _ in range(replicates):
+            # SAME episode-index draw for all roles; never resample moves,
+            # seats or correlated decisions as independent observations.
+            indices = [rng.randrange(n) for _ in range(n)]
+            for role in roles:
+                rows = by_role[role]
+                boot[role].append(sum(rows[i]["a_mse"] - rows[i]["b_mse"]
+                                      for i in indices) / n)
+    result = {}
+    for role in roles:
+        rows = by_role[role]
+        count = sum(row["count"] for row in rows)
+        diff = sum(row["a_mse"] - row["b_mse"] for row in rows) / n
+        output = {
+            "decision_count": count,
+            "a_transition_mse": sum(row["a_mse"] * row["count"]
+                                    for row in rows) / count,
+            "b_transition_mse": sum(row["b_mse"] * row["count"]
+                                    for row in rows) / count,
+            "a_equal_game_mse": sum(row["a_mse"] for row in rows) / n,
+            "b_equal_game_mse": sum(row["b_mse"] for row in rows) / n,
+            "zero_q_equal_game_mse": sum(row["zero_q_mse"] for row in rows) / n,
+            "b_reduction_equal_game_mse": diff,
+            "bootstrap_95_b_reduction": None,
+        }
+        if sufficient:
+            values = sorted(boot[role])
+            # The existing paired evaluation uses seeded empirical quantiles.
+            output["bootstrap_95_b_reduction"] = [
+                values[int(0.025 * (replicates - 1))],
+                values[int(0.975 * (replicates - 1))],
+            ]
+        if not all(isfinite(v) for v in output.values()
+                   if type(v) in (float, int)):
+            raise ValueError("nonfinite paired game aggregate")
+        result[role] = output
+    return {
+        "schema": "mygames-dmc-paired-complete-game-q-mse-v1",
+        "independent_complete_games": n,
+        "resampling_unit": "whole sealed game, never a decision or seat",
+        "bootstrap_replicates": replicates if sufficient else 0,
+        "exploratory_interval_available": sufficient,
+        "roles": result,
+        "trained_gameplay_skill_qualified": False,
+    }
+

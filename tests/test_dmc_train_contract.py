@@ -58,6 +58,25 @@ def main() -> int:
     verify_with_model = run("--verify-only", "--replay", first,
                             "--objective", "win-sign", "--model-version", "13")
     assert verify_with_model.returncode != 0
+    # Paired frozen-Q comparison is an independent explicit mode. Strict
+    # argument rejection MUST run without importing Torch or touching a
+    # model; the configured Torch runtime is only used after admission.
+    for invalid in (
+        ("--compare-frozen", "--replay", first,
+         "--objective", "win-sign", "--checkpoint", "missing-a.pt",
+         "--model-version", "13"),
+        ("--evaluate-only", "--replay", first,
+         "--objective", "win-sign", "--checkpoint", "missing-a.pt",
+         "--model-version", "13", "--compare-checkpoint", "missing-b.pt"),
+        ("--verify-only", "--replay", first, "--objective", "win-sign",
+         "--compare-model-version", "14"),
+        ("--compare-frozen", "--replay", first, "--objective", "win-sign",
+         "--checkpoint", "missing-a.pt", "--model-version", "13",
+         "--compare-checkpoint", "missing-b.pt", "--compare-model-version", "13"),
+    ):
+        rejected = run(*invalid)
+        assert rejected.returncode != 0
+        assert "error:" in rejected.stderr
     # Verification must not import torch or create any model checkpoint.
     print("mygames.dmc_episode_disjoint_train_contract: PASS")
     return 0

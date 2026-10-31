@@ -604,29 +604,44 @@ def evaluate_frozen_trials(root: Path, manifest: dict, repo: Path,
     no_clobber_json(root, "holdout-lock.v1.json", lock)
     test_files = file_list(root, manifest["splits"]["test"])
     base = [sys.executable, str(repo / "ai/dmc/train_dmc.py")]
-    results = {}
-    for name, (metadata, checkpoint) in zip(names, entries):
-        evaluated = json.loads(execute(base + [
-            "--evaluate-only", "--replay", *test_files,
-            "--objective", manifest["objective"], "--rules-version", "1",
-            "--checkpoint", str(checkpoint), "--model-version",
-            str(metadata["model_version"]), "--device", args.device,
-            "--batch-size", str(args.batch_size)
-        ], cwd=repo))
-        if evaluated.get("candidate_model_version") != metadata["model_version"]:
-            raise ValueError("heldout result model identity mismatch")
-        results[name] = evaluated["metrics"]
+    # One Torch process scores BOTH frozen models on each identical complete
+    # C11 Replay episode; only per-role, cluster-aggregated MSE leaves it.
+    # No individual episode IDs, private hands or action features are logged.
+    compared = json.loads(execute(base + [
+        "--compare-frozen", "--replay", *test_files,
+        "--objective", manifest["objective"], "--rules-version", "1",
+        "--checkpoint", str(entries[0][1]),
+        "--model-version", str(entries[0][0]["model_version"]),
+        "--compare-checkpoint", str(entries[1][1]),
+        "--compare-model-version", str(entries[1][0]["model_version"]),
+        "--device", args.device, "--batch-size", str(args.batch_size)
+    ], cwd=repo))
+    if compared.get("candidate_model_versions") != [
+            entry[0]["model_version"] for entry in entries]:
+        raise ValueError("paired evaluator candidate model identity mismatch")
+    paired = compared["paired_complete_game_mse"]
+    if paired["independent_complete_games"] != len(test_files) or \
+            paired["trained_gameplay_skill_qualified"] is not False:
+        raise ValueError("paired evaluator game-count or qualification mismatch")
+    results = {names[0]: {
+        role: {"mse": scores["a_transition_mse"]}
+        for role, scores in paired["roles"].items()},
+        names[1]: {
+        role: {"mse": scores["b_transition_mse"]}
+        for role, scores in paired["roles"].items()}}
     record = {"schema": HOLDOUT_SCHEMA,
               "source_revision": args.source_revision,
               "learner_revision": args.learner_revision or args.source_revision,
               "corpus_manifest_sha256": lock["corpus_manifest_sha256"],
               "trial_names": names, "results": results,
+              "paired_complete_game_mse": paired,
               "independent_return_q_only": True,
               "heldout_now_observed": True,
               "trained_policy_qualified": False}
     no_clobber_json(root, "holdout.v1.json", record)
     return {"heldout_comparison_sealed": True,
             "trials": names, "results": results,
+            "paired_complete_game_mse": paired,
             "trained_policy_qualified": False}
 
 
