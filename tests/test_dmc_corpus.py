@@ -10,13 +10,83 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from ai.dmc.replay import OBJECTIVE_WIN_SIGN, read_episode
+
+
+def verify_explicit_native_behavior_sources(generator: Path) -> None:
+    """Real C11 completed deals, NOT a model-skill or source-authenticity claim.
+
+    The separate, source-verified cohort manifest is NOT implemented by this
+    first slice: these Replay-v1 files must not be fed to a mixed-source
+    optimizer using model_version=1 as though the behavior were identical.
+    """
+    for behavior, eid in (
+        ("mixed-v1", 9301),
+        ("shed-most", 9302),
+        ("legal-index", 9303),
+    ):
+        with tempfile.TemporaryDirectory(prefix="mygames-dmc-behavior-") as tmp:
+            root = Path(tmp)
+            assert stat.S_IMODE(root.stat().st_mode) & 0o077 == 0
+            args = [
+                str(generator), "--private-dir", str(root),
+                "--episodes", "1", "--first-id", str(eid),
+                "--objective", "win-sign", "--behavior",
+            ]
+            # An unrecognized source must NOT silently become the old mixed
+            # baseline, and no partial private Replay may appear on failure.
+            rejected = subprocess.run(
+                args + ["unsupported-source"], cwd=ROOT,
+                capture_output=True, text=True,
+            )
+            assert rejected.returncode != 0 and list(root.iterdir()) == []
+            accepted = subprocess.run(
+                args + [behavior], cwd=ROOT, capture_output=True,
+                text=True, check=True,
+            )
+            match = re.fullmatch(
+                r"MYGAMES_PRIVATE_CORPUS_V2 behavior=" + re.escape(behavior) +
+                r" episodes=1 steps=([0-9]+) landlord=([0-9]+)"
+                r" landlord_up=([0-9]+) landlord_down=([0-9]+)"
+                r" objective=win-sign",
+                accepted.stdout.strip(),
+            )
+            assert match is not None
+            path = root / f"episode-{eid}.mgdmc"
+            assert sorted(x.name for x in root.iterdir()) == [path.name]
+            info = path.lstat()
+            assert stat.S_ISREG(info.st_mode)
+            assert stat.S_IMODE(info.st_mode) & 0o077 == 0
+            assert info.st_nlink == 1
+            episode = read_episode(path)
+            assert episode.episode_id == eid and episode.model_version == 1
+            assert episode.rules_version == 1 and episode.objective == OBJECTIVE_WIN_SIGN
+            assert episode.landlord_seat == (eid - 1) % 3
+            assert episode.samples[0].actor_seat == episode.landlord_seat
+            assert episode.samples[-1].actor_seat == episode.winner_seat
+            actual_counts = [
+                sum(x.role == role for x in episode.samples) for role in range(3)
+            ]
+            assert all(actual_counts)
+            assert [len(episode.samples), *actual_counts] == [
+                int(x) for x in match.groups()
+            ]
+            assert all(s.target in (-1.0, 1.0) for s in episode.samples)
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            no_clobber = subprocess.run(
+                args + [behavior], cwd=ROOT, capture_output=True, text=True,
+            )
+            assert no_clobber.returncode != 0
+            assert hashlib.sha256(path.read_bytes()).hexdigest() == digest
+            assert sorted(x.name for x in root.iterdir()) == [path.name]
 
 
 def main() -> int:
@@ -93,7 +163,9 @@ def main() -> int:
     assert sorted(p.name for p in folder.iterdir()) == sorted(
         p.name for p in expected_paths
     ), "duplicate write did not leave temporary/unsealed artifacts"
+    verify_explicit_native_behavior_sources(generator)
     print("mygames.dmc_private_corpus_v1: PASS")
+    print("mygames.dmc_explicit_c11_behavior_sources: PASS")
     return 0
 
 
