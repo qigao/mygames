@@ -680,3 +680,23 @@ The exact C11 native and Linux ASan tests inject a deliberately
 incomplete model callback and require that the proposed output mask
 remain unchanged. This is a fail-closed native inference boundary,
 not a model provider implementation or learned-policy claim.
+
+
+### R2 strict full-legal-list admission (new candidate)
+
+The earlier Q selector validated each offered card combination but trusted
+the caller's claim that the supplied array contained ALL legal actions.
+That is insufficient: a malicious/miswired subset, duplicate or reordered
+list could bias the final Q choice despite every individual card mask
+being rules-valid. The selector now queries and materializes the SAME
+authoritative M5a generator's complete, deterministic ordered legal
+action list within the existing 65536-action bound, byte-compares the
+whole array, frees its bounded temporary memory, and only THEN submits
+actions to an immutable model provider. Mismatch or memory exhaustion
+fails closed, leaves output unchanged, and invokes no model callback.
+No second classifier, rules runtime, Top-K shortcut, or random fallback.
+The existing C11 native/ASan CI has negative coverage for missing,
+duplicated and reordered individually valid candidate masks. The
+extra legal-list generation is a known throughput cost to measure before
+training millions of native Q-proposal turns; correctness is required
+before pursuing caching or optimization.

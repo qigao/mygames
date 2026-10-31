@@ -150,14 +150,38 @@ static void test_full_legal_argmax_and_fail_closed(void) {
                1u, 1u, 42u, 1u, &model, &chosen) ==
                 MYGAMES_DDZ_DMC_Q_INVALID_ACTION && chosen == sentinel);
     {
-        uint64_t repeated[MYGAMES_DDZ_DMC_Q_BATCH + 7u];
-        const unsigned previous_batches = scorer.batches;
-        for (i = 0u; i < MYGAMES_DDZ_DMC_Q_BATCH + 7u; ++i)
-            repeated[i] = masks[i % needed];
-        REQUIRE(mygames_ddz_dmc_q_pick(&observation, repeated,
-                   MYGAMES_DDZ_DMC_Q_BATCH + 7u, 1u, 42u, 1u,
-                   &model, &chosen) == MYGAMES_DDZ_DMC_Q_OK);
-        REQUIRE(scorer.batches == previous_batches + 2u);
+        uint64_t *invalid = (uint64_t *)malloc(needed * sizeof(*invalid));
+        const unsigned before_calls = scorer.batches;
+        const size_t before_actions = scorer.total_actions;
+        REQUIRE(invalid != NULL && needed >= 2u);
+        memcpy(invalid, masks, needed * sizeof(*invalid));
+
+        /* Omitting a perfectly legal candidate must not create a valid
+         * 'whole set' proposal. No callback should be invoked. */
+        REQUIRE(mygames_ddz_dmc_q_pick(&observation, masks, needed - 1u,
+                   1u, 42u, 1u, &model, &chosen) ==
+                   MYGAMES_DDZ_DMC_Q_INVALID_ACTION &&
+                   chosen == sentinel);
+        /* Every action is individually legal, yet a duplicate displaces
+         * the final required canonical choice. */
+        invalid[needed - 1u] = invalid[0];
+        REQUIRE(mygames_ddz_dmc_q_pick(&observation, invalid, needed,
+                   1u, 42u, 1u, &model, &chosen) ==
+                   MYGAMES_DDZ_DMC_Q_INVALID_ACTION &&
+                   chosen == sentinel);
+        memcpy(invalid, masks, needed * sizeof(*invalid));
+        {
+            const uint64_t tmp = invalid[0];
+            invalid[0] = invalid[1];
+            invalid[1] = tmp;
+        }
+        REQUIRE(mygames_ddz_dmc_q_pick(&observation, invalid, needed,
+                   1u, 42u, 1u, &model, &chosen) ==
+                   MYGAMES_DDZ_DMC_Q_INVALID_ACTION &&
+                   chosen == sentinel);
+        REQUIRE(scorer.batches == before_calls &&
+                scorer.total_actions == before_actions);
+        free(invalid);
     }
     free(masks);
 }

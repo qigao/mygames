@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 
 mygames_ddz_dmc_q_status mygames_ddz_dmc_q_pick(
     const mygames_ddz_ai_observation *observation,
@@ -13,6 +15,8 @@ mygames_ddz_dmc_q_status mygames_ddz_dmc_q_pick(
     const mygames_ddz_dmc_q_provider *provider,
     uint64_t *out_selected) {
     mygames_ddz_ai_features features = {0};
+    uint64_t *canonical = NULL;
+    size_t canonical_count = 0u, populated_count = 0u;
     size_t offset;
     bool has_best = false;
     float best_value = 0.0f;
@@ -32,6 +36,31 @@ mygames_ddz_dmc_q_status mygames_ddz_dmc_q_pick(
     if (mygames_ddz_ai_encode_douzero(observation, &features) !=
             MYGAMES_DDZ_AI_OK)
         return MYGAMES_DDZ_DMC_Q_INVALID;
+    /* A valid individual mask is not enough: omitted, duplicated or
+     * reordered actions can adversarially alter the selected Q-argmax.
+     * Reuse ONLY the native M5a rank-combination rules generator and
+     * require the caller's entire list to equal its canonical output.
+     * Bounded allocation is released before calling the model. */
+    if (mygames_ddz_ai_legal_actions(observation->own_hand,
+            &observation->public_history.current, NULL, 0u,
+            &canonical_count) != MYGAMES_DDZ_AI_OK)
+        return MYGAMES_DDZ_DMC_Q_INVALID_ACTION;
+    if (canonical_count > MYGAMES_DDZ_DMC_Q_MAX_ACTIONS)
+        return MYGAMES_DDZ_DMC_Q_CAPACITY;
+    if (canonical_count != legal_count)
+        return MYGAMES_DDZ_DMC_Q_INVALID_ACTION;
+    canonical = (uint64_t *)malloc(canonical_count * sizeof(*canonical));
+    if (!canonical) return MYGAMES_DDZ_DMC_Q_CAPACITY;
+    if (mygames_ddz_ai_legal_actions(observation->own_hand,
+            &observation->public_history.current, canonical,
+            canonical_count, &populated_count) != MYGAMES_DDZ_AI_OK ||
+        populated_count != canonical_count ||
+        memcmp(canonical, legal_actions,
+               legal_count * sizeof(*canonical)) != 0) {
+        free(canonical);
+        return MYGAMES_DDZ_DMC_Q_INVALID_ACTION;
+    }
+    free(canonical);
     for (offset = 0u; offset < legal_count; offset += MYGAMES_DDZ_DMC_Q_BATCH) {
         int8_t actions[MYGAMES_DDZ_DMC_Q_BATCH][MYGAMES_DDZ_AI_CARD_FEATURES] = {{0}};
         float results[MYGAMES_DDZ_DMC_Q_BATCH];

@@ -51,9 +51,12 @@ typedef struct mygames_ddz_dmc_q_provider {
  * responsible existing CFlow Owner must independently recheck epoch/game/
  * turn/seat and call the sole authoritative round_submit/Game COMMIT.
  *
- * legal_actions must be the full list from mygames_ddz_ai_legal_actions()
- * for this observation, not a client-provided subset. The chooser checks
- * every candidate against acting-hand ownership and the original v1 rules. */
+ * legal_actions must exactly match the complete deterministic ordered list
+ * from the original mygames_ddz_ai_legal_actions() for this observation.
+ * The selector REGENERATES and byte-compares the entire bounded canonical
+ * list before invoking any model callback. Missing/duplicate/reordered
+ * actions, even if individually legal, must be rejected without scoring.
+ * This is deliberate fail-closed admission, not a second rules engine. */
 mygames_ddz_dmc_q_status mygames_ddz_dmc_q_pick(
     const mygames_ddz_ai_observation *observation,
     const uint64_t *legal_actions, size_t legal_count,
