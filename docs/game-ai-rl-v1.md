@@ -826,3 +826,84 @@ completed OS-shuffled episodes; (2) prove native/KFCore optimized
 backend parity and batched throughput under real legal-action
 sizes; (3) paired-deck swapped-team 3-seat model-vs-baseline
 tournament with sufficient independent seed clusters.
+
+
+## R4: actual native C11 Replay -> v3 Torch training -> independent native Q parity
+
+This is an ACTUAL local/offline acceptance run, not merely a planned
+pipeline or synthetic-feature smoke. The original C11 M5a/M5b/M5g
+offline generator was rebuilt under gcc 14.2.0 with strict
+-std=c11 -Wpedantic -Werror from the exact public source snapshot
+a2f47f09419ccca708ae48ef06f4cf3bdcb83110. For a disconnected
+host, a one-time PR22-only PUBLIC source archive was retrieved
+through GitHub Actions. It included NO private game Replay, weights,
+hidden hands or credentials. The temporary source-upload step is
+REMOVED from the normal ongoing M5a workflow by this change.
+
+The original OS CSPRNG and canonical game engine generated 60 complete
+independent win-sign episodes under an explicitly UNTRAINED source
+policy model 1, split by WHOLE games:
+  training    36 episodes, 1547 accepted decisions, roles 530/503/514
+  validation  12 episodes,  541 accepted decisions, roles 186/177/178
+  held-out    12 episodes,  468 accepted decisions, roles 161/152/155
+Episode IDs are distinct: 20001-20036, 20101-20112, 20201-20212.
+The strict Python Replay-v1 reader admitted all original C11
+samples/terminal returns. No sampled private bytes were uploaded.
+
+PyTorch 2.10.0+cpu actually ran 80 RMSprop/backward optimization steps
+PER ROLE on the 36 actual native-game episodes, batch size 32,
+learning rate 0.0001, random seed 31. The separate NEW model
+version 2, source behavior model version 1, immutable checkpoint
+ABI-v3 was written and reloaded. Private checkpoint SHA256:
+d883272867820c855ab7d902faa5696ccf690c10de295c90a4131ac071998bc4
+(the checkpoint BYTES and hidden information are not published).
+
+Real independent completed-game test results:
+  landlord      161 decisions: Q-target MSE 0.573339
+  landlord_up   152 decisions: Q-target MSE 0.583183
+  landlord_down 155 decisions: Q-target MSE 0.512185
+  zero-Q baseline: MSE 1.0 for all three roles
+Training-model-tuning validation MSE after training:
+  landlord 0.645642; landlord_up 0.816696;
+  landlord_down 0.976641.
+This is OFF-POLICY terminal-return prediction, NOT a measured
+win rate, and only 36 training games are insufficient to
+prove strategic superiority or generalization at scale.
+
+Then the REAL trained checkpoint was serialized via the existing
+MGQF0001 frozen-role exporter; the pure C11 reference library
+source from that same exact commit was compiled on the disconnected
+host. New opt-in script tests/test_dmc_real_replay_parity_torch.py
+loaded all three manifest/digest-checked private native role images
+and the actual v3 trained PyTorch weights. It compared SAME REAL
+HELD-OUT Replay feature bytes over 24 sampled accepted decisions PER
+role (72 actions total):
+  landlord      maximum absolute Torch/C11 Q error 5.364418e-7
+  landlord_up   maximum absolute Torch/C11 Q error 7.152557e-7
+  landlord_down maximum absolute Torch/C11 Q error 3.576279e-7
+No values in this parity experiment are synthetic features.
+The optional script rejects source train/tuning-test leakage,
+model image checksum mismatch and Q values above tolerance;
+only aggregate error and sample counts appear on stdout.
+The optional test does not install PyTorch in normal GitHub CI,
+which only checks its syntax. The underlying native C11 tests
+remain in the existing M5a three-OS + Linux ASan CI graph.
+
+Offline re-run (only with a private locally generated C11 Replay
+corpus, configured Torch and native reference built from exact
+source, never in a public CI artifact):
+
+    python3 tests/test_dmc_real_replay_parity_torch.py \
+      --checkpoint PRIVATE/models/dmc-v3-real-replay.pt \
+      --export-dir PRIVATE/exports \
+      --native-library PRIVATE/build/libddz_q_cpu_reference.so \
+      --replay-dir PRIVATE/test --model-version 2 \
+      --objective win-sign --max-per-role 24
+
+Independent remaining acceptance: a FROZEN learned model must
+actually select legal actions inside same-deck, swapped-team
+three-seat native games, with sufficiently many independent
+deal clusters and confidence intervals; the optimized KFCore
+runtime must prove numeric parity and throughput versus this
+slow C11 reference. Do NOT infer a trained win rate or
+production Bot qualification from lower Q-target MSE.
