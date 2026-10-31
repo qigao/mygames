@@ -668,3 +668,15 @@ then a full genuine OS-shuffled offline MyGames match using
 three explicit TEST-ONLY cardinality scorers. This proves a
 model-shaped legal-proposal boundary, NOT real learned Q
 weights, numeric Torch/KFCore parity or higher game strength.
+
+
+### Strict model output-completeness acceptance
+
+Every Q-batch score slot starts as NaN before invoking the trusted
+model callback. A callback that returns success without writing
+ALL action values now returns NONFINITE and rejects the ENTIRE
+proposal; no unwritten score is implicitly treated as Q=0.
+The exact C11 native and Linux ASan tests inject a deliberately
+incomplete model callback and require that the proposed output mask
+remain unchanged. This is a fail-closed native inference boundary,
+not a model provider implementation or learned-policy claim.

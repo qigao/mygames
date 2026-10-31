@@ -34,10 +34,13 @@ mygames_ddz_dmc_q_status mygames_ddz_dmc_q_pick(
         return MYGAMES_DDZ_DMC_Q_INVALID;
     for (offset = 0u; offset < legal_count; offset += MYGAMES_DDZ_DMC_Q_BATCH) {
         int8_t actions[MYGAMES_DDZ_DMC_Q_BATCH][MYGAMES_DDZ_AI_CARD_FEATURES] = {{0}};
-        float results[MYGAMES_DDZ_DMC_Q_BATCH] = {0.0f};
+        float results[MYGAMES_DDZ_DMC_Q_BATCH];
         const size_t count = legal_count - offset < MYGAMES_DDZ_DMC_Q_BATCH ?
                              legal_count - offset : MYGAMES_DDZ_DMC_Q_BATCH;
         size_t i;
+        /* Never mistake an unwritten model score for a zero-valued Q:
+         * missing outputs remain nonfinite and reject the full proposal. */
+        for (i = 0u; i < count; ++i) results[i] = NAN;
         for (i = 0u; i < count; ++i) {
             if (mygames_ddz_ai_encode_action(
                     observation, legal_actions[offset + i], actions[i]) !=

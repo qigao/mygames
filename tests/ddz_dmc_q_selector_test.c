@@ -14,6 +14,7 @@ typedef struct test_scorer {
     size_t total_actions;
     bool reject;
     bool nan_score;
+    bool omit_last_score;
     unsigned role_seen[MYGAMES_DDZ_SEATS];
 } test_scorer;
 
@@ -45,6 +46,8 @@ static bool test_score_batch(
     if (ctx->reject) return false;
     for (i = 0u; i < count; ++i) {
         unsigned cards = 0u;
+        if (ctx->omit_last_score && i + 1u == count)
+            continue; /* malformed model: claimed success, omitted Q */
         for (j = 0u; j < MYGAMES_DDZ_AI_CARD_FEATURES; ++j) {
             if (actions[i * MYGAMES_DDZ_AI_CARD_FEATURES + j] != 0 &&
                 actions[i * MYGAMES_DDZ_AI_CARD_FEATURES + j] != 1)
@@ -136,6 +139,11 @@ static void test_full_legal_argmax_and_fail_closed(void) {
                1u, &model, &chosen) == MYGAMES_DDZ_DMC_Q_NONFINITE &&
             chosen == sentinel);
     scorer.nan_score = false;
+    scorer.omit_last_score = true;
+    REQUIRE(mygames_ddz_dmc_q_pick(&observation, masks, needed, 1u, 42u,
+               1u, &model, &chosen) == MYGAMES_DDZ_DMC_Q_NONFINITE &&
+            chosen == sentinel);
+    scorer.omit_last_score = false;
     /* PASS is illegal in a leading trick, even if an attacker supplied it
      * in place of the canonical complete legal list. */
     REQUIRE(mygames_ddz_dmc_q_pick(&observation, &((uint64_t){UINT64_C(0)}),
