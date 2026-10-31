@@ -29,7 +29,7 @@ class EpisodeRoleSampler:
             source = self._sources[rng.randrange(len(self._sources))]
             sign = (-1, 1)[rng.randrange(2)]
             episodes = self._groups[source][sign]
-            role_rows = episodes[rng.randrange(len(episodes))]
+            _, role_rows = episodes[rng.randrange(len(episodes))]
             samples.append(role_rows[rng.randrange(len(role_rows))])
         return samples
 
@@ -38,6 +38,52 @@ class EpisodeRoleSampler:
             "positive_games": len(self._groups[source][1]),
             "negative_games": len(self._groups[source][-1]),
         } for source in self._sources}
+
+    def aggregate_validation(self, per_episode: dict[int, dict]) -> dict:
+        """Average errors with EXACTLY the source/sign/game/move batch weights.
+
+        Inputs are per-role, per-complete-episode means, never individual
+        transitions. All registered games/roles must have finite measurements.
+        This is a tuning metric, not an independent gameplay-skill estimate.
+        """
+        if not isinstance(per_episode, dict):
+            raise ValueError("validation requires per-episode measurements")
+        keys = ("mse", "mae", "zero_q_mse")
+        expected_ids = set()
+        source_means = []
+        total_decisions = 0
+        for source in self._sources:
+            sign_means = []
+            for sign in (-1, 1):
+                games = self._groups[source][sign]
+                cell_totals = {key: 0.0 for key in keys}
+                for episode_id, role_rows in games:
+                    if episode_id in expected_ids:
+                        raise ValueError("duplicate validation episode ID")
+                    expected_ids.add(episode_id)
+                    entry = per_episode.get(episode_id)
+                    if not isinstance(entry, dict) or type(entry.get("count")) is not int or \
+                            entry["count"] != len(role_rows):
+                        raise ValueError("incomplete per-game validation count")
+                    total_decisions += entry["count"]
+                    for key in keys:
+                        value = entry.get(key)
+                        if type(value) not in (int, float) or \
+                                not isfinite(value) or value < 0:
+                            raise ValueError("nonfinite/invalid per-game validation " + key)
+                        cell_totals[key] += value
+                sign_means.append({key: cell_totals[key] / len(games)
+                                   for key in keys})
+            source_means.append({key: sum(cell[key] for cell in sign_means) / 2.0
+                                 for key in keys})
+        if set(per_episode) != expected_ids:
+            raise ValueError("missing/unexpected validation episode ID")
+        result = {key: sum(cell[key] for cell in source_means) /
+                  len(source_means) for key in keys}
+        if not all(isfinite(value) for value in result.values()):
+            raise ValueError("nonfinite balanced validation aggregation")
+        return {"count": total_decisions, "episodes": len(expected_ids),
+                "weighting": "episode-source-outcome", **result}
 
 
 def make_role_sampler(episodes: Sequence[Episode], role: int) -> EpisodeRoleSampler:
@@ -60,7 +106,7 @@ def make_role_sampler(episodes: Sequence[Episode], role: int) -> EpisodeRoleSamp
         if len(signs) != 1 or 0 in signs:
             raise ValueError("inconsistent role reward within complete game")
         sign = next(iter(signs))
-        groups[ep.model_version][sign].append(actor_rows)
+        groups[ep.model_version][sign].append((ep.episode_id, actor_rows))
     for source, outcomes in groups.items():
         if not outcomes[1] or not outcomes[-1]:
             raise ValueError(

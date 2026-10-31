@@ -65,11 +65,53 @@ def main():
             require_rejected(lambda: sampler.batch(random.Random(7), size))
         require_rejected(lambda: make_role_sampler(episodes[:1], role))
         require_rejected(lambda: make_role_sampler(episodes + [episodes[0]], role))
+        # Metric is a source/sign/game average, NOT a transition average.
+        # One long bad game outweighs many short games under the old metric;
+        # the new metric deliberately gives both games equal per-stratum mass.
+        measurements = {}
+        for ep in episodes:
+            role_rows = [s for s in ep.samples if s.role == role]
+            adverse_long = (ep.model_version == 1 and ep.winner_seat == 0
+                            and len(role_rows) == 20)
+            measurements[ep.episode_id] = {
+                "count": len(role_rows),
+                "mse": 6.0 if adverse_long else 0.0,
+                "mae": 1.0 if adverse_long else 0.0,
+                "zero_q_mse": 1.0,
+            }
+        aggregate = sampler.aggregate_validation(measurements)
+        assert aggregate["weighting"] == "episode-source-outcome"
+        assert aggregate["count"] == 84 and aggregate["episodes"] == 8
+        assert abs(aggregate["mse"] - 0.75) < 1e-12
+        assert abs(aggregate["mae"] - 0.125) < 1e-12
+        assert aggregate["zero_q_mse"] == 1.0
+        old_transition_mse = sum(v["mse"] * v["count"]
+                                 for v in measurements.values()) / 84
+        assert old_transition_mse > 1.0 > aggregate["mse"]
+        for broken in (
+            {k: v for k, v in measurements.items() if k != episodes[0].episode_id},
+            {**measurements, 999999: measurements[episodes[0].episode_id]},
+            {**measurements, episodes[0].episode_id: {
+                **measurements[episodes[0].episode_id], "count": 999}},
+            {**measurements, episodes[0].episode_id: {
+                **measurements[episodes[0].episode_id], "mse": float("nan")}},
+            {**measurements, episodes[0].episode_id: {
+                **measurements[episodes[0].episode_id], "zero_q_mse": float("inf")}},
+        ):
+            require_rejected(lambda bad=broken: sampler.aggregate_validation(bad))
 
     valid = {role: {"mse": mse, "zero_q_mse": 1.0}
              for role, mse in (("landlord", 0.5), ("landlord_up", 0.8),
                                ("landlord_down", 0.95))}
     require_validation_advantage(valid)
+    # The aligned score admits an otherwise sound candidate that the long-
+    # episode-biased transition MSE would reject. Gate operates on its input
+    # metric; the learner selects the aligned metric in stratified mode.
+    aligned_gate = {role: {"mse": 0.75, "zero_q_mse": 1.0} for role in valid}
+    require_validation_advantage(aligned_gate)
+    require_rejected(lambda: require_validation_advantage({
+        role: {"mse": 120.0 / 84.0, "zero_q_mse": 1.0} for role in valid
+    }))
     for unacceptable in (1.0, 1.00001, float("nan")):
         invalid = {k: dict(v) for k, v in valid.items()}
         invalid["landlord_down"]["mse"] = unacceptable

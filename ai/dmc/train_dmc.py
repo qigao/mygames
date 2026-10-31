@@ -93,6 +93,55 @@ def evaluate_rows(model, rows, device, batch_size: int) -> dict:
             "mae": abs_error / len(rows), "zero_q_mse": zero_sq / len(rows)}
 
 
+def evaluate_aligned_episodes(model, episodes: list[Episode], role: int,
+                              sampler, device, batch_size: int) -> dict:
+    """Measure complete-game validation with the exact stratified batch weights.
+
+    One batched Torch forward pass yields per-decision squared/absolute errors.
+    Only the aggregation changes: move -> game -> outcome -> source. Never
+    select a balanced checkpoint using the legacy transition-weighted metric.
+    """
+    import torch
+    from model import batch_tensors
+    if batch_size <= 0:
+        raise ValueError("validation batch size must be positive")
+    rows = []
+    episode_ids = []
+    for episode in episodes:
+        for sample in episode.samples:
+            if sample.role == role:
+                rows.append(sample)
+                episode_ids.append(episode.episode_id)
+    if not rows:
+        raise ValueError("balanced validation has no acting-role decisions")
+    per_game = {}
+    model.eval()
+    with torch.no_grad():
+        for start in range(0, len(rows), batch_size):
+            z, xa, targets = batch_tensors(rows[start:start + batch_size], device)
+            predicted = model(z, xa)
+            if not torch.isfinite(predicted).all().item():
+                raise RuntimeError("nonfinite balanced-validation prediction")
+            errors = predicted - targets
+            components = torch.stack(
+                (torch.square(errors), torch.abs(errors), torch.square(targets)),
+                dim=1).detach().cpu().tolist()
+            ids = episode_ids[start:start + batch_size]
+            if len(components) != len(ids):
+                raise RuntimeError("balanced-validation output shape mismatch")
+            for episode_id, (squared, absolute, zero_squared) in zip(ids, components):
+                stats = per_game.setdefault(episode_id, {
+                    "count": 0, "mse": 0.0, "mae": 0.0, "zero_q_mse": 0.0})
+                stats["count"] += 1
+                stats["mse"] += squared
+                stats["mae"] += absolute
+                stats["zero_q_mse"] += zero_squared
+    for stats in per_game.values():
+        for key in ("mse", "mae", "zero_q_mse"):
+            stats[key] /= stats["count"]
+    return sampler.aggregate_validation(per_game)
+
+
 def load_model_checkpoint(path: str | Path, *, expected_rules: int,
                           expected_objective: str, expected_model_version: int,
                           torch, device):
@@ -190,6 +239,7 @@ def train(episodes: list[Episode], by_role: dict[int, list],
             selection not in ("final", "best-validation") or interval < 1:
         raise ValueError("invalid DMC sampling/checkpoint policy or evaluation interval")
     samplers = {}
+    validation_samplers = {}
     if sampling == "episode-source-outcome":
         from train_policy import make_role_sampler
         if {e.model_version for e in episodes} != {e.model_version for e in validation}:
@@ -198,10 +248,13 @@ def train(episodes: list[Episode], by_role: dict[int, list],
         # in both independent pools before allocating any role model.
         for role in ROLES:
             samplers[role] = make_role_sampler(episodes, role)
-            make_role_sampler(validation, role)
+            validation_samplers[role] = make_role_sampler(validation, role)
     models = {role: DouZeroQ(role).to(device) for role in ROLES}
     before = {ROLES[r]: evaluate_rows(models[r], val_roles[r], device,
                                        args.batch_size) for r in ROLES}
+    aligned_before = ({ROLES[r]: evaluate_aligned_episodes(
+        models[r], validation, r, validation_samplers[r], device, args.batch_size)
+                       for r in ROLES} if validation_samplers else None)
     final_train_loss = {}
     best_step = {}
     for role in ROLES:
@@ -231,8 +284,11 @@ def train(episodes: list[Episode], by_role: dict[int, list],
             optimizer.step()
             if selection == "best-validation" and (step % interval == 0 or
                                                     step == args.steps):
-                metric = evaluate_rows(model, val_roles[role], device,
-                                       args.batch_size)
+                metric = (evaluate_aligned_episodes(
+                    model, validation, role, validation_samplers[role],
+                    device, args.batch_size) if validation_samplers else
+                    evaluate_rows(model, val_roles[role], device,
+                                  args.batch_size))
                 if metric["mse"] < lowest_mse:
                     lowest_mse = metric["mse"]
                     selected_at = step
@@ -251,9 +307,12 @@ def train(episodes: list[Episode], by_role: dict[int, list],
         model.eval()
     after = {ROLES[r]: evaluate_rows(models[r], val_roles[r], device,
                                       args.batch_size) for r in ROLES}
+    aligned_after = ({ROLES[r]: evaluate_aligned_episodes(
+        models[r], validation, r, validation_samplers[r], device, args.batch_size)
+                      for r in ROLES} if validation_samplers else None)
     if strict_baseline:
         from train_policy import require_validation_advantage
-        require_validation_advantage(after)
+        require_validation_advantage(aligned_after if aligned_after is not None else after)
     payload = {
         "format": CHECKPOINT_FORMAT,
         "model_architecture": MODEL_FORMAT,
@@ -270,12 +329,18 @@ def train(episodes: list[Episode], by_role: dict[int, list],
     }
     sha256 = publish_private_checkpoint(Path(args.output), payload, torch,
                                         device, val_roles, models, args.batch_size)
-    return {"checkpoint_sha256": sha256, "candidate_model_version": args.model_version,
-            "train_last_batch_mse": final_train_loss,
-            "validation_before": before, "validation_after": after,
-            "sampling": sampling, "checkpoint_policy": selection,
-            "selected_validation_step_by_role": best_step,
-            "validation_zero_baseline_gate": bool(strict_baseline)}
+    report = {"checkpoint_sha256": sha256, "candidate_model_version": args.model_version,
+              "train_last_batch_mse": final_train_loss,
+              "validation_before": before, "validation_after": after,
+              "sampling": sampling, "checkpoint_policy": selection,
+              "validation_selection_weighting":
+                  "episode-source-outcome" if validation_samplers else "transition",
+              "selected_validation_step_by_role": best_step,
+              "validation_zero_baseline_gate": bool(strict_baseline)}
+    if aligned_after is not None:
+        report["validation_aligned_before"] = aligned_before
+        report["validation_aligned_after"] = aligned_after
+    return report
 
 
 def main() -> int:

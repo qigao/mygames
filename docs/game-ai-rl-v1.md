@@ -1335,3 +1335,40 @@ out-of-sample improvement, stronger opponent win rate, v5 promotion,
 or learned competitive advantage has been proven. This test has
 already been observed; use entirely new reserved held-out games
 for next model selection and tournament qualification.
+
+## R7b — validation metrics must follow the admitted training distribution
+
+With explicit `--sampling episode-source-outcome`, the NEW evaluation
+objective is the exactly corresponding per-role stratified MSE:
+
+`mean(source -> mean(sign +/- -> mean(complete game -> mean(role decision squared error))))`.
+
+A long game and a short game inside the same source/outcome cell therefore
+have EQUAL total influence on checkpoint selection and the zero-Q rejection
+gate. Train and tuning-validation must each pass the existing same-source,
+positive/negative and complete-game admission. Missing/bad/nonfinite per-game
+measurements fail closed. `--checkpoint-policy best-validation` selects the
+minimum aligned tuning metric at the configured intervals and last step;
+selected role-specific steps are recorded, and immutable cloned weights are
+restored before private publication. `--require-validation-advantage`
+compares *that same aligned metric* against its aligned zero-Q MSE for every
+role. An observed held-out TEST result may never be reused as a fresh test
+after the model or training policy has been tuned against it.
+
+The existing `--sampling transition` mode is unchanged: transition-weighted
+MSE, final-step checkpoint defaults, and optional legacy MSE zero-Q gate.
+The historical `validation_before`/`validation_after` report keys retain
+their transition-weighted semantics in ALL modes for backwards comparison.
+Explicit stratified mode ALSO reports
+`validation_aligned_before`/`validation_aligned_after` with the exact
+source/outcome/game weighting and
+`validation_selection_weighting=episode-source-outcome`; the default
+reports `validation_selection_weighting=transition`.
+
+The pure-stdlib contract test uses differing one- versus twenty-decision
+complete episodes to verify a case where ordinary transition MSE FAILS
+the zero-Q baseline while aligned MSE PASSES. This establishes evaluation
+arithmetic, NOT measured live game strength. Standard GitHub CI has no Torch
+trainer install and therefore cannot assert real optimizer quality or
+independent frozen tournament superiority. Strong shed-most paired-deal,
+three-role/swapped-team NEW holdout and KFCore parity remain separate gates.
