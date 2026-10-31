@@ -468,3 +468,60 @@ A true checkpoint-vs-heuristic experiment still requires a versioned
 native policy inference adapter, independent seeded sets large enough
 for uncertainty, and the explicit offline paired-score matrix.
 Neither LightZero, MuZero nor another DDZ game engine has been added.
+
+
+## M5k private C11 batch Replay generator (opt-in Linux offline)
+
+A standalone *offline* training command, mygames_ddz_dmc_generate,
+uses ONLY the existing MyGames::DMCSelfPlay static C11 engine plus
+the canonical DMC Replay v1 encoder. It is an application executable
+in the existing root CMake project, NOT a second game runtime, CFlow
+server, installer/consumer test project or additional workflow.
+Current file-publication API targets Linux openat/linkat/fsync;
+the game kernel and private Replay codec remain multi-platform C11.
+No new feature-detection probe/auto-fallback logic is used.
+
+The operator must explicitly name an EXISTING Linux private directory
+owned by the effective user, with no group/world access (mode 0700).
+Symlink directories are rejected. Each sample is written as a new
+0600 private file, then synced and atomically linked under a unique
+episode-N.mgdmc name with no replacement of any existing file.
+A crash can leave a hidden .partial file; partial bytes NEVER
+become a committed Replay. Duplicate Episode IDs, unwritable paths,
+full buffers or failed OS-CSPRNG/valid gameplay fail closed.
+The file system is not an authoritative Game ACK or durable database.
+
+The CLI accepts an explicitly bounded per-invocation 1..96 complete
+games, positive Episode ID starting point and exactly one reward
+objective (win-sign or game-points). It rotates offline landlord seats
+by Episode ID through legal M5b bidding. A known **UNTRAINED**
+mixed-policy-v1 chooses between shed-most and an explicit
+observation-conditioned legal-index baseline. It sees ONLY its own
+hand and PUBLIC game observations. Hidden deck/other hand partition,
+model keys, client credentials and user/private session data are never
+part of policy arguments or stdout. The original shuffled deck still
+comes from the OS CSPRNG, not from deterministic regression entropy.
+
+Example (existing private folder, explicitly scoped experiment):
+
+    mkdir -m 700 -p /secure/local/dmc-train
+    ./build/ddz/mygames_ddz_dmc_generate \
+      --private-dir /secure/local/dmc-train \
+      --episodes 9 --first-id 10001 --objective win-sign
+
+Then choose DISJOINT COMPLETE GAME IDs for train, validation and
+independent evaluation; do not partition turns from the same game.
+The existing ai/dmc/train_dmc.py remains the sole model learner.
+Only fully sealed private v1 Replay files qualify. No file is uploaded
+to CI artifacts, GitHub, MQTT, Cocos or the M5h business ledger.
+
+The existing M5a Linux native workflow now creates a temporary
+private directory, generates three genuinely OS-shuffled episodes
+with all three offline landlord seats, independently validates
+them via the pure-stdlib Python Replay parser/learner CLI and
+tests that a second publication attempt cannot overwrite the first.
+CI removes the temporary samples on completion. This is a
+small CONTRACT/SECURITY test, not an experimental dataset proving
+generalization or improvement over a baseline; the private corpus
+index/manifest, multi-worker supervision, trained-model action
+inference and a statistically powered tournament remain separate.

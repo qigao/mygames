@@ -142,6 +142,18 @@ else()
     -Wall -Wextra -Wpedantic -Werror)
 endif()
 
+
+# Linux-only opt-in local corpus emitter: existing private 0700 directory,
+# no-clobber O_EXCL/0600 files, fsync, no IO in the C11 algorithms.
+# NOT an installer, a downstream consumer project, or a network service.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(mygames_ddz_dmc_generate ai/dmc/src/ddz_dmc_generate.c)
+  target_compile_features(mygames_ddz_dmc_generate PRIVATE c_std_11)
+  target_link_libraries(mygames_ddz_dmc_generate PRIVATE MyGames::DMCSelfPlay)
+  target_compile_options(mygames_ddz_dmc_generate PRIVATE
+    -Wall -Wextra -Wpedantic -Werror)
+endif()
+
 # M5c: portable, fixed-size canonical PRIVATE match state codec. No native
 # file persistence and no public game-state serialization API is provided.
 add_library(mygames_ddz_checkpoint STATIC

@@ -31,6 +31,8 @@ name: M5a Dou Dizhu gameplay rules (C11)
       - 'tests/ddz_dmc_paired_eval_test.c'
       - 'ai/dmc/paired_stats.py'
       - 'tests/test_dmc_paired_stats.py'
+      - 'ai/dmc/src/ddz_dmc_generate.c'
+      - 'tests/test_dmc_corpus.py'
       - 'CMakeLists.txt'
       - '.github/workflows/ddz-m5a-rules.yml'
   workflow_dispatch:
@@ -90,13 +92,16 @@ jobs:
           selfplay_train="$(mktemp)"
           selfplay_validation="$(mktemp)"
           paired_summary="$(mktemp)"
-          trap 'rm -f "$fixture" "$selfplay_train" "$selfplay_validation" "$paired_summary"' EXIT
+          corpus_dir="$(mktemp -d)"
+          trap 'rm -f "$fixture" "$selfplay_train" "$selfplay_validation" "$paired_summary"; rm -f "$corpus_dir"/*.mgdmc "$corpus_dir"/.*.partial; rmdir "$corpus_dir"' EXIT
           ./build/ddz/mygames_ddz_dmc_episode_test "$fixture"
           python3 tests/test_dmc_replay_reader.py "$fixture"
           ./build/ddz/mygames_ddz_dmc_selfplay_test "$selfplay_train" "$selfplay_validation"
           python3 tests/test_dmc_train_contract.py "$selfplay_train" "$selfplay_validation"
           ./build/ddz/mygames_ddz_dmc_paired_eval_test > "$paired_summary"
           python3 tests/test_dmc_paired_stats.py "$paired_summary"
+          ./build/ddz/mygames_ddz_dmc_generate --private-dir "$corpus_dir"             --episodes 3 --first-id 9101 --objective win-sign
+          python3 tests/test_dmc_corpus.py "$corpus_dir"             "$(pwd)/build/ddz/mygames_ddz_dmc_generate"
 
   pure-source-asan:
     name: Pure C11 rules / Linux ASan+UBSan
