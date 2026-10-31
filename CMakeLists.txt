@@ -191,6 +191,22 @@ else()
     -Wall -Wextra -Wpedantic -Werror)
 endif()
 
+# Native C11 offline, OS-CSPRNG on-policy Replay from ONE frozen Q snapshot.
+# Caller supplies its immutable scorer and private storage; no I/O, test
+# entropy, secondary rules runtime, network/ORM handle or heuristic fallback.
+add_library(mygames_ddz_dmc_onpolicy STATIC
+  ai/dmc/src/ddz_dmc_onpolicy.c)
+add_library(MyGames::DMCOnPolicy ALIAS mygames_ddz_dmc_onpolicy)
+target_compile_features(mygames_ddz_dmc_onpolicy PUBLIC c_std_11)
+target_include_directories(mygames_ddz_dmc_onpolicy PUBLIC ai/dmc/include)
+target_link_libraries(mygames_ddz_dmc_onpolicy PUBLIC MyGames::DMCQSelector)
+if(MSVC)
+  target_compile_options(mygames_ddz_dmc_onpolicy PRIVATE /W4 /WX)
+else()
+  target_compile_options(mygames_ddz_dmc_onpolicy PRIVATE
+    -Wall -Wextra -Wpedantic -Werror)
+endif()
+
 # M5c: portable, fixed-size canonical PRIVATE match state codec. No native
 # file persistence and no public game-state serialization API is provided.
 add_library(mygames_ddz_checkpoint STATIC
@@ -576,6 +592,23 @@ if(BUILD_TESTING)
   endif()
   add_test(NAME mygames.ddz_dmc_tournament
     COMMAND mygames_ddz_dmc_tournament_test)
+  # TEST-ONLY scorer stub validates actual OS-CSPRNG full native matches,
+  # sealed canonical Replay source model versions and failure atomicity.
+  add_executable(mygames_ddz_dmc_onpolicy_test
+    tests/ddz_dmc_onpolicy_test.c)
+  target_compile_features(mygames_ddz_dmc_onpolicy_test PRIVATE c_std_11)
+  target_link_libraries(mygames_ddz_dmc_onpolicy_test PRIVATE
+    MyGames::DMCOnPolicy)
+  if(MSVC)
+    target_compile_options(mygames_ddz_dmc_onpolicy_test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_ddz_dmc_onpolicy_test PRIVATE
+      -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME mygames.ddz_dmc_onpolicy
+    COMMAND mygames_ddz_dmc_onpolicy_test)
+
+
 
 
 

@@ -37,6 +37,11 @@ name: M5a Dou Dizhu gameplay rules (C11)
       - 'ai/dmc/src/ddz_dmc_tournament.c'
       - 'tests/ddz_dmc_tournament_test.c'
       - 'ai/dmc/tournament.py'
+      - 'ai/dmc/include/mygames/ddz_dmc_onpolicy.h'
+      - 'ai/dmc/src/ddz_dmc_onpolicy.c'
+      - 'ai/dmc/collect_onpolicy.py'
+      - 'tests/ddz_dmc_onpolicy_test.c'
+      - 'tests/test_dmc_onpolicy_admission.py'
       - 'tests/test_dmc_tournament_schedules.py'
       - 'tests/test_dmc_train_contract.py'
       - 'tests/test_dmc_replay_reader.py'
@@ -119,10 +124,11 @@ jobs:
           python3 tests/test_dmc_replay_reader.py "$fixture"
           ./build/ddz/mygames_ddz_dmc_selfplay_test "$selfplay_train" "$selfplay_validation"
           python3 tests/test_dmc_train_contract.py "$selfplay_train" "$selfplay_validation"
-          python3 -m py_compile ai/dmc/frozen_q.py ai/dmc/model.py ai/dmc/train_dmc.py tests/test_dmc_frozen_q_torch.py ai/dmc/export_q_cpu.py tests/test_dmc_q_cpu_parity_torch.py tests/test_dmc_real_replay_parity_torch.py ai/dmc/tournament.py
+          python3 -m py_compile ai/dmc/frozen_q.py ai/dmc/model.py ai/dmc/train_dmc.py tests/test_dmc_frozen_q_torch.py ai/dmc/export_q_cpu.py tests/test_dmc_q_cpu_parity_torch.py tests/test_dmc_real_replay_parity_torch.py ai/dmc/tournament.py ai/dmc/collect_onpolicy.py tests/test_dmc_onpolicy_admission.py
           ./build/ddz/mygames_ddz_dmc_paired_eval_test > "$paired_summary"
           python3 tests/test_dmc_paired_stats.py "$paired_summary"
           python3 tests/test_dmc_tournament_schedules.py
+          python3 tests/test_dmc_onpolicy_admission.py
           ./build/ddz/mygames_ddz_dmc_generate --private-dir "$corpus_dir"             --episodes 3 --first-id 9101 --objective win-sign
           python3 tests/test_dmc_corpus.py "$corpus_dir"             "$(pwd)/build/ddz/mygames_ddz_dmc_generate"
           python3 ai/dmc/experiment.py --native-generator             "$(pwd)/build/ddz/mygames_ddz_dmc_generate"             --private-root "$experiment_root"             --source-revision "$(git rev-parse HEAD)" --first-id 9201             --train-games 3 --validation-games 3 --test-games 3             --objective win-sign
@@ -148,7 +154,7 @@ jobs:
             -DMYGAMES_ENABLE_FLOWIE=OFF \
             -DCMAKE_C_FLAGS='-fsanitize=address,undefined -g -fno-omit-frame-pointer -Wall -Wextra -Wpedantic -Werror' \
             -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=address,undefined'
-          cmake --build build/ddz-asan --target mygames_ddz_round_test mygames_ddz_ai_actions_test mygames_rl_targets_test mygames_ddz_ai_features_test mygames_ddz_dmc_episode_test mygames_ddz_dmc_selfplay_test mygames_ddz_dmc_paired_eval_test mygames_ddz_dmc_q_selector_test mygames_ddz_dmc_q_cpu_test mygames_ddz_dmc_tournament_test --parallel 2
+          cmake --build build/ddz-asan --target mygames_ddz_round_test mygames_ddz_ai_actions_test mygames_rl_targets_test mygames_ddz_ai_features_test mygames_ddz_dmc_episode_test mygames_ddz_dmc_selfplay_test mygames_ddz_dmc_paired_eval_test mygames_ddz_dmc_q_selector_test mygames_ddz_dmc_q_cpu_test mygames_ddz_dmc_tournament_test mygames_ddz_dmc_onpolicy_test --parallel 2
 
       - name: Check all gameplay operations under sanitizers
         shell: bash
@@ -163,5 +169,5 @@ jobs:
 
           ctest --test-dir build/ddz-asan --no-tests=error \
             --output-on-failure --timeout 180 \
-            -R 'mygames[.](ddz_ai_features|ddz_dmc_episode|ddz_dmc_selfplay|ddz_dmc_paired_eval|ddz_dmc_q_selector|ddz_dmc_q_cpu|ddz_dmc_tournament)'
+            -R 'mygames[.](ddz_ai_features|ddz_dmc_episode|ddz_dmc_selfplay|ddz_dmc_paired_eval|ddz_dmc_q_selector|ddz_dmc_q_cpu|ddz_dmc_tournament|ddz_dmc_onpolicy)'
 

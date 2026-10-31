@@ -1110,3 +1110,109 @@ or general strategic-superiority claim is justified**.
 Additional on-policy C11 trajectories and larger
 diverse self-play training with new untouched holdouts
 are needed before another promotion trial.
+
+
+## M5k R6 — genuine frozen-v3 ON-POLICY C11 Replay collection and v4 regression (2026-10-31)
+
+The previous model-v3 tournament is not the end of AI learning. A NEW
+MyGames::DMCOnPolicy pure C11 offline module reuses the SAME CSPRNG
+native Match, legal move generator, DMCQSelector full-list gate and
+terminal DMC Replay encoder. It does NOT use the M5b deterministic
+TEST-only shuffle; every game independently calls the original
+OS CSPRNG and follows the sole native bidding/playing/settlement code.
+
+All three acting players' action selections come from one immutable,
+explicit, version-fenced frozen model (no scripted, random or CPU
+score fallback). The scorer callback receives ONLY the current
+actor's authorized 319/430 x, 5x162 z and 1..64 legal 54-card
+action vectors, NEVER the match, secret shuffled deck, kitty or
+opponents' hands. The C11 collector records every accepted action
+and tags EVERY sample with the **behavior SOURCE model version**,
+not the future trained candidate model version. On complete,
+sealed and source-validated terminal settlement it stages a
+canonical Replay v1 in bounded temporary memory and copies it
+to caller-owned output atomically. Invalid/missing version,
+wrong rules/objective, scorer false/NaN/unwritten Q, truncation,
+any engine failure or too-small output rejects without altering
+the output Replay buffer, output length or move count.
+
+The optional operator-only ai/dmc/collect_onpolicy.py takes an
+existing PRIVATE 0700 empty output directory and an explicitly
+selected frozen PyTorch v3 checkpoint and native shared library,
+both PINNED by separately supplied SHA256 hashes. It runs
+the actual OS-CSPRNG native collector through the same frozen
+Torch scorer used in R5 paired tournaments. Each complete game
+is re-decoded using the independent strict Python canonical
+Replay v1 reader, and then published as owner-only 0600 bytes
+with fsync and atomic NO-CLOBBER hard-link. A last-published
+onpolicy.v1.json binds behavior model version, source checkpoint
+SHA256, native library SHA256, objective/rules, per-episode
+Replay SHA256 and three-role counts; raw feature rows,
+hidden hands, private weights and deck cards NEVER appear
+in stdout or the manifest. The manifest's source Git revision
+is explicitly an asserted claim for disconnected source
+directories, not cryptographic repository attestation.
+CRC32 detects corruption, not malicious tampering;
+the entire private directory is a trusted local ACL boundary.
+The current frozen-v3 Python scorer supports win-sign only;
+game-points requires a separately qualified checkpoint.
+
+A real LOCAL experiment ran 72 separate NEW completed games
+with frozen model v3 controlling ALL THREE seats, each using
+the original OS-CSPRNG shuffled deck:
+  training      48 episodes / 2081 accepted moves, roles 717/679/685
+  validation    12 episodes /  569 accepted moves, roles 193/188/188
+  held-out      12 episodes /  595 accepted moves, roles 205/194/196
+All episodes are disjoint and have unique IDs; frozen model v3
+source checkpoint SHA256 is
+da82f275e5c3d0fb1cc77a8f4d309f49cc6e41fe5da3ed3d2cc3952ad34a8ee5.
+ZERO model callback failures, no public Replay, user accounts
+or live Game Owner. These samples were not generated under
+the earlier untrained baseline policy: their source version is 3.
+
+Using this genuine behavior-v3 corpus, PyTorch 2.10 CPU
+completed 240 RMSprop backward/optimizer steps PER ROLE,
+batch 32, seed 43, objective win-sign, and produced an
+immutable NEW candidate checkpoint ABI-v3, model_version=4,
+source_model_versions=[3], SHA256:
+c91f83016f7416afa9d18116ef18ebfc46ebdbfa906f5fa8bd2bf8f1c52d655c
+(the private checkpoint BYTES remain local).
+
+On EXACT same 12 completed game (595 action) unseen test:
+  role           v3 source Q MSE     v4 new Q MSE
+  landlord          1.376101          0.718754
+  landlord_up       1.479194          0.752510
+  landlord_down     2.055951          0.579389
+However v4's model-selection VALIDATION MSE was
+1.797933 / 1.869211 / 1.696703 across landlord/up/down,
+all WORSE than zero-Q baseline MSE=1.0. This is a severe
+generalization/overfit or sampling instability indicator,
+not evidence of competitive skill. v4 MUST stay
+unpromoted, must not be described as beating v3 in games,
+and must never be tested on R5's already consumed
+holdout as though it were fresh. A totally new paired-deal
+schedule and stronger baseline must be reserved if v4
+ever becomes a candidate for strategy-level evaluation.
+
+The new 3-OS C11 test mygames.ddz_dmc_onpolicy uses an
+explicit TEST scorer (card count, NOT a trained model)
+to drive three REAL OS-random completed matches with 0/1/2
+landlord positions; it decodes all three sealed Replay,
+checks accepted actions, source-model version=42 for each
+sample, role coverage, terminal labels, and all failure
+atomicity conditions. Linux ASan+UBSan uses the same
+existing native test graph. A pure-stdlib Python
+test tests/test_dmc_onpolicy_admission.py validates
+private files/no-clobber/directory ACL/symlink rejection
+and mismatch SHA256 inputs WITHOUT importing Torch/NumPy.
+No extra workflow, installer/consumer project or CI probe
+has been added.
+
+Next independent R6 gate: verify split manifests and
+source checkpoint hashes together before any v4+ optimizer
+admission, collect materially more frozen-v3/v4 source
+episodes with diverse opponent policies, and measure
+fresh-seed paired games against shed-most and multiple
+nontrivial baselines with cluster-level confidence.
+Optimized KFCore float32 throughput/numeric equivalence
+to the earlier C11 reference remains unqualified.
