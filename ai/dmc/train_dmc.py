@@ -272,8 +272,10 @@ def main() -> int:
             if not by_role[role]:
                 raise ValueError("evaluation missing one role")
         report["checkpoint_training_episode_ids"] = payload["train_episode_ids"]
-        if {e.episode_id for e in episodes} & set(payload["train_episode_ids"]):
-            raise ValueError("evaluation includes a training episode")
+        report["checkpoint_validation_episode_ids"] = payload["validation_episode_ids"]
+        excluded = set(payload["train_episode_ids"]) | set(payload["validation_episode_ids"])
+        if {e.episode_id for e in episodes} & excluded:
+            raise ValueError("independent evaluation must exclude training and tuning-validation episodes")
         report["metrics"] = {ROLES[r]: evaluate_rows(models[r], by_role[r],
                              device, args.batch_size) for r in ROLES}
     print(json.dumps(report, sort_keys=True))

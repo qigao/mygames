@@ -24,6 +24,7 @@ mygames_ddz_dmc_selfplay_status mygames_ddz_dmc_selfplay_run(
         !cfg->model_version || !cfg->rules_version ||
         cfg->max_legal_actions == 0u ||
         cfg->max_legal_actions > (size_t)(UINT32_C(1) << 20u) ||
+        cfg->offline_landlord_seat >= MYGAMES_DDZ_SEATS ||
         sample_capacity == 0u ||
         sample_capacity > MYGAMES_DDZ_DMC_MAX_STEPS ||
         (cfg->objective != MYGAMES_DDZ_DMC_WIN_SIGN &&
@@ -33,17 +34,34 @@ mygames_ddz_dmc_selfplay_status mygames_ddz_dmc_selfplay_run(
             &match, started_room, cfg->room_epoch,
             cfg->game_id) != MYGAMES_DDZ_MATCH_OK)
         return MYGAMES_DDZ_SELFPLAY_ENGINE_FAILED;
-    landlord = match.bid_turn_seat;
-    /* Exact existing v1 first-turn bid3; not a fabricated game AI bidding
-     * result. Keep all subsequent cards/actions genuinely rule-governed. */
-    if (landlord >= MYGAMES_DDZ_SEATS ||
-        mygames_ddz_match_bid(&match, cfg->room_epoch, cfg->game_id,
-            match.players[landlord], match.bid_turn_id, 3u, &next, &bid) !=
-                MYGAMES_DDZ_MATCH_OK ||
-        next.phase != MYGAMES_DDZ_MATCH_PLAYING ||
-        next.round.landlord_seat != landlord)
-        return MYGAMES_DDZ_SELFPLAY_ENGINE_FAILED;
-    match = next;
+    landlord = cfg->offline_landlord_seat;
+    /* Rotate game roles without inventing a second bidding rule: each
+     * preceding bidder makes a valid PASS(0), then the specified seat
+     * legally bids 3. This is trusted OFFLINE only; production owner and
+     * network command schemas do NOT accept an AI-selected landlord. */
+    {
+        unsigned bid_count = 0u;
+        while (match.bid_turn_seat != landlord &&
+               bid_count < MYGAMES_DDZ_SEATS - 1u) {
+            const unsigned seat = match.bid_turn_seat;
+            if (seat >= MYGAMES_DDZ_SEATS ||
+                mygames_ddz_match_bid(&match, cfg->room_epoch, cfg->game_id,
+                    match.players[seat], match.bid_turn_id, 0u,
+                    &next, &bid) != MYGAMES_DDZ_MATCH_OK ||
+                next.phase != MYGAMES_DDZ_MATCH_BIDDING)
+                return MYGAMES_DDZ_SELFPLAY_ENGINE_FAILED;
+            match = next;
+            ++bid_count;
+        }
+        if (match.bid_turn_seat != landlord ||
+            mygames_ddz_match_bid(&match, cfg->room_epoch, cfg->game_id,
+                match.players[landlord], match.bid_turn_id, 3u,
+                &next, &bid) != MYGAMES_DDZ_MATCH_OK ||
+            next.phase != MYGAMES_DDZ_MATCH_PLAYING ||
+            next.round.landlord_seat != landlord)
+            return MYGAMES_DDZ_SELFPLAY_ENGINE_FAILED;
+        match = next;
+    }
     if (mygames_ddz_round_public_view(&match.round, &view) != MYGAMES_DDZ_OK ||
         mygames_ddz_ai_history_init(&view, &history) != MYGAMES_DDZ_AI_OK ||
         mygames_ddz_dmc_episode_init(&episode, owned_samples,

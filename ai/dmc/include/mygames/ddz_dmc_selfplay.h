@@ -35,10 +35,12 @@ typedef struct mygames_ddz_dmc_selfplay_config {
     uint32_t rules_version;
     mygames_ddz_dmc_objective objective;
     size_t max_legal_actions; /* hard admission limit, no silent Top-K */
+    uint8_t offline_landlord_seat; /* trusted offline only: validated real v1 bids */
 } mygames_ddz_dmc_selfplay_config;
 
 /* Offline, in-process game simulation: genuine authoritative C11
- * secure deal, bid (current v1 single first-player bid3 baseline),
+ * secure deal, scripted but LEGAL v1 0/3 bidding for an explicitly chosen
+ * offline landlord seat (0/1/2) to rotate training role assignments,
  * all accepted rule transitions, public action history and terminal
  * nonmonetary settlement. NEVER call on a real CFlow/CHttp room owner.
  * It neither opens SQLite nor publishes gameplay ACK/Outbox, and

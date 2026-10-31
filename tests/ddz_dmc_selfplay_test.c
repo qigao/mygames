@@ -143,10 +143,13 @@ static void run_real_selfplay(const mygames_room *room, size_t output_count,
         config.objective = trial < 2u ?
             MYGAMES_DDZ_DMC_WIN_SIGN : MYGAMES_DDZ_DMC_GAME_POINTS;
         config.max_legal_actions = 65536u;
+        config.offline_landlord_seat = (uint8_t)trial;
         REQUIRE(mygames_ddz_dmc_selfplay_run(room, &config, sample_policy,
                  &policy, storage, MYGAMES_DDZ_DMC_MAX_STEPS,
                  &episode, &settlement) == MYGAMES_DDZ_SELFPLAY_OK);
         REQUIRE(episode.count == policy.calls);
+        REQUIRE(episode.landlord_seat == (uint8_t)trial &&
+                settlement.landlord_seat == (uint8_t)trial);
         REQUIRE(policy.role_calls[0] + policy.role_calls[1] +
                 policy.role_calls[2] == episode.count);
         REQUIRE(policy.role_calls[0] > 0u);
@@ -178,6 +181,12 @@ static void test_reject_bad_policy_and_truncation(const mygames_room *room) {
     REQUIRE(memcmp(&output, &sentinel, sizeof(output)) == 0 &&
             memcmp(&score, &original, sizeof(score)) == 0);
     config.max_legal_actions = 65536u;
+    config.offline_landlord_seat = MYGAMES_DDZ_NO_SEAT;
+    REQUIRE(mygames_ddz_dmc_selfplay_run(room, &config, refuse_policy, NULL,
+             sample, 1u, &output, &score) == MYGAMES_DDZ_SELFPLAY_INVALID);
+    REQUIRE(memcmp(&output, &sentinel, sizeof(output)) == 0 &&
+            memcmp(&score, &original, sizeof(score)) == 0);
+    config.offline_landlord_seat = 0u;
     REQUIRE(mygames_ddz_dmc_selfplay_run(room, &config, refuse_policy, NULL,
              sample, 1u, &output, &score) ==
              MYGAMES_DDZ_SELFPLAY_POLICY_REJECTED);

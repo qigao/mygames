@@ -400,3 +400,26 @@ Example (trusted private offline machine with PyTorch already configured):
 
 No production KFCore binding, deployment, adaptive self-play collector,
 paired-seed tournament or trained-gameplay skill is claimed yet.
+
+
+## Offline landlord-seat rotation and genuinely independent test sets
+
+The offline MyGames::DMCSelfPlay config may explicitly choose a landlord
+seat 0/1/2 for dataset role rotation. The sampler does not change the
+shuffle or assign a landlord secretly: it performs the original M5b
+bid(0) transitions for preceding bidders, followed by an authentic
+bid(3) from the chosen seat. No production WebSocket or CFlow API
+accepts this offline-only selector; model bidding is still NOT trained.
+
+The existing M5a C11 test runs three real complete securely shuffled
+matches with three DIFFERENT landlord seats. The first two WIN_SIGN
+episodes are passed to the pure-stdlib Python training/validation
+disjointness acceptance and cannot share episode IDs. This is role
+rotation, not matched-deck or seat-swapped paired tournament proof.
+
+The separate --evaluate-only CLI now excludes BOTH training and
+model-tuning validation episode IDs from its accepted evaluation
+dataset. Held-out prediction MSE/MAE may be measured only on fresh
+episode IDs; such off-policy metrics are NOT a real game win-rate
+or proof of strategic learning. True paired-deal competition remains
+an independent gate.
