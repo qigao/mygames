@@ -27,7 +27,7 @@ static unsigned count_cards(uint64_t x) {
  * This is NOT a trained DMC or a provider/fallback shipped to production. */
 static bool test_score_batch(
     void *opaque, const mygames_ddz_ai_features *features,
-    const int8_t (*actions)[MYGAMES_DDZ_AI_CARD_FEATURES],
+    const int8_t *actions,
     size_t count, float *out) {
     test_scorer *ctx = (test_scorer *)opaque;
     size_t i, j;
@@ -46,9 +46,10 @@ static bool test_score_batch(
     for (i = 0u; i < count; ++i) {
         unsigned cards = 0u;
         for (j = 0u; j < MYGAMES_DDZ_AI_CARD_FEATURES; ++j) {
-            if (actions[i][j] != 0 && actions[i][j] != 1)
+            if (actions[i * MYGAMES_DDZ_AI_CARD_FEATURES + j] != 0 &&
+                actions[i * MYGAMES_DDZ_AI_CARD_FEATURES + j] != 1)
                 return false;
-            cards += (unsigned)actions[i][j];
+            cards += (unsigned)actions[i * MYGAMES_DDZ_AI_CARD_FEATURES + j];
         }
         out[i] = (float)cards;
     }

@@ -33,7 +33,7 @@ typedef enum mygames_ddz_dmc_q_status {
 typedef bool (*mygames_ddz_dmc_q_score_batch_fn)(
     void *context,
     const mygames_ddz_ai_features *actor_features,
-    const int8_t (*action_features)[MYGAMES_DDZ_AI_CARD_FEATURES],
+    const int8_t *action_features, /* row-major, 54 bytes per action */
     size_t action_count,
     float *out_scores);
 

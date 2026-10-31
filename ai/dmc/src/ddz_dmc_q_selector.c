@@ -45,7 +45,7 @@ mygames_ddz_dmc_q_status mygames_ddz_dmc_q_pick(
                 return MYGAMES_DDZ_DMC_Q_INVALID_ACTION;
         }
         if (!provider->score_batch(provider->context, &features,
-                                    actions, count, results))
+                                    &actions[0][0], count, results))
             return MYGAMES_DDZ_DMC_Q_MODEL_FAILED;
         for (i = 0u; i < count; ++i) {
             const float value = results[i];
