@@ -1216,3 +1216,47 @@ fresh-seed paired games against shed-most and multiple
 nontrivial baselines with cluster-level confidence.
 Optimized KFCore float32 throughput/numeric equivalence
 to the earlier C11 reference remains unqualified.
+
+
+### R6.1 strict on-policy train/validation/test source admission
+
+The pure-standard-library ai/dmc/verify_onpolicy.py checks THREE
+entire private on-policy directories before any optimizer starts.
+It pins the selected immutable behavior v3 checkpoint's real SHA256
+(and actual owned 0600 file bytes), the explicit native C11 shared
+library SHA256, source revision CLAIM, exactly one behavior model
+version, rules and win-sign objective, and the fact that the shuffle
+path is the genuine OS-CSPRNG collector rather than deterministic
+tournament shuffling.
+
+Every onpolicy.v1.json and Replay must be owner-only regular files
+with no extra hardlinks or symlinks. The verifier independently
+reopens each Replay with the canonical CRC/terminal actor-role/target
+reader, checks every Replay SHA256 and original Episode ID,
+landlord/winner/role counts, source behavior model version, declared
+Q batch counts and complete directory contents. No duplicate Episode
+ID or file content may appear across train, validation or test.
+A future target model version MUST be greater than the frozen
+behavior model version. SHA256 is integrity/provenance bookkeeping
+within a trusted private ACL, NOT a digital signature, and
+source_revision_claim is explicitly a claim when using an offline
+source tree without Git metadata; it is not represented as
+cryptographic repository attestation.
+
+The first real 48/12/12 on-policy corpus above passed this FULL
+three-way auditor locally:
+  behavior v3 -> candidate v4, train 48 / 2081 actions,
+  validation 12 / 569 actions, test 12 / 595 actions,
+  exact source checkpoint SHA256 pinned, zero overlaps.
+Ordinary M5a GitHub CI now adds only the legitimate negative
+verification test (missing manifests, source digest mismatch,
+version reuse, empty completed-game cohort and train-as-test),
+plus Python syntax; it does NOT upload private features or
+fabricate a positive trained on-policy cohort, and does not
+install Torch.
+
+Using an actual accepted on-policy source still does NOT prove
+that the newly fitted policy outperforms previous source v3
+in SAME-DECK competitions. The candidate v4 has held-out Q
+regression improvements but fails its separate validation
+zero-Q MSE baseline. No deployment or release is allowed.
