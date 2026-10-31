@@ -263,7 +263,8 @@ def verify_existing_manifest(args, repo: Path) -> dict:
     if len({x["sha256"] for group in manifest["splits"].values()
             for x in group["records"]}) != total:
         raise ValueError("source manifest has duplicated private replay content")
-    allowed = {*SPLITS, "manifest.v1.json", "models", "training.v1.json"}
+    allowed = {*SPLITS, "manifest.v1.json", "models", "training.v1.json",
+               "trials", "holdout-lock.v1.json", "holdout.v1.json"}
     if {p.name for p in root.iterdir()} - allowed:
         raise ValueError("private experiment has unexpected root entries")
     return manifest
@@ -416,6 +417,219 @@ def train_and_test(root: Path, manifest: dict, repo: Path, args) -> dict:
 
 
 
+
+TRIAL_SCHEMA = "mygames-private-dmc-trial-v1"
+HOLDOUT_SCHEMA = "mygames-private-dmc-heldout-comparison-v1"
+TRIAL_NAME = re.compile(r"[a-z][a-z0-9-]{0,31}")
+
+
+def valid_trial_name(name: str) -> str:
+    if not isinstance(name, str) or TRIAL_NAME.fullmatch(name) is None or \
+            name.endswith("-"):
+        raise ValueError("trial names must be bounded lowercase identifiers")
+    return name
+
+
+def private_regular_file(path: Path, max_bytes: int) -> bytes:
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or \
+            (stat.S_IMODE(info.st_mode) & 0o077) or info.st_nlink != 1 or \
+            not (0 < info.st_size <= max_bytes):
+        raise PermissionError("private trial file must be owner-only regular/one-link")
+    return path.read_bytes()
+
+
+def trial_registry(root: Path, *, create: bool) -> Path:
+    registry = root / "trials"
+    if not registry.exists() and not registry.is_symlink() and create:
+        registry.mkdir(mode=0o700, exist_ok=False)
+    check_private_dir(registry)
+    # Only COMPLETE published trials are accepted. Partial directories
+    # after a crash are blockers, not inputs silently repaired/reused.
+    entries = list(registry.iterdir())
+    if len(entries) > 16:
+        raise ValueError("too many private candidate trials")
+    for trial in entries:
+        valid_trial_name(trial.name)
+        check_private_dir(trial)
+        if {p.name for p in trial.iterdir()} != {
+                "model-v3.pt", "trial.v1.json"}:
+            raise ValueError("incomplete/unexpected frozen trial contents")
+    return registry
+
+
+def read_frozen_trial(registry: Path, name: str, root: Path,
+                      manifest: dict, args) -> tuple[dict, Path]:
+    valid_trial_name(name)
+    directory = registry / name
+    check_private_dir(directory)
+    if {p.name for p in directory.iterdir()} != {
+            "model-v3.pt", "trial.v1.json"}:
+        raise ValueError("unsealed private DMC trial")
+    raw = private_regular_file(directory / "trial.v1.json", 64 * 1024)
+    meta = json.loads(raw)
+    checkpoint = directory / "model-v3.pt"
+    content = private_regular_file(checkpoint, 160 * 1024 * 1024)
+    if not isinstance(meta, dict) or meta.get("schema") != TRIAL_SCHEMA or \
+            meta.get("trial") != name or \
+            meta.get("source_revision") != args.source_revision or \
+            meta.get("learner_revision") != (
+                args.learner_revision or args.source_revision) or \
+            meta.get("corpus_manifest_sha256") != hashlib.sha256(
+                (root / "manifest.v1.json").read_bytes()).hexdigest() or \
+            meta.get("native_generator_sha256") != (
+                manifest["native_generator"]["sha256"]) or \
+            meta.get("objective") != args.objective or \
+            type(meta.get("model_version")) is not int or \
+            not 1 < meta["model_version"] < 2**64 or \
+            meta.get("checkpoint_sha256") != hashlib.sha256(content).hexdigest() or \
+            meta.get("heldout_evaluated") is not False:
+        raise ValueError("trial provenance/checkpoint digest mismatch")
+    return meta, checkpoint
+
+
+def train_frozen_trial(root: Path, manifest: dict, repo: Path,
+                       args) -> dict:
+    """Fit and freeze ONE candidate using TRAIN+VALIDATION ONLY.
+
+    The genuine independent TEST Replay is verified for provenance by the
+    outer reader, but NEVER scored against candidate weights here.
+    """
+    name = valid_trial_name(args.trial)
+    if any((root / filename).exists() or (root / filename).is_symlink()
+           for filename in ("models", "training.v1.json", "holdout-lock.v1.json",
+                            "holdout.v1.json")):
+        raise ValueError("heldout/legacy model already observed or published")
+    if args.sampling == "episode-source-outcome":
+        admit_balanced_sources(root, manifest)
+    registry = trial_registry(root, create=True)
+    target = registry / name
+    if target.exists() or target.is_symlink():
+        raise FileExistsError("immutable trial already exists")
+    train_files = file_list(root, manifest["splits"]["train"])
+    val_files = file_list(root, manifest["splits"]["validation"])
+    base = [sys.executable, str(repo / "ai/dmc/train_dmc.py")]
+    stage = Path(tempfile.mkdtemp(prefix=".dmc-trial-stage-", dir=root))
+    try:
+        check_private_dir(stage)
+        candidate = stage / "model-v3.pt"
+        training = json.loads(execute(base + [
+            "--train", "--replay", *train_files,
+            "--validation-replay", *val_files,
+            "--objective", manifest["objective"], "--rules-version", "1",
+            "--output", str(candidate), "--model-version",
+            str(args.model_version), "--steps", str(args.steps),
+            "--batch-size", str(args.batch_size), "--learning-rate",
+            str(args.learning_rate), "--device", args.device,
+            "--seed", str(args.seed), *optimizer_policy_flags(args)
+        ], cwd=repo))
+        opt = training["optimizer"]
+        if opt["sampling"] != args.sampling or \
+                opt["checkpoint_policy"] != args.checkpoint_policy or \
+                opt["validation_selection_weighting"] != (
+                    "episode-source-outcome" if args.sampling == "episode-source-outcome"
+                    else "transition") or \
+                opt["validation_zero_baseline_gate"] is not bool(
+                    args.require_validation_advantage) or \
+                opt["candidate_model_version"] != args.model_version:
+            raise ValueError("trial optimizer policy / model version mismatch")
+        digest = hashlib.sha256(
+            private_regular_file(candidate, 160 * 1024 * 1024)).hexdigest()
+        if digest != opt["checkpoint_sha256"]:
+            raise ValueError("learner checkpoint digest changed before freeze")
+        record = {
+            "schema": TRIAL_SCHEMA, "trial": name,
+            "source_revision": args.source_revision,
+            "learner_revision": args.learner_revision or args.source_revision,
+            "native_generator_sha256": manifest["native_generator"]["sha256"],
+            "corpus_manifest_sha256": hashlib.sha256(
+                (root / "manifest.v1.json").read_bytes()).hexdigest(),
+            "objective": args.objective, "model_version": args.model_version,
+            "checkpoint_sha256": digest,
+            "sampling": opt["sampling"],
+            "checkpoint_policy": opt["checkpoint_policy"],
+            "validation_selection_weighting": opt["validation_selection_weighting"],
+            "selected_validation_step_by_role": opt["selected_validation_step_by_role"],
+            "validation_before": opt["validation_before"],
+            "validation_after": opt["validation_after"],
+            "validation_zero_baseline_gate": opt["validation_zero_baseline_gate"],
+            "training_steps": args.steps, "seed": args.seed,
+            "heldout_evaluated": False, "trained_policy_qualified": False,
+        }
+        if args.sampling == "episode-source-outcome":
+            record["validation_aligned_before"] = opt["validation_aligned_before"]
+            record["validation_aligned_after"] = opt["validation_aligned_after"]
+        # Only after training + validation + checkpoint digest have PASSED do
+        # we create a visible trial directory; its manifest is published LAST.
+        target.mkdir(mode=0o700, exist_ok=False)
+        check_private_dir(target)
+        os.link(candidate, target / "model-v3.pt")  # no-clobber, same device
+        no_clobber_json(target, "trial.v1.json", record)
+        return {"trial": name, "checkpoint_sha256": digest,
+                "heldout_scored": False,
+                "validation_selection_weighting":
+                    opt["validation_selection_weighting"],
+                "trained_policy_qualified": False}
+    finally:
+        shutil.rmtree(stage)
+
+
+def evaluate_frozen_trials(root: Path, manifest: dict, repo: Path,
+                           args) -> dict:
+    """Consume held-out TEST ONCE for TWO already frozen candidate models.
+
+    Once holdout-lock exists, a failed/crashed comparison still counts as
+    observed; do not permit retrials/retraining on the same TEST episodes.
+    """
+    names = args.evaluate_trials
+    if len(names) != 2 or len(set(names)) != 2:
+        raise ValueError("exactly two distinct frozen trials required")
+    if any((root / filename).exists() or (root / filename).is_symlink()
+           for filename in ("holdout-lock.v1.json", "holdout.v1.json",
+                            "models", "training.v1.json")):
+        raise FileExistsError("TEST already consumed or legacy model published")
+    registry = trial_registry(root, create=False)
+    entries = [read_frozen_trial(registry, name, root, manifest, args)
+               for name in names]
+    if entries[0][0]["model_version"] == entries[1][0]["model_version"]:
+        raise ValueError("distinct candidates must have distinct model identities")
+    # Freeze the exact comparison set and digests BEFORE any held-out Q
+    # evaluation. This marker is intentionally not rolled back on failure.
+    lock = {"schema": HOLDOUT_SCHEMA, "status": "consumed",
+            "trial_names": names,
+            "trial_sha256": [entry["checkpoint_sha256"] for entry, _ in entries],
+            "corpus_manifest_sha256": hashlib.sha256(
+                (root / "manifest.v1.json").read_bytes()).hexdigest(),
+            "learner_revision": args.learner_revision or args.source_revision}
+    no_clobber_json(root, "holdout-lock.v1.json", lock)
+    test_files = file_list(root, manifest["splits"]["test"])
+    base = [sys.executable, str(repo / "ai/dmc/train_dmc.py")]
+    results = {}
+    for name, (metadata, checkpoint) in zip(names, entries):
+        evaluated = json.loads(execute(base + [
+            "--evaluate-only", "--replay", *test_files,
+            "--objective", manifest["objective"], "--rules-version", "1",
+            "--checkpoint", str(checkpoint), "--model-version",
+            str(metadata["model_version"]), "--device", args.device,
+            "--batch-size", str(args.batch_size)
+        ], cwd=repo))
+        if evaluated.get("candidate_model_version") != metadata["model_version"]:
+            raise ValueError("heldout result model identity mismatch")
+        results[name] = evaluated["metrics"]
+    record = {"schema": HOLDOUT_SCHEMA,
+              "source_revision": args.source_revision,
+              "learner_revision": args.learner_revision or args.source_revision,
+              "corpus_manifest_sha256": lock["corpus_manifest_sha256"],
+              "trial_names": names, "results": results,
+              "independent_return_q_only": True,
+              "heldout_now_observed": True,
+              "trained_policy_qualified": False}
+    no_clobber_json(root, "holdout.v1.json", record)
+    return {"heldout_comparison_sealed": True,
+            "trials": names, "results": results,
+            "trained_policy_qualified": False}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--native-generator", required=True)
@@ -448,7 +662,23 @@ def main() -> int:
                         choices=("final", "best-validation"), default="final")
     parser.add_argument("--validation-interval", type=int, default=20)
     parser.add_argument("--require-validation-advantage", action="store_true")
+    parser.add_argument("--trial",
+                        help="optional immutable TRAIN+VALIDATION only candidate name")
+    parser.add_argument("--evaluate-trials", nargs=2, metavar=("TRIAL_A", "TRIAL_B"),
+                        help="consume held-out TEST once for two frozen candidates")
     args = parser.parse_args()
+    if args.trial and (not args.train or not args.reuse or args.evaluate_trials):
+        parser.error("--trial requires --reuse --train and forbids --evaluate-trials")
+    if args.evaluate_trials and (args.train or not args.reuse or
+                                 args.trial or args.model_version is not None):
+        parser.error("--evaluate-trials requires --reuse and forbids --train/model-version")
+    if args.trial:
+        valid_trial_name(args.trial)
+    if args.evaluate_trials:
+        for name in args.evaluate_trials:
+            valid_trial_name(name)
+        if len(set(args.evaluate_trials)) != 2:
+            parser.error("--evaluate-trials needs two different trial names")
     if args.steps < 1 or args.batch_size < 1 or args.seed < 0 or \
             not 0 < args.learning_rate <= 1 or args.validation_interval < 1:
         parser.error("invalid optimizer configuration")
@@ -482,17 +712,21 @@ def main() -> int:
               "objective": args.objective, "verified": verified,
               "reused_existing_data": args.reuse,
               "torch_optimization_executed": args.train}
-    if args.train:
-        if (root / "models").exists() or (root / "training.v1.json").exists():
-            raise FileExistsError("trained model/metadata exists; refuse overwrite")
+    if args.evaluate_trials:
+        report["heldout"] = evaluate_frozen_trials(root, manifest, repo, args)
+    elif args.trial:
+        report["trial"] = train_frozen_trial(root, manifest, repo, args)
+    elif args.train:
+        if ((root / "models").exists() or (root / "training.v1.json").exists() or
+                (root / "trials").exists() or (root / "holdout-lock.v1.json").exists()):
+            raise FileExistsError("legacy model conflicts with trial/holdout registry")
         report["model"] = train_and_test(root, manifest, repo, args)
     if not args.reuse:
         # Source manifest is admitted only AFTER all Replay partitions
         # pass; never create a false complete run after a failed job.
         no_clobber_json(root, "manifest.v1.json", manifest)
-    if args.train:
-        # Report is ALSO privately retained and never published to public
-        # artifacts, exposing only aggregate role metrics and model SHA-256.
+    if args.train and not args.trial:
+        # Legacy single-run training retains its original private marker.
         no_clobber_json(root, "training.v1.json", report)
     print(json.dumps(report, sort_keys=True))
     return 0

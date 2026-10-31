@@ -1467,3 +1467,71 @@ All placeholders must be replaced with real, verified values. The
 current CI exercises paired-version argument admission in its existing
 C11 source experiment, but does NOT pretend to perform cross-checkout
 Torch training, new tournament evaluation or KFCore integration.
+
+## R8 — two-stage immutable private candidate A/B; held-out TEST once
+
+For honest comparison, the existing one-shot `experiment.py --train`
+legacy path remains unchanged, but an EXPLICIT opt-in trial mode
+separates candidate training/selection from the first held-out test
+read. A verified immutable `--reuse` private complete-game corpus
+can run `--train --trial NAME --model-version DISTINCT_VERSION`
+for distinct A/B candidates. A trial reads TRAIN and TUNING VALIDATION
+only for gradient optimization and best-checkpoint selection. It freezes
+an immutable `trials/NAME/model-v3.pt` and owner-only
+`trial.v1.json` after SHA256 + objective/role/zero-Q gates pass.
+It records training source and separate learner SHA, generator and corpus
+digest, model identity, policy flags and selected role-specific steps,
+but no independent TEST Q metric. Trial names are bounded safe
+lowercase identifiers; duplicates, partial trial directories,
+symlinks, missing provenance or broken private ownership fail closed.
+
+After both candidates are individually frozen, an operator must
+explicitly execute `--reuse --evaluate-trials NAME_A NAME_B`.
+Both private checkpoint file digests, model IDs, source/learner
+revisions and corpus manifest are checked BEFORE any TEST scores.
+A private `holdout-lock.v1.json` **consumption marker** is written
+atomically BEFORE calling the existing frozen `--evaluate-only`
+predictor: even a crash or partial evaluation cannot replay the same
+supposedly virgin held-out test. Once both evaluations succeed,
+`holdout.v1.json` stores aggregate three-role return-Q MSE with
+`trained_policy_qualified=false`. New training trials are rejected
+after the lock exists, so observed TEST results cannot silently
+become tuning data. There is NO automatic ranking or promotion.
+
+Both candidate A/B runs must use the SAME proven original C11 Replay
+bytes and independent source/learner HEAD provenance; distinct
+model_version values bind their immutable frozen checkpoints.
+The existing legacy `--train` without `--trial` retains its prior
+single-run behavior and existing `models/` / `training.v1.json`
+output; switching between legacy and trial mode for a single private
+corpus is refused. The trial path adds NO new gameplay algorithm,
+browser/service/bot, workflow, installer/consumer target, private
+artifact upload or PyTorch install in standard CI.
+
+This only establishes **off-policy Q regression with a single consumed
+independent test set**, not true gameplay strength, confidence,
+novel future holdout, or source/KFCore production parity.
+For gameplay advantage, freeze candidates BEFORE generating fresh
+TEST-only shuffle seeds; use native C11 SAME-deck 3-seat team-swapped
+matches vs strong shed-most with deal-cluster intervals. Previously
+observed deck/test schedules cannot be represented as new holdouts.
+
+```sh
+# Both commands verify the same --reuse corpus and its original C11 SHA.
+python3 ai/dmc/experiment.py COMMON_VERIFIED_ARGS --reuse --train \
+  --model-version 5 --trial transition-v1 \
+  --sampling transition --checkpoint-policy final
+python3 ai/dmc/experiment.py COMMON_VERIFIED_ARGS --reuse --train \
+  --model-version 6 --trial balanced-v1 \
+  --sampling episode-source-outcome --checkpoint-policy best-validation \
+  --validation-interval 20 --require-validation-advantage
+# Run only AFTER both trial manifests exist and candidate weights are frozen.
+python3 ai/dmc/experiment.py COMMON_VERIFIED_ARGS --reuse \
+  --evaluate-trials transition-v1 balanced-v1
+```
+
+`COMMON_VERIFIED_ARGS` is an explanatory placeholder for mandatory
+`--native-generator`, `--private-root`, `--source-revision`,
+`--first-id`, train/validation/test counts and `--objective`;
+include the optional R7d source-checkout/learner-revision pair when
+different exact commits are intentionally used.

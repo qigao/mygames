@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "ai" / "dmc"))
 from ai.dmc.replay import read_episode
-from experiment import optimizer_policy_flags
+from experiment import optimizer_policy_flags, valid_trial_name
 
 
 def main() -> int:
@@ -172,6 +172,37 @@ def main() -> int:
         assert "require --train" in invalid.stderr
         assert manifest_file.read_bytes() == manifest_raw
         assert not (root / "models").exists()
+
+    # A/B trials are deliberately two-stage: training never sees TEST Q
+    # metrics, and the heldout can be consumed only via an explicit pair.
+    for candidate in ("transition-v1", "balanced-v1"):
+        assert valid_trial_name(candidate) == candidate
+    for illegal in ("", "UPPER", "../leak", "-bad", "a" * 33, "x-", "a/b"):
+        try:
+            valid_trial_name(illegal)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("unsafe private A/B trial name was accepted")
+    for flags in (
+        ["--trial", "balanced-v1"],
+        ["--evaluate-trials", "old", "new", "--train"],
+        ["--evaluate-trials", "old", "old"],
+        ["--trial", "../invalid", "--train", "--model-version", "2"],
+    ):
+        attempt = subprocess.run(same + ["--reuse", *flags],
+                                 cwd=ROOT, capture_output=True, text=True)
+        assert attempt.returncode != 0
+        assert manifest_file.read_bytes() == manifest_raw
+    # Test requires two already FROZEN trials; no model is invented and
+    # the holdout is NOT locked/read on this fail-fast negative.
+    unready = subprocess.run(same + [
+        "--reuse", "--evaluate-trials", "transition-v1", "balanced-v1"
+    ], cwd=ROOT, capture_output=True, text=True)
+    assert unready.returncode != 0
+    assert not (root / "holdout-lock.v1.json").exists()
+    assert not (root / "trials").exists()
+    assert manifest_file.read_bytes() == manifest_raw
 
     # Complete experiment is immutable: a second invocation MUST NOT alter
     # previously published private bytes, split ownership or metadata.
