@@ -1405,3 +1405,65 @@ The native M5a CI reuses its existing complete C11 Replay 3-way
 experiment test and checks option forwarding and fail-fast admission
 without installing heavy Torch. Full Torch gradient success and actual
 new held-out game superiority remain separate, unproven gates.
+
+## R7d — replay generator revision and current learner revision are distinct
+
+A digest-verified, COMPLETE-GAME native C11 private corpus is still useful
+after Python learner changes. The previous `--reuse` requirement that the
+current `git rev-parse HEAD` equal the **generator** commit incorrectly made
+such old immutable corpora unusable with a newer training algorithm.
+
+An **explicit opt-in**, offline operator `experiment.py --reuse` mode now
+supports BOTH `--source-checkout OLD_EXISTING_GIT_WORKTREE` and
+`--learner-revision NEW_EXACT_40_CHAR_HEAD`. These flags are paired;
+there is NO clone, download, checkout fallback, new Replay generation
+or weakening of the original manifest checks.
+
+The reader verifies the original `--source-revision OLD_HEAD` in the
+supplied original Git checkout, AND verifies `--learner-revision`
+against the actual current learner checkout. It also checks the existing
+private native generator binary SHA256, canonical per-Replay SHA256,
+all source-policy-v1/model/rules/episode/turn/role/reward/landlord labels,
+private ownership and all three disjoint complete-game partitions.
+Failure rejects before optimization or private model publication.
+A source SHA or binary digest is provenance evidence, NOT an
+authenticated build attestation.
+
+The existing default remains **unchanged**: without the new paired
+flags, the generator source SHA MUST equal the learner checkout HEAD.
+The private `training.v1.json` report now includes separate
+`source_revision` and `learner_revision` and an explicit
+`cross_revision_reuse` boolean. This supports auditable R7b-vs-legacy
+A/B **on exactly the same old C11 Replay bytes**, provided independently
+named model outputs and no reuse of an already observed test split for
+new model qualification.
+
+This path only reuses the original, verified
+`untrained-mixed-baseline-v1` corpus: it does NOT silently admit
+new v3 on-policy data or mixed behavior sources into the old
+source-policy-v1 manifest. Those require an independently versioned,
+fully audited multi-source corpus protocol. No production Bot,
+second DDZ rules engine, installer/consumer project or new CI workflow.
+
+For a trusted local, disjoint training environment, the operative
+parameters look like:
+
+```sh
+python3 ai/dmc/experiment.py --reuse --train \
+  --private-root PRIVATE_EXPERIMENT \
+  --native-generator PINNED_ORIGINAL_C11_GENERATOR \
+  --first-id FIRST_EPISODE_ID --train-games N_TRAIN \
+  --validation-games N_VALIDATION --test-games N_TEST \
+  --source-revision OLD_GENERATOR_HEAD \
+  --source-checkout EXISTING_OLD_SOURCE_WORKTREE \
+  --learner-revision NEW_LEARNER_HEAD \
+  --objective win-sign --model-version NEW_MODEL_ID \
+  --sampling episode-source-outcome \
+  --checkpoint-policy best-validation --validation-interval 20 \
+  --require-validation-advantage
+```
+
+All placeholders must be replaced with real, verified values. The
+current CI exercises paired-version argument admission in its existing
+C11 source experiment, but does NOT pretend to perform cross-checkout
+Torch training, new tournament evaluation or KFCore integration.

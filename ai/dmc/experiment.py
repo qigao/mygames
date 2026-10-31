@@ -210,7 +210,17 @@ def verify_existing_manifest(args, repo: Path) -> dict:
     """
     root = Path(args.private_root).absolute()
     check_private_dir(root)
-    source_revision(repo, args.source_revision)
+    # A verified old C11 generator checkout may differ from the CURRENT
+    # learner checkout, but both exact Git commits MUST be pinned. The
+    # prior canonical Replay and generator digests remain enforced below.
+    if args.source_checkout:
+        source_checkout = Path(args.source_checkout)
+        if source_checkout.is_symlink() or not source_checkout.is_dir():
+            raise ValueError("source checkout must be a real Git worktree directory")
+        source_repo = source_checkout.resolve(strict=True)
+    else:
+        source_repo = repo
+    source_revision(source_repo, args.source_revision)
     native = check_executable(Path(args.native_generator))
     path = root / "manifest.v1.json"
     info = path.lstat()
@@ -422,6 +432,10 @@ def main() -> int:
                         help="new frozen model ID, > every source behavior model version")
     parser.add_argument("--reuse", action="store_true",
                         help="verify and reuse immutable existing private manifest; no new games")
+    parser.add_argument("--source-checkout",
+                        help="existing ORIGINAL exact-source Git checkout; --reuse only")
+    parser.add_argument("--learner-revision",
+                        help="exact CURRENT trainer Git HEAD; required with --source-checkout")
     parser.add_argument("--steps", type=int, default=1000)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--learning-rate", type=float, default=0.0001)
@@ -448,12 +462,23 @@ def main() -> int:
         parser.error("--train requires --model-version > native source model 1")
     if not args.train and args.model_version is not None:
         parser.error("--model-version is only valid with --train")
+    if bool(args.source_checkout) != bool(args.learner_revision):
+        parser.error("--source-checkout and --learner-revision must be supplied together")
+    if args.source_checkout and not args.reuse:
+        parser.error("--source-checkout is for immutable --reuse only; no new games")
     repo = Path(__file__).resolve().parents[2]
+    if args.learner_revision:
+        # Explicitly bind new learner code to its own exact checkout HEAD.
+        # A declared source revision is NOT silently treated as learner code.
+        source_revision(repo, args.learner_revision)
     manifest = (verify_existing_manifest(args, repo) if args.reuse
                 else build_experiment(args, repo))
     root = Path(args.private_root).absolute()
     verified = verify_reader(root, manifest, repo)
     report = {"schema": SCHEMA, "source_revision": args.source_revision,
+              "learner_revision": args.learner_revision or args.source_revision,
+              "cross_revision_reuse": bool(args.source_checkout and
+                    args.learner_revision != args.source_revision),
               "objective": args.objective, "verified": verified,
               "reused_existing_data": args.reuse,
               "torch_optimization_executed": args.train}

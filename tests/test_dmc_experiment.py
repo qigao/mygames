@@ -98,7 +98,36 @@ def main() -> int:
     reused = json.loads(reuse.stdout)
     assert reused["reused_existing_data"] is True
     assert reused["torch_optimization_executed"] is False
+    assert reused["learner_revision"] == source_rev
+    assert reused["cross_revision_reuse"] is False
     assert reused["verified"]["train_episodes"] == 3
+    # Two explicitly pinned source/learner checkouts are independently
+    # admitted without regenerating any single real C11 Replay episode.
+    # The CI uses the SAME checkout for both; distinct worktrees remain
+    # an offline operator acceptance, not fabricated by this test.
+    pinned = subprocess.run(same + [
+        "--reuse", "--source-checkout", str(ROOT),
+        "--learner-revision", source_rev],
+        cwd=ROOT, capture_output=True, text=True, check=True)
+    pinned_result = json.loads(pinned.stdout)
+    assert pinned_result["verified"] == reused["verified"]
+    assert pinned_result["cross_revision_reuse"] is False
+    assert pinned_result["learner_revision"] == source_rev
+    assert manifest_file.read_bytes() == manifest_raw
+    for invalid_flags in (
+        ["--reuse", "--source-checkout", str(ROOT)],
+        ["--reuse", "--learner-revision", source_rev],
+        ["--source-checkout", str(ROOT), "--learner-revision", source_rev],
+        ["--reuse", "--source-checkout", str(ROOT),
+         "--learner-revision", "0" * 40],
+        ["--reuse", "--source-checkout", str(ROOT / "missing-worktree"),
+         "--learner-revision", source_rev],
+    ):
+        denied = subprocess.run(same + invalid_flags, cwd=ROOT,
+                                capture_output=True, text=True)
+        assert denied.returncode != 0
+        assert manifest_file.read_bytes() == manifest_raw
+        assert not (root / "models").exists()
     assert manifest_file.read_bytes() == manifest_raw
     changed_rev = subprocess.run(
         same + ["--reuse", "--source-revision", "0" * 40],
