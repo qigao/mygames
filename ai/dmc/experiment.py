@@ -43,10 +43,30 @@ def check_private_dir(path: Path) -> None:
 
 
 def check_executable(path: Path) -> Path:
+    if path.is_symlink():
+        raise ValueError("native generator path must not be a symlink")
     resolved = path.resolve(strict=True)
     if not resolved.is_file() or not os.access(resolved, os.X_OK):
         raise ValueError("native C11 corpus generator missing/not executable")
     return resolved
+
+
+def source_revision(repo: Path, expected: str) -> None:
+    if not re.fullmatch(r"[0-9a-f]{40}", expected):
+        raise ValueError("exact 40-character Git commit SHA required")
+    current = execute(["git", "rev-parse", "HEAD"], cwd=repo)
+    if current != expected:
+        raise ValueError("source revision mismatch with checked-out Git HEAD")
+
+
+def generator_identity(native: Path) -> dict:
+    # This binds a private experiment to the actual binary which generated
+    # the canonical samples, not just its writable basename or an operator
+    # asserted commit SHA. SHA-256 is provenance, NOT authentication.
+    info = native.stat()
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError("not a regular native generator executable")
+    return {"name": native.name, "sha256": hashlib.sha256(native.read_bytes()).hexdigest()}
 
 
 def execute(args: list[str], cwd: Path) -> str:
@@ -128,9 +148,7 @@ def build_experiment(args, repo: Path) -> dict:
     if args.first_id < 1 or args.first_id + sum(
             (args.train_games, args.validation_games, args.test_games)) - 1 > MAX_ID:
         raise ValueError("invalid first episode ID / overflow")
-    if args.source_revision is None or not re.fullmatch(r"[0-9a-f]{40}",
-                                                        args.source_revision):
-        raise ValueError("exact 40-character Git commit SHA required")
+    source_revision(repo, args.source_revision)
     for split in SPLITS:
         count = getattr(args, f"{split}_games")
         if not 1 <= count <= MAX_GAMES_PER_SPLIT:
@@ -141,7 +159,7 @@ def build_experiment(args, repo: Path) -> dict:
         raise FileExistsError("experiment already has a manifest or models")
 
     result = {"schema": SCHEMA, "source_revision": args.source_revision,
-              "native_generator": native.name,
+              "native_generator": generator_identity(native),
               "source_policy": "untrained-mixed-baseline-v1",
               "rules_version": 1, "model_version": 1,
               "objective": args.objective, "splits": {}}
@@ -178,6 +196,66 @@ def build_experiment(args, repo: Path) -> dict:
     if len(ids) != len(set(ids)):
         raise ValueError("episode ID overlap across splits")
     return result
+
+
+
+def verify_existing_manifest(args, repo: Path) -> dict:
+    """Validate an IMMUTABLE completed corpus without regenerating anything.
+
+    Reuse accepts only the exact same checkout SHA, exact generator identity,
+    and the original three independent Replay partitions. Every file is
+    reopened, schema-checked and rehashed; editing a manifest cannot create
+    an eligible experiment or silently redirect any path outside PRIVATE_ROOT.
+    """
+    root = Path(args.private_root).absolute()
+    check_private_dir(root)
+    source_revision(repo, args.source_revision)
+    native = check_executable(Path(args.native_generator))
+    path = root / "manifest.v1.json"
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or \
+            (stat.S_IMODE(info.st_mode) & 0o077) or info.st_nlink != 1 or \
+            info.st_size > 512 * 1024:
+        raise PermissionError("source manifest must be private, immutable and bounded")
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict) or set(manifest) != {
+        "schema", "source_revision", "native_generator",
+        "source_policy", "rules_version", "model_version",
+        "objective", "splits"
+    } or manifest["schema"] != SCHEMA or \
+            manifest["source_revision"] != args.source_revision or \
+            manifest["native_generator"] != generator_identity(native) or \
+            manifest["source_policy"] != "untrained-mixed-baseline-v1" or \
+            manifest["rules_version"] != 1 or manifest["model_version"] != 1 or \
+            manifest["objective"] != args.objective or \
+            not isinstance(manifest["splits"], dict) or \
+            set(manifest["splits"]) != set(SPLITS):
+        raise ValueError("source manifest provenance / model / rules mismatch")
+    total = args.train_games + args.validation_games + args.test_games
+    if args.first_id < 1 or args.first_id + total - 1 > MAX_ID:
+        raise ValueError("invalid original experiment episode ID range")
+    expected = args.first_id
+    for split in SPLITS:
+        n = getattr(args, f"{split}_games")
+        if not 1 <= n <= MAX_GAMES_PER_SPLIT:
+            raise ValueError("invalid expected split size")
+        folder = root / split
+        check_private_dir(folder)
+        rebuilt = record_batch(folder, range(expected, expected + n),
+                               args.objective, native, repo)
+        if manifest["splits"][split] != rebuilt:
+            raise ValueError("private Replay digest, role, episode or count changed")
+        expected += n
+    if len({x["episode_id"] for group in manifest["splits"].values()
+            for x in group["records"]}) != total:
+        raise ValueError("source manifest has overlapping episode IDs")
+    if len({x["sha256"] for group in manifest["splits"].values()
+            for x in group["records"]}) != total:
+        raise ValueError("source manifest has duplicated private replay content")
+    allowed = {*SPLITS, "manifest.v1.json", "models", "training.v1.json"}
+    if {p.name for p in root.iterdir()} - allowed:
+        raise ValueError("private experiment has unexpected root entries")
+    return manifest
 
 
 def file_list(root: Path, split: dict) -> list[str]:
@@ -258,6 +336,8 @@ def main() -> int:
     parser.add_argument("--objective", choices=("win-sign", "game-points"), required=True)
     parser.add_argument("--train", action="store_true",
                         help="actually optimize PyTorch Q and test on independent games")
+    parser.add_argument("--reuse", action="store_true",
+                        help="verify and reuse immutable existing private manifest; no new games")
     parser.add_argument("--steps", type=int, default=1000)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--learning-rate", type=float, default=0.0001)
@@ -268,17 +348,26 @@ def main() -> int:
             not 0 < args.learning_rate <= 1:
         parser.error("invalid optimizer configuration")
     repo = Path(__file__).resolve().parents[2]
-    manifest = build_experiment(args, repo)
+    manifest = (verify_existing_manifest(args, repo) if args.reuse
+                else build_experiment(args, repo))
     root = Path(args.private_root).absolute()
     verified = verify_reader(root, manifest, repo)
     report = {"schema": SCHEMA, "source_revision": args.source_revision,
               "objective": args.objective, "verified": verified,
+              "reused_existing_data": args.reuse,
               "torch_optimization_executed": args.train}
     if args.train:
+        if (root / "models").exists() or (root / "training.v1.json").exists():
+            raise FileExistsError("trained model/metadata exists; refuse overwrite")
         report["model"] = train_and_test(root, manifest, repo, args)
-    # The private manifest is the LAST admission point; interrupted
-    # or failed experiments have no eligible completed-run manifest.
-    no_clobber_json(root, "manifest.v1.json", manifest)
+    if not args.reuse:
+        # Source manifest is admitted only AFTER all Replay partitions
+        # pass; never create a false complete run after a failed job.
+        no_clobber_json(root, "manifest.v1.json", manifest)
+    if args.train:
+        # Report is ALSO privately retained and never published to public
+        # artifacts, exposing only aggregate role metrics and model SHA-256.
+        no_clobber_json(root, "training.v1.json", report)
     print(json.dumps(report, sort_keys=True))
     return 0
 

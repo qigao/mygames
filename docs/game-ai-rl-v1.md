@@ -584,3 +584,40 @@ ID overlap. These 9 games are CI evidence for the experiment
 orchestration contract, not a trained-policy quality statistic.
 The next separate acceptance remains real large-corpus PyTorch
 training plus a KFCore/natively scored frozen-policy tournament.
+
+
+## M5k immutable corpus REUSE / real offline training stage
+
+The existing private experiment orchestrator now supports an explicit
+--reuse switch: it NEVER reshuffles, regenerates or overwrites any
+Replay. Instead, before training it verifies the immutable private
+manifest, exactly matching source Git HEAD (not just a claimed SHA),
+the actual native generator SHA-256, all on-disk Replay SHA-256s,
+complete per-episode role/turn/terminal reward records, strict
+train/validation/test ownership and source policy. Incompatible
+model/rules/objective, partial data, extra root files, leaked
+symlinks, duplicate IDs or changed source binary all fail closed.
+
+This makes a two-stage operator workflow possible:
+1) Generate/validate a larger private experiment once (without
+PyTorch) using the OS-CSPRNG C11 source engine.
+2) On the *same checked-out* trusted source version, invoke the
+same command with --reuse --train and a preconfigured PyTorch
+CPU/CUDA backend. This reruns complete Replay admission before
+the first gradient step and will never redo a shuffled game.
+
+The private source manifest remains immutable. A successful
+training run separately publishes a new private training.v1.json
+only after model weights have been loaded back, checked for exact
+Q output parity, and independently evaluated on held-out episodes.
+No-clobber applies to both the model and its training report:
+a failed or interrupted run never silently publishes success.
+The report contains model SHA-256 and aggregate MSE/MAE only.
+Trained weight/Q metrics are NOT paired-game strategy win rates.
+
+The existing M5a Linux CI verifies --reuse on the actual nine-game
+native experiment, rejects mismatched source revision/binary,
+ensures no replay regeneration, and still deliberately runs
+WITHOUT installing large PyTorch wheels. Real Torch training
+on full native Replay is an explicitly gated offline operation,
+not performed or falsely claimed by this lightweight CI.
