@@ -124,7 +124,8 @@ static void assert_episode(
     free(restored);
 }
 
-static void run_real_selfplay(const mygames_room *room, const char *path) {
+static void run_real_selfplay(const mygames_room *room, size_t output_count,
+                              char *const *output_paths) {
     unsigned trial;
     mygames_ddz_dmc_sample *storage = (mygames_ddz_dmc_sample *)calloc(
         MYGAMES_DDZ_DMC_MAX_STEPS, sizeof(*storage));
@@ -139,7 +140,7 @@ static void run_real_selfplay(const mygames_room *room, const char *path) {
         config.episode_id = 5000u + trial;
         config.model_version = 12u;
         config.rules_version = 1u;
-        config.objective = trial == 0u ?
+        config.objective = trial < 2u ?
             MYGAMES_DDZ_DMC_WIN_SIGN : MYGAMES_DDZ_DMC_GAME_POINTS;
         config.max_legal_actions = 65536u;
         REQUIRE(mygames_ddz_dmc_selfplay_run(room, &config, sample_policy,
@@ -150,7 +151,7 @@ static void run_real_selfplay(const mygames_room *room, const char *path) {
                 policy.role_calls[2] == episode.count);
         REQUIRE(policy.role_calls[0] > 0u);
         assert_episode(&episode, &settlement, config.objective,
-                       trial == 0u ? path : NULL);
+                       trial < output_count ? output_paths[trial] : NULL);
     }
     free(storage);
 }
@@ -189,9 +190,9 @@ static void test_reject_bad_policy_and_truncation(const mygames_room *room) {
 
 int main(int argc, char **argv) {
     mygames_room room = {0};
-    if (argc != 1 && argc != 2) return 2;
+    if (argc < 1 || argc > 4) return 2;
     started_room(&room);
-    run_real_selfplay(&room, argc == 2 ? argv[1] : NULL);
+    run_real_selfplay(&room, (size_t)(argc - 1), argv + 1);
     test_reject_bad_policy_and_truncation(&room);
     puts("mygames.ddz_dmc_selfplay: PASS");
     return 0;

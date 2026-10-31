@@ -22,6 +22,8 @@ name: M5a Dou Dizhu gameplay rules (C11)
       - 'ai/dmc/src/ddz_dmc_replay.c'
       - 'ai/dmc/replay.py'
       - 'ai/dmc/train_dmc.py'
+      - 'ai/dmc/model.py'
+      - 'tests/test_dmc_train_contract.py'
       - 'tests/test_dmc_replay_reader.py'
       - 'ai/dmc/include/mygames/ddz_dmc_selfplay.h'
       - 'ai/dmc/src/ddz_dmc_selfplay.c'
@@ -82,12 +84,13 @@ jobs:
         run: |
           set -euo pipefail
           fixture="$(mktemp)"
-          selfplay_fixture="$(mktemp)"
-          trap 'rm -f "$fixture" "$selfplay_fixture"' EXIT
+          selfplay_train="$(mktemp)"
+          selfplay_validation="$(mktemp)"
+          trap 'rm -f "$fixture" "$selfplay_train" "$selfplay_validation"' EXIT
           ./build/ddz/mygames_ddz_dmc_episode_test "$fixture"
           python3 tests/test_dmc_replay_reader.py "$fixture"
-          ./build/ddz/mygames_ddz_dmc_selfplay_test "$selfplay_fixture"
-          python3 ai/dmc/train_dmc.py --verify-only --replay "$selfplay_fixture"             --objective win-sign --rules-version 1
+          ./build/ddz/mygames_ddz_dmc_selfplay_test "$selfplay_train" "$selfplay_validation"
+          python3 tests/test_dmc_train_contract.py "$selfplay_train" "$selfplay_validation"
 
   pure-source-asan:
     name: Pure C11 rules / Linux ASan+UBSan

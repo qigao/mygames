@@ -339,3 +339,64 @@ sampling under many games, real PyTorch gradient runtime CI (PyTorch
 is deliberately NOT installed as an unpinned CI dependency), and
 paired-deal seat-rotated evaluation with trained weights. The
 first code path is a functional native sampler, not trained skill.
+
+
+## R1 real gradient learner, immutable model ABI and disjoint validation
+
+Native Self-Play now emits TWO independent, securely shuffled, complete
+WIN_SIGN Replay files from one run, with distinct episode IDs 5000 and
+5001; a third independent test case uses real M5g GAME_POINTS. The
+Linux M5a source gate continues to check REAL C11->Python Replay and
+now invokes the learner --verify-only on the two WIN_SIGN files as
+entirely separate training and validation episodes. It must reject
+duplicate episode IDs across the two pools and any rules/objective
+mismatch without importing PyTorch.
+
+The actual offline learner --train requires an EXPLICIT
+--validation-replay (not the same episode or a per-transition split).
+Every input has already passed the strict C11 Replay-v1 parser.
+A disjoint complete-match validation pool must contain all three role
+positions. Samples are never recombined across the original landlord,
+landlord_up and landlord_down Q targets.
+
+The PyTorch-only stable model is ai/dmc/model.py (mygames-douzero-q-v1):
+5x162 chronological action history LSTM(162->128) concatenated with
+role 319/430 state features + 54 candidate action features, five
+512-wide ReLU layers and one Q scalar head. The optimizer uses
+role-specific RMSprop/MSE with gradient clipping and explicit device
+selection (no silent CUDA->CPU fallback). A full forward/backward
+optimizer run is available when an explicitly configured offline
+environment has PyTorch. The ordinary native CI deliberately DOES NOT
+install heavy unpinned torch wheels.
+
+Model checkpoint v2 has strict ABI: architecture and feature contract,
+rule set, objective, source model versions, separate training and
+validation episode IDs, optimizer step count and the three explicit
+role state_dicts. The trained candidate is first written in a private
+same-directory temporary file, fsynced, loaded back via PyTorch
+weights_only=True, and its Q outputs compared byte-exactly to
+the original models. It is then atomically linked into a NEW
+destination with NO-CLOBBER; existing model versions are never
+overwritten. The output directory on POSIX must be private.
+Full model and raw replay data are never uploaded to CI or written
+to the public Outbox.
+
+Training reports per-role validation MSE and MAE BEFORE and AFTER
+optimization, plus a zero-Q prediction baseline, on distinct complete
+episodes. These are OFF-POLICY regression metrics, NOT online win rate.
+--evaluate-only opens a trusted checkpoint, refuses incompatible
+rule/objective/model architecture and rejects evaluation data whose
+episode IDs were used for training. Real policy strength still needs
+matched-deal role-rotated competitive evaluation.
+
+Example (trusted private offline machine with PyTorch already configured):
+
+    python3 ai/dmc/train_dmc.py --train \
+      --replay private/train/*.mgdmc \
+      --validation-replay private/validation/*.mgdmc \
+      --objective win-sign --rules-version 1 --device cpu \
+      --steps 1000 --batch-size 64 \
+      --output private/models/model-v2.pt
+
+No production KFCore binding, deployment, adaptive self-play collector,
+paired-seed tournament or trained-gameplay skill is claimed yet.
