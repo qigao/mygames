@@ -1573,3 +1573,53 @@ strong shed-most, paired in identical FULL C11 shuffled deals with
 unobserved seeds and per-deal-cluster uncertainty; KFCore parity and
 single-owner bot security remain distinct.
 
+## KFCore DMC Q native inference boundary — R0 (Draft)
+
+The original C11 MyGames rules/Match, Actor-only `DouDizhuAIFeatures`,
+`DMCQSelector`, offline `DMCSelfPlay` and `DMCReplay` remain the
+SINGLE canonical authority. Training continues in Python/PyTorch.
+The new [KFCore Draft PR #357](https://github.com/qigao/KFCore/pull/357)
+provides a C++17 ONNX Runtime model adapter with a plain C11 ABI,
+`KFCore::dmc_q` and `kfcore/dmc_q.h`. Its C++ runtime cannot
+read hidden cards, Match structures, player tickets or Room Owners.
+
+New `MyGames::DMCQKFCoreAdapter` is opt-in ONLY via
+`-DMYGAMES_ENABLE_KFCORE_DMC_Q=ON`. It requires
+`find_package(KFCore 0.1 CONFIG REQUIRED)` and the explicit
+`KFCore::dmc_q` installed SDK: missing dependencies fail fast.
+When OFF, the existing C11-only build, SDKs, CI and game tests remain
+UNCHANGED. The adapter forwards the actor-owned 319/430-dimensional
+`x`, 810-dimensional public `z` and batches of 1..64 previously
+validated 54-dimensional legal actions from the **existing**
+`DMCQSelector` directly to the selected KFCore immutable handle.
+Only the original QSelector may enumerate, validate and select actions.
+The KFCore runtime never owns the game or issues a Game ACK.
+There is NO CPU-reference or rule/heuristic fallback.
+
+`ai/dmc/export_q_onnx.py` explicitly requires a configured
+PyTorch, ONNX and ONNX Runtime CPU installation (no downloads or
+backend substitutions). It loads one private, verified v3 checkpoint
+and exports THREE role-specific KFCore model packages in one owner-only
+0700 directory. Each ONNX package records:
+`model_type=ddz-dmc-q`, `variant=landlord|landlord_up|landlord_down`,
+`semantic_contract=ddz-dmc-replay-v1`, model-version string,
+`rules_version=1`, `objective=win-sign` and the actual immutable
+ONNX SHA-256 artifact digest. Export refuses overwrite and validates
+both the exact ONNX name/dynamic float32 tensor interface and
+real frozen Torch-vs-ONNX Runtime Q parity for batches 1/7/64
+before publishing package manifests. The root provenance manifest
+is published LAST. Private checkpoint/ONNX weights/Replay data are
+NEVER printed or uploaded to GitHub artifacts.
+
+R0 C11/Python-stdlib CI tests validate contract shapes/admission with
+no Torch/ONNX dependency and no new workflow or installer project.
+The R0 KFCore native C++ tests also validate model/feature/tensor
+contracts, but **not** a real trained checkpoint. Next separate R1
+gate must export and actually run selected role packages via KFCore,
+compare complete C11 legal-action Q against both frozen PyTorch
+and the original C11 reference scorer on the SAME genuine native
+Replay states, prove no missing/unwritten or nonfinite candidate
+scores, and benchmark throughput. R2 game-skill acceptance remains
+fresh held-out paired 3-seat swapped-team native C11 matches against
+the strong shed-most baseline; no model/production bot promotion yet.
+

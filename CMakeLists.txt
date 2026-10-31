@@ -4,6 +4,7 @@ project(MyGames VERSION 0.1.0 LANGUAGES C)
 option(MYGAMES_ENABLE_GATEWAY "Build optional CHttp/CNet development gateway" OFF)
 option(MYGAMES_ENABLE_TURBODB "Build optional TurboDB transactional room storage" OFF)
 option(MYGAMES_ENABLE_FLOWIE "Build optional Flowie QoS1 Outbox publisher and local broker test" OFF)
+option(MYGAMES_ENABLE_KFCORE_DMC_Q "Explicitly link the selected KFCore ONNX DMC Q inference bridge" OFF)
 
 add_library(mygames_room STATIC games/doudizhu/src/room.c
   games/doudizhu/src/room_directory.c
@@ -169,6 +170,27 @@ if(MSVC)
 else()
   target_compile_options(mygames_ddz_dmc_q_selector PRIVATE
     -Wall -Wextra -Wpedantic -Werror)
+endif()
+
+# Explicit KFCore C++ runtime integration ONLY. OFF means the original
+# authoritative pure C11 build and CI have no KFCore or C++ dependency.
+# Fail-fast on missing installed KFCore: no CMake probing or fallback.
+if(MYGAMES_ENABLE_KFCORE_DMC_Q)
+  enable_language(CXX)
+  find_package(KFCore 0.1 CONFIG REQUIRED)
+  add_library(mygames_ddz_dmc_kfcore_adapter STATIC
+    ai/dmc/src/ddz_dmc_kfcore_adapter.c)
+  add_library(MyGames::DMCQKFCoreAdapter ALIAS mygames_ddz_dmc_kfcore_adapter)
+  target_compile_features(mygames_ddz_dmc_kfcore_adapter PUBLIC c_std_11)
+  target_include_directories(mygames_ddz_dmc_kfcore_adapter PUBLIC ai/dmc/include)
+  target_link_libraries(mygames_ddz_dmc_kfcore_adapter PUBLIC
+    MyGames::DMCQSelector KFCore::dmc_q)
+  if(MSVC)
+    target_compile_options(mygames_ddz_dmc_kfcore_adapter PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_ddz_dmc_kfcore_adapter PRIVATE
+      -Wall -Wextra -Wpedantic -Werror)
+  endif()
 endif()
 
 # Numerical conformance ONLY: pure C11 float32 LSTM + Q-reference CPU
