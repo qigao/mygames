@@ -1,0 +1,121 @@
+#include "mygames/ddz_dmc_q_selector.h"
+
+#include <math.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+
+mygames_ddz_dmc_q_status mygames_ddz_dmc_q_pick(
+    const mygames_ddz_ai_observation *observation,
+    const uint64_t *legal_actions, size_t legal_count,
+    uint64_t required_turn_id, uint64_t required_model_version,
+    uint32_t required_rules_version,
+    const mygames_ddz_dmc_q_provider *provider,
+    uint64_t *out_selected) {
+    mygames_ddz_ai_features features = {0};
+    uint64_t *canonical = NULL;
+    size_t canonical_count = 0u, populated_count = 0u;
+    size_t offset;
+    bool has_best = false;
+    float best_value = 0.0f;
+    uint64_t best_action = UINT64_C(0);
+    if (!observation || !legal_actions || !provider || !out_selected ||
+        !provider->score_batch || legal_count == 0u ||
+        required_turn_id == 0u || required_model_version == 0u ||
+        required_rules_version == 0u)
+        return MYGAMES_DDZ_DMC_Q_INVALID;
+    if (legal_count > MYGAMES_DDZ_DMC_Q_MAX_ACTIONS)
+        return MYGAMES_DDZ_DMC_Q_CAPACITY;
+    if (provider->model_version != required_model_version ||
+        provider->rules_version != required_rules_version ||
+        provider->role != observation->role ||
+        observation->public_history.current.turn_id != required_turn_id)
+        return MYGAMES_DDZ_DMC_Q_STALE;
+    if (mygames_ddz_ai_encode_douzero(observation, &features) !=
+            MYGAMES_DDZ_AI_OK)
+        return MYGAMES_DDZ_DMC_Q_INVALID;
+    /* A valid individual mask is not enough: omitted, duplicated or
+     * reordered actions can adversarially alter the selected Q-argmax.
+     * Reuse ONLY the native M5a rank-combination rules generator and
+     * require the caller's entire list to equal its canonical output.
+     * Bounded allocation is released before calling the model. */
+    if (mygames_ddz_ai_legal_actions(observation->own_hand,
+            &observation->public_history.current, NULL, 0u,
+            &canonical_count) != MYGAMES_DDZ_AI_OK)
+        return MYGAMES_DDZ_DMC_Q_INVALID_ACTION;
+    if (canonical_count > MYGAMES_DDZ_DMC_Q_MAX_ACTIONS)
+        return MYGAMES_DDZ_DMC_Q_CAPACITY;
+    if (canonical_count != legal_count)
+        return MYGAMES_DDZ_DMC_Q_INVALID_ACTION;
+    canonical = (uint64_t *)malloc(canonical_count * sizeof(*canonical));
+    if (!canonical) return MYGAMES_DDZ_DMC_Q_CAPACITY;
+    if (mygames_ddz_ai_legal_actions(observation->own_hand,
+            &observation->public_history.current, canonical,
+            canonical_count, &populated_count) != MYGAMES_DDZ_AI_OK ||
+        populated_count != canonical_count ||
+        memcmp(canonical, legal_actions,
+               legal_count * sizeof(*canonical)) != 0) {
+        free(canonical);
+        return MYGAMES_DDZ_DMC_Q_INVALID_ACTION;
+    }
+    free(canonical);
+    for (offset = 0u; offset < legal_count; offset += MYGAMES_DDZ_DMC_Q_BATCH) {
+        int8_t actions[MYGAMES_DDZ_DMC_Q_BATCH][MYGAMES_DDZ_AI_CARD_FEATURES] = {{0}};
+        float results[MYGAMES_DDZ_DMC_Q_BATCH];
+        const size_t count = legal_count - offset < MYGAMES_DDZ_DMC_Q_BATCH ?
+                             legal_count - offset : MYGAMES_DDZ_DMC_Q_BATCH;
+        size_t i;
+        /* Never mistake an unwritten model score for a zero-valued Q:
+         * missing outputs remain nonfinite and reject the full proposal. */
+        for (i = 0u; i < count; ++i) results[i] = NAN;
+        for (i = 0u; i < count; ++i) {
+            if (mygames_ddz_ai_encode_action(
+                    observation, legal_actions[offset + i], actions[i]) !=
+                        MYGAMES_DDZ_AI_OK)
+                return MYGAMES_DDZ_DMC_Q_INVALID_ACTION;
+        }
+        if (!provider->score_batch(provider->context, &features,
+                                    &actions[0][0], count, results))
+            return MYGAMES_DDZ_DMC_Q_MODEL_FAILED;
+        for (i = 0u; i < count; ++i) {
+            const float value = results[i];
+            const uint64_t mask = legal_actions[offset + i];
+            if (!isfinite(value)) return MYGAMES_DDZ_DMC_Q_NONFINITE;
+            if (!has_best || value > best_value ||
+                (value == best_value && mask < best_action)) {
+                best_value = value;
+                best_action = mask;
+                has_best = true;
+            }
+        }
+    }
+    if (!has_best) return MYGAMES_DDZ_DMC_Q_INVALID;
+    *out_selected = best_action;
+    return MYGAMES_DDZ_DMC_Q_OK;
+}
+
+bool mygames_ddz_dmc_q_policy_select(
+    void *opaque, const mygames_ddz_ai_observation *observation,
+    const uint64_t *legal_actions, size_t legal_count,
+    uint64_t *out_selected_action) {
+    mygames_ddz_dmc_q_policy *context = (mygames_ddz_dmc_q_policy *)opaque;
+    mygames_ddz_ai_role role;
+    if (!context || !observation || !out_selected_action)
+        return false;
+    role = observation->role;
+    if ((unsigned)role >= MYGAMES_DDZ_SEATS) {
+        context->last_status = MYGAMES_DDZ_DMC_Q_INVALID;
+        return false;
+    }
+    context->last_status = mygames_ddz_dmc_q_pick(
+        observation, legal_actions, legal_count,
+        observation->public_history.current.turn_id,
+        context->required_model_version, context->required_rules_version,
+        &context->providers[role], out_selected_action);
+    if (context->last_status != MYGAMES_DDZ_DMC_Q_OK)
+        return false;
+    ++context->admitted_decisions;
+    return true;
+}

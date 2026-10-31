@@ -4,6 +4,7 @@ project(MyGames VERSION 0.1.0 LANGUAGES C)
 option(MYGAMES_ENABLE_GATEWAY "Build optional CHttp/CNet development gateway" OFF)
 option(MYGAMES_ENABLE_TURBODB "Build optional TurboDB transactional room storage" OFF)
 option(MYGAMES_ENABLE_FLOWIE "Build optional Flowie QoS1 Outbox publisher and local broker test" OFF)
+option(MYGAMES_ENABLE_KFCORE_DMC_Q "Explicitly link the selected KFCore ONNX DMC Q inference bridge" OFF)
 
 add_library(mygames_room STATIC games/doudizhu/src/room.c
   games/doudizhu/src/room_directory.c
@@ -34,6 +35,34 @@ else()
   target_compile_options(mygames_ddz_round PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
 
+# R0: game-agnostic, explicit per-player Monte Carlo returns.
+add_library(mygames_rl_targets STATIC ai/core/src/rl_targets.c)
+add_library(MyGames::RLTargets ALIAS mygames_rl_targets)
+target_compile_features(mygames_rl_targets PUBLIC c_std_11)
+target_include_directories(mygames_rl_targets PUBLIC ai/core/include)
+if(UNIX AND NOT APPLE)
+  target_link_libraries(mygames_rl_targets PUBLIC m)
+endif()
+if(MSVC)
+  target_compile_options(mygames_rl_targets PRIVATE /W4 /WX)
+else()
+  target_compile_options(mygames_rl_targets PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+
+# R1 first native slice: rank-equivalent complete actions via existing
+# authoritative classifier, not a second rules implementation.
+add_library(mygames_ddz_ai_actions STATIC
+  games/doudizhu/src/ddz_ai_actions.c)
+add_library(MyGames::DouDizhuAI ALIAS mygames_ddz_ai_actions)
+target_compile_features(mygames_ddz_ai_actions PUBLIC c_std_11)
+target_include_directories(mygames_ddz_ai_actions PUBLIC games/doudizhu/include)
+target_link_libraries(mygames_ddz_ai_actions PUBLIC MyGames::DouDizhuRound)
+if(MSVC)
+  target_compile_options(mygames_ddz_ai_actions PRIVATE /W4 /WX)
+else()
+  target_compile_options(mygames_ddz_ai_actions PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+
 # M5b: real CSPRNG deal + staged bidding and Game Owner validation.
 # This match library is private game authority, never a network callback or
 # persisted transaction/ACK by itself. Strict C11 and no third-party SDK.
@@ -50,6 +79,154 @@ if(MSVC)
   target_compile_options(mygames_ddz_match PRIVATE /W4 /WX)
 else()
   target_compile_options(mygames_ddz_match PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+
+# R1: an AUTHORIZED player's own hand + committed PUBLIC history =>
+# DouZero-shape features. Does not accept full private match/hidden deck.
+add_library(mygames_ddz_ai_features STATIC
+  games/doudizhu/src/ddz_ai_features.c)
+add_library(MyGames::DouDizhuAIFeatures ALIAS mygames_ddz_ai_features)
+target_compile_features(mygames_ddz_ai_features PUBLIC c_std_11)
+target_include_directories(mygames_ddz_ai_features PUBLIC games/doudizhu/include)
+target_link_libraries(mygames_ddz_ai_features PUBLIC MyGames::DouDizhuAI)
+if(MSVC)
+  target_compile_options(mygames_ddz_ai_features PRIVATE /W4 /WX)
+else()
+  target_compile_options(mygames_ddz_ai_features PRIVATE
+    -Wall -Wextra -Wpedantic -Werror)
+endif()
+
+# Pure offline DMC sample collector. Not linked into the CHttp Game Owner.
+# Labels are sealed only after a real full-match final settlement.
+add_library(mygames_ddz_dmc_episode STATIC
+  ai/dmc/src/ddz_dmc_episode.c)
+add_library(MyGames::DMCCollector ALIAS mygames_ddz_dmc_episode)
+target_compile_features(mygames_ddz_dmc_episode PUBLIC c_std_11)
+target_include_directories(mygames_ddz_dmc_episode PUBLIC ai/dmc/include)
+target_link_libraries(mygames_ddz_dmc_episode PUBLIC
+  MyGames::DouDizhuAIFeatures MyGames::DouDizhuMatch)
+if(MSVC)
+  target_compile_options(mygames_ddz_dmc_episode PRIVATE /W4 /WX)
+else()
+  target_compile_options(mygames_ddz_dmc_episode PRIVATE
+    -Wall -Wextra -Wpedantic -Werror)
+endif()
+
+# R1 private, versioned and canonical DMC Replay codec. This target owns
+# NO file/network/SQLite handle. It checks every complete terminal label
+# before serializing (no struct memcpy or unqualified source fallback).
+add_library(mygames_ddz_dmc_replay STATIC
+  ai/dmc/src/ddz_dmc_replay.c)
+add_library(MyGames::DMCReplay ALIAS mygames_ddz_dmc_replay)
+target_compile_features(mygames_ddz_dmc_replay PUBLIC c_std_11)
+target_include_directories(mygames_ddz_dmc_replay PUBLIC ai/dmc/include)
+target_link_libraries(mygames_ddz_dmc_replay PUBLIC MyGames::DMCCollector)
+if(MSVC)
+  target_compile_options(mygames_ddz_dmc_replay PRIVATE /W4 /WX)
+else()
+  target_compile_options(mygames_ddz_dmc_replay PRIVATE
+    -Wall -Wextra -Wpedantic -Werror)
+endif()
+
+# Offline-only C11 Self-Play. The policy callback sees ONLY its own
+# authorized Observation + full legal mask list; no CFlow or SQLite owner.
+add_library(mygames_ddz_dmc_selfplay STATIC
+  ai/dmc/src/ddz_dmc_selfplay.c)
+add_library(MyGames::DMCSelfPlay ALIAS mygames_ddz_dmc_selfplay)
+target_compile_features(mygames_ddz_dmc_selfplay PUBLIC c_std_11)
+target_include_directories(mygames_ddz_dmc_selfplay PUBLIC ai/dmc/include)
+target_link_libraries(mygames_ddz_dmc_selfplay PUBLIC MyGames::DMCReplay)
+if(MSVC)
+  target_compile_options(mygames_ddz_dmc_selfplay PRIVATE /W4 /WX)
+else()
+  target_compile_options(mygames_ddz_dmc_selfplay PRIVATE
+    -Wall -Wextra -Wpedantic -Werror)
+endif()
+
+
+# Linux-only opt-in local corpus emitter: existing private 0700 directory,
+# no-clobber O_EXCL/0600 files, fsync, no IO in the C11 algorithms.
+# NOT an installer, a downstream consumer project, or a network service.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(mygames_ddz_dmc_generate ai/dmc/src/ddz_dmc_generate.c)
+  target_compile_features(mygames_ddz_dmc_generate PRIVATE c_std_11)
+  target_link_libraries(mygames_ddz_dmc_generate PRIVATE MyGames::DMCSelfPlay)
+  target_compile_options(mygames_ddz_dmc_generate PRIVATE
+    -Wall -Wextra -Wpedantic -Werror)
+endif()
+
+
+# Offline model-to-rules inference boundary: version-fenced batched Q score
+# provider, canonical COMPLETE legal mask list, bounded 64-action batches.
+# No torch/ONNX/KFCore dependency, second DDZ engine or fallback scorer.
+add_library(mygames_ddz_dmc_q_selector STATIC
+  ai/dmc/src/ddz_dmc_q_selector.c)
+add_library(MyGames::DMCQSelector ALIAS mygames_ddz_dmc_q_selector)
+target_compile_features(mygames_ddz_dmc_q_selector PUBLIC c_std_11)
+target_include_directories(mygames_ddz_dmc_q_selector PUBLIC ai/dmc/include)
+target_link_libraries(mygames_ddz_dmc_q_selector PUBLIC MyGames::DMCSelfPlay)
+if(MSVC)
+  target_compile_options(mygames_ddz_dmc_q_selector PRIVATE /W4 /WX)
+else()
+  target_compile_options(mygames_ddz_dmc_q_selector PRIVATE
+    -Wall -Wextra -Wpedantic -Werror)
+endif()
+
+# Explicit KFCore C++ runtime integration ONLY. OFF means the original
+# authoritative pure C11 build and CI have no KFCore or C++ dependency.
+# Fail-fast on missing installed KFCore: no CMake probing or fallback.
+if(MYGAMES_ENABLE_KFCORE_DMC_Q)
+  enable_language(CXX)
+  find_package(KFCore 0.1 CONFIG REQUIRED)
+  add_library(mygames_ddz_dmc_kfcore_adapter STATIC
+    ai/dmc/src/ddz_dmc_kfcore_adapter.c)
+  add_library(MyGames::DMCQKFCoreAdapter ALIAS mygames_ddz_dmc_kfcore_adapter)
+  target_compile_features(mygames_ddz_dmc_kfcore_adapter PUBLIC c_std_11)
+  target_include_directories(mygames_ddz_dmc_kfcore_adapter PUBLIC ai/dmc/include)
+  target_link_libraries(mygames_ddz_dmc_kfcore_adapter PUBLIC
+    MyGames::DMCQSelector KFCore::dmc_q)
+  if(MSVC)
+    target_compile_options(mygames_ddz_dmc_kfcore_adapter PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_ddz_dmc_kfcore_adapter PRIVATE
+      -Wall -Wextra -Wpedantic -Werror)
+  endif()
+endif()
+
+# Numerical conformance ONLY: pure C11 float32 LSTM + Q-reference CPU
+# backend for frozen, role-specific PyTorch weight images. It is deliberately
+# slower than KFCore and is NOT silently installed as inference fallback.
+add_library(mygames_ddz_dmc_q_cpu STATIC
+  ai/dmc/src/ddz_dmc_q_cpu.c
+  ai/dmc/src/ddz_dmc_q_cpu_adapter.c)
+add_library(MyGames::DMCQCPUReference ALIAS mygames_ddz_dmc_q_cpu)
+target_compile_features(mygames_ddz_dmc_q_cpu PUBLIC c_std_11)
+target_include_directories(mygames_ddz_dmc_q_cpu PUBLIC ai/dmc/include)
+target_link_libraries(mygames_ddz_dmc_q_cpu PUBLIC MyGames::DMCQSelector)
+if(UNIX AND NOT APPLE)
+  target_link_libraries(mygames_ddz_dmc_q_cpu PUBLIC m)
+endif()
+if(MSVC)
+  target_compile_options(mygames_ddz_dmc_q_cpu PRIVATE /W4 /WX)
+else()
+  target_compile_options(mygames_ddz_dmc_q_cpu PRIVATE
+    -Wall -Wextra -Wpedantic -Werror)
+endif()
+
+# Native C11 offline, OS-CSPRNG on-policy Replay from ONE frozen Q snapshot.
+# Caller supplies its immutable scorer and private storage; no I/O, test
+# entropy, secondary rules runtime, network/ORM handle or heuristic fallback.
+add_library(mygames_ddz_dmc_onpolicy STATIC
+  ai/dmc/src/ddz_dmc_onpolicy.c)
+add_library(MyGames::DMCOnPolicy ALIAS mygames_ddz_dmc_onpolicy)
+target_compile_features(mygames_ddz_dmc_onpolicy PUBLIC c_std_11)
+target_include_directories(mygames_ddz_dmc_onpolicy PUBLIC ai/dmc/include)
+target_link_libraries(mygames_ddz_dmc_onpolicy PUBLIC MyGames::DMCQSelector)
+if(MSVC)
+  target_compile_options(mygames_ddz_dmc_onpolicy PRIVATE /W4 /WX)
+else()
+  target_compile_options(mygames_ddz_dmc_onpolicy PRIVATE
+    -Wall -Wextra -Wpedantic -Werror)
 endif()
 
 # M5c: portable, fixed-size canonical PRIVATE match state codec. No native
@@ -211,7 +388,8 @@ if(MYGAMES_ENABLE_TURBODB)
     target_compile_definitions(mygames_game_results_test PRIVATE
       MYGAMES_STORE_FAULT_TESTING=1)
     target_link_libraries(mygames_game_results_test PRIVATE
-      MyGames::Store MyGames::DouDizhuCheckpoint)
+      MyGames::Store MyGames::DouDizhuCheckpoint
+      MyGames::DouDizhuAIFeatures)
     if(MSVC)
       target_compile_options(mygames_game_results_test PRIVATE /W4 /WX)
     else()
@@ -309,6 +487,160 @@ if(BUILD_TESTING)
     target_compile_options(mygames_ddz_round_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
   endif()
   add_test(NAME mygames.ddz_round COMMAND mygames_ddz_round_test)
+  # R0/R1 reuse the existing core CTest graph; no probe/consumer targets.
+  add_executable(mygames_rl_targets_test tests/rl_targets_test.c)
+  target_compile_features(mygames_rl_targets_test PRIVATE c_std_11)
+  target_link_libraries(mygames_rl_targets_test PRIVATE MyGames::RLTargets)
+  add_executable(mygames_ddz_ai_actions_test tests/ddz_ai_actions_test.c)
+  target_compile_features(mygames_ddz_ai_actions_test PRIVATE c_std_11)
+  target_link_libraries(mygames_ddz_ai_actions_test PRIVATE MyGames::DouDizhuAI)
+  if(MSVC)
+    target_compile_options(mygames_rl_targets_test PRIVATE /W4 /WX)
+    target_compile_options(mygames_ddz_ai_actions_test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_rl_targets_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    target_compile_options(mygames_ddz_ai_actions_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME mygames.rl_targets COMMAND mygames_rl_targets_test)
+  add_test(NAME mygames.ddz_ai_actions COMMAND mygames_ddz_ai_actions_test)
+  # R1 actor-only observation history / feature shape / full C11 match
+  # episode sample tests reuse the existing native core test graph.
+  add_executable(mygames_ddz_ai_features_test tests/ddz_ai_features_test.c)
+  target_compile_features(mygames_ddz_ai_features_test PRIVATE c_std_11)
+  target_link_libraries(mygames_ddz_ai_features_test PRIVATE
+    MyGames::DouDizhuAIFeatures)
+  add_executable(mygames_ddz_dmc_episode_test tests/ddz_dmc_episode_test.c)
+  target_compile_features(mygames_ddz_dmc_episode_test PRIVATE c_std_11)
+  target_link_libraries(mygames_ddz_dmc_episode_test PRIVATE
+    MyGames::DMCReplay MyGames::RLTargets)
+  if(MSVC)
+    target_compile_options(mygames_ddz_ai_features_test PRIVATE /W4 /WX)
+    target_compile_options(mygames_ddz_dmc_episode_test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_ddz_ai_features_test PRIVATE
+      -Wall -Wextra -Wpedantic -Werror)
+    target_compile_options(mygames_ddz_dmc_episode_test PRIVATE
+      -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME mygames.ddz_ai_features COMMAND mygames_ddz_ai_features_test)
+  add_test(NAME mygames.ddz_dmc_episode COMMAND mygames_ddz_dmc_episode_test)
+  add_executable(mygames_ddz_dmc_selfplay_test
+    tests/ddz_dmc_selfplay_test.c)
+  target_compile_features(mygames_ddz_dmc_selfplay_test PRIVATE c_std_11)
+  target_link_libraries(mygames_ddz_dmc_selfplay_test PRIVATE
+    MyGames::DMCSelfPlay)
+  if(MSVC)
+    target_compile_options(mygames_ddz_dmc_selfplay_test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_ddz_dmc_selfplay_test PRIVATE
+      -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME mygames.ddz_dmc_selfplay
+    COMMAND mygames_ddz_dmc_selfplay_test)
+  # This hook lives ONLY in BUILD_TESTING builds. A production
+  # DMCSelfPlay library never contains a deterministic/deck-injection path.
+  target_compile_definitions(mygames_ddz_dmc_selfplay PRIVATE
+    MYGAMES_DDZ_MATCH_TESTING=1)
+  add_executable(mygames_ddz_dmc_paired_eval_test
+    tests/ddz_dmc_paired_eval_test.c)
+  target_compile_features(mygames_ddz_dmc_paired_eval_test PRIVATE c_std_11)
+  target_compile_definitions(mygames_ddz_dmc_paired_eval_test PRIVATE
+    MYGAMES_DDZ_MATCH_TESTING=1)
+  target_link_libraries(mygames_ddz_dmc_paired_eval_test PRIVATE
+    MyGames::DMCSelfPlay)
+  if(MSVC)
+    target_compile_options(mygames_ddz_dmc_paired_eval_test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_ddz_dmc_paired_eval_test PRIVATE
+      -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME mygames.ddz_dmc_paired_eval
+    COMMAND mygames_ddz_dmc_paired_eval_test)
+  # Real-offline Self-Play adapter with injectable scoring callback.
+  # The fake scorer is TEST-ONLY and not linked into any production service.
+  add_executable(mygames_ddz_dmc_q_selector_test
+    tests/ddz_dmc_q_selector_test.c)
+  target_compile_features(mygames_ddz_dmc_q_selector_test PRIVATE c_std_11)
+  target_link_libraries(mygames_ddz_dmc_q_selector_test PRIVATE
+    MyGames::DMCQSelector)
+  if(MSVC)
+    target_compile_options(mygames_ddz_dmc_q_selector_test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_ddz_dmc_q_selector_test PRIVATE
+      -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME mygames.ddz_dmc_q_selector
+    COMMAND mygames_ddz_dmc_q_selector_test)
+  # Real portable C11 reference implementation; no Python/Torch runtime
+  # or CI-published weights. Zero-model golden, CRC, version and nonfinite.
+  add_executable(mygames_ddz_dmc_q_cpu_test
+    tests/ddz_dmc_q_cpu_test.c)
+  target_compile_features(mygames_ddz_dmc_q_cpu_test PRIVATE c_std_11)
+  target_link_libraries(mygames_ddz_dmc_q_cpu_test PRIVATE
+    MyGames::DMCQCPUReference)
+  if(MSVC)
+    target_compile_options(mygames_ddz_dmc_q_cpu_test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_ddz_dmc_q_cpu_test PRIVATE
+      -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME mygames.ddz_dmc_q_cpu
+    COMMAND mygames_ddz_dmc_q_cpu_test)
+
+  # Paired frozen model tournament: TEST-ONLY reuse of existing M5b entropy
+  # hook. Built ONLY under BUILD_TESTING, never a production CFlow/CHttp Bot.
+  add_library(mygames_ddz_dmc_tournament STATIC
+    ai/dmc/src/ddz_dmc_tournament.c)
+  target_compile_features(mygames_ddz_dmc_tournament PRIVATE c_std_11)
+  target_compile_definitions(mygames_ddz_dmc_tournament PRIVATE
+    MYGAMES_DDZ_MATCH_TESTING=1)
+  target_include_directories(mygames_ddz_dmc_tournament PUBLIC
+    ai/dmc/include)
+  target_link_libraries(mygames_ddz_dmc_tournament PUBLIC
+    MyGames::DMCQSelector)
+  add_executable(mygames_ddz_dmc_tournament_test
+    tests/ddz_dmc_tournament_test.c)
+  target_compile_features(mygames_ddz_dmc_tournament_test PRIVATE c_std_11)
+  target_link_libraries(mygames_ddz_dmc_tournament_test PRIVATE
+    mygames_ddz_dmc_tournament)
+  if(MSVC)
+    target_compile_options(mygames_ddz_dmc_tournament PRIVATE /W4 /WX)
+    target_compile_options(mygames_ddz_dmc_tournament_test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_ddz_dmc_tournament PRIVATE
+      -Wall -Wextra -Wpedantic -Werror)
+    target_compile_options(mygames_ddz_dmc_tournament_test PRIVATE
+      -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME mygames.ddz_dmc_tournament
+    COMMAND mygames_ddz_dmc_tournament_test)
+  # TEST-ONLY scorer stub validates actual OS-CSPRNG full native matches,
+  # sealed canonical Replay source model versions and failure atomicity.
+  add_executable(mygames_ddz_dmc_onpolicy_test
+    tests/ddz_dmc_onpolicy_test.c)
+  target_compile_features(mygames_ddz_dmc_onpolicy_test PRIVATE c_std_11)
+  target_link_libraries(mygames_ddz_dmc_onpolicy_test PRIVATE
+    MyGames::DMCOnPolicy)
+  if(MSVC)
+    target_compile_options(mygames_ddz_dmc_onpolicy_test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_ddz_dmc_onpolicy_test PRIVATE
+      -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME mygames.ddz_dmc_onpolicy
+    COMMAND mygames_ddz_dmc_onpolicy_test)
+
+
+
+
+
+
+
+
+
+
+
+
 
   add_executable(mygames_room_test tests/room_test.c)
   target_link_libraries(mygames_room_test PRIVATE MyGames::Room)

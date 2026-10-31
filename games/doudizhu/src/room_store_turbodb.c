@@ -307,6 +307,17 @@ static mygames_store_status create_schema(mygames_room_store *s) {
         "game_id integer not null check(game_id>0),"
         "seq integer not null check(seq>0),"
         "private_image blob not null check(length(private_image)=224))",
+        /* Append-only PUBLIC action history. Never log unplayed hand
+         * partitions: mask is derived from the verified played-card delta
+         * inside exactly the same Game COMMIT as the private checkpoint. */
+        "create table if not exists mg_game_public_moves ("
+        "room_id text not null,"
+        "game_id integer not null check(game_id>0),"
+        "turn_id integer not null check(turn_id>0),"
+        "seq integer not null unique check(seq>0),"
+        "actor_seat integer not null check(actor_seat between 0 and 2),"
+        "cards_mask integer not null check(cards_mask>=0 and cards_mask<18014398509481984),"
+        "primary key(room_id,game_id,turn_id))",
         /* Per-room/game immutable, nonmonetary outcome. A unique global
          * finish_seq couples this historical settlement to precisely one
          * committed CFlow Room/receipt/Outbox sequence. No private cards. */
@@ -1382,6 +1393,44 @@ static mygames_store_status game_store_candidate(
     if (st != MYGAMES_STORE_OK) return st;
     if (affected != 1u) return MYGAMES_STORE_STALE_GAME;
 
+
+    /* This PUBLIC-only row is derived strictly from an authorized real
+     * PLAYING -> (PLAYING|FINISHED) transition. It is in the SAME SQLite
+     * transaction as the canonical private image, command receipt, Outbox
+     * and (if terminal) the M5h immutable result. A PASS is mask=0. */
+    if (game->previous &&
+        game->previous->phase == MYGAMES_DDZ_MATCH_PLAYING &&
+        (game->candidate->phase == MYGAMES_DDZ_MATCH_PLAYING ||
+         game->candidate->phase == MYGAMES_DDZ_MATCH_FINISHED)) {
+        const mygames_ddz_round *prior = &game->previous->round;
+        const mygames_ddz_round *next = &game->candidate->round;
+        const uint8_t actor = prior->turn_seat;
+        const uint64_t revealed = next->played_cards & ~prior->played_cards;
+        orm_value_t public_values[6];
+        if (actor >= MYGAMES_DDZ_SEATS ||
+            prior->turn_id == 0u ||
+            prior->turn_id >= (uint64_t)INT64_MAX ||
+            next->turn_id != prior->turn_id + UINT64_C(1) ||
+            (revealed & ~prior->hands[actor]) != 0u ||
+            (next->played_cards & prior->played_cards) != prior->played_cards ||
+            next_sequence == 0u || next_sequence > (uint64_t)INT64_MAX)
+            return MYGAMES_STORE_INVALID;
+        public_values[0] = orm_text(game->room_id);
+        public_values[1] = orm_i64((int64_t)game->candidate->game_id);
+        public_values[2] = orm_i64((int64_t)prior->turn_id);
+        public_values[3] = orm_i64((int64_t)next_sequence);
+        public_values[4] = orm_i64((int64_t)actor);
+        public_values[5] = orm_i64((int64_t)revealed);
+        affected = 0u;
+        st = execute(store, tx,
+            "insert into mg_game_public_moves("
+            "room_id,game_id,turn_id,seq,actor_seat,cards_mask) "
+            "values(?1,?2,?3,?4,?5,?6)",
+            public_values, 6u, &affected);
+        if (st != MYGAMES_STORE_OK) return st;
+        if (affected != 1u) return MYGAMES_STORE_CORRUPT;
+    }
+
     /* Only an actual accepted PLAYING -> FINISHED transition may create a
      * historical settlement. The same unique Room-Owner transaction also
      * commits the final private v2 image, exact Game ACK receipt and public
@@ -1642,6 +1691,136 @@ mygames_store_status mygames_room_store_commit_game(
         expected_epoch, expected_sequence, request_id, command_digest,
         response, response_bytes, event, (size_t)count,
         out_committed_sequence, NULL, &game);
+}
+
+/* Reconstruct just the PUBLIC v1 move stream. No private match image is
+ * accessed and the API never changes any Room/consumer/Outbox state.
+ * The SELECT materializes one SQLite snapshot of this game's rows.
+ * The v1 public grammar is replay-validated before copying output. */
+mygames_store_status mygames_room_store_public_game_moves(
+    mygames_room_store *store, const char *room_id, uint64_t game_id,
+    mygames_store_public_move *out_moves, size_t capacity,
+    size_t *out_count) {
+    orm_value_t args[2];
+    orm_result_t *result = NULL;
+    orm_error_t error;
+    orm_status_t rc;
+    mygames_store_status status;
+    uint64_t count = 0u, seen_cards = UINT64_C(0), prev_seq = UINT64_C(0);
+    mygames_store_public_move local[MYGAMES_STORE_PUBLIC_MOVES_MAX];
+    uint8_t played_by_seat[MYGAMES_DDZ_SEATS] = {0u};
+    uint8_t landlord = MYGAMES_DDZ_NO_SEAT;
+    uint8_t expected_actor = MYGAMES_DDZ_NO_SEAT;
+    uint8_t last_seat = MYGAMES_DDZ_NO_SEAT;
+    unsigned passes = 0u;
+    mygames_ddz_move previous_move = {0};
+    size_t i;
+    if (!store || !out_count || (capacity > 0u && !out_moves) ||
+        !game_room_id_valid(room_id) ||
+        game_id == 0u || game_id > (uint64_t)INT64_MAX)
+        return MYGAMES_STORE_INVALID;
+    if (!owner_valid(store)) return MYGAMES_STORE_QUARANTINED;
+    args[0] = orm_text(room_id);
+    args[1] = orm_i64((int64_t)game_id);
+    status = backend_query(store, NULL,
+        "select turn_id,seq,actor_seat,cards_mask "
+        "from mg_game_public_moves where room_id=?1 and game_id=?2 "
+        "order by turn_id asc", args, 2u, &result);
+    if (status != MYGAMES_STORE_OK) return status;
+    orm_error_init(&error);
+    rc = orm_result_row_count(result, &count, &error);
+    if (rc != ORM_STATUS_OK) {
+        status = error_from_orm(store, rc, &error);
+        goto finished;
+    }
+    if (count > MYGAMES_STORE_PUBLIC_MOVES_MAX) {
+        status = MYGAMES_STORE_CORRUPT;
+        goto finished;
+    }
+    for (i = 0u; i < (size_t)count; ++i) {
+        int64_t fields[4] = {0};
+        unsigned col;
+        uint64_t cards;
+        uint8_t actor;
+        for (col = 0u; col < 4u; ++col) {
+            rc = orm_result_get_int64(result, (uint64_t)i, col,
+                                      &fields[col], &error);
+            if (rc != ORM_STATUS_OK) {
+                status = error_from_orm(store, rc, &error);
+                goto finished;
+            }
+        }
+        if (fields[0] != (int64_t)(i + 1u) ||
+            fields[1] <= 0 || (uint64_t)fields[1] <= prev_seq ||
+            fields[2] < 0 || fields[2] >= MYGAMES_DDZ_SEATS ||
+            fields[3] < 0 || (uint64_t)fields[3] > MYGAMES_DDZ_CARD_MASK) {
+            status = MYGAMES_STORE_CORRUPT;
+            goto finished;
+        }
+        actor = (uint8_t)fields[2];
+        cards = (uint64_t)fields[3];
+        if (i == 0u) { landlord = actor; expected_actor = actor; }
+        if (actor != expected_actor || (seen_cards & cards) != 0u) {
+            status = MYGAMES_STORE_CORRUPT;
+            goto finished;
+        }
+        if (cards != 0u) {
+            mygames_ddz_move next_move = {0};
+            unsigned bits = 0u;
+            uint64_t value = cards;
+            while (value) {
+                ++bits;
+                value &= value - UINT64_C(1);
+            }
+            if (mygames_ddz_classify(cards, &next_move) != MYGAMES_DDZ_OK ||
+                (last_seat != MYGAMES_DDZ_NO_SEAT &&
+                 !mygames_ddz_beats(&next_move, &previous_move)) ||
+                (unsigned)played_by_seat[actor] + bits >
+                    (actor == landlord ? 20u : 17u)) {
+                status = MYGAMES_STORE_CORRUPT;
+                goto finished;
+            }
+            played_by_seat[actor] = (uint8_t)(played_by_seat[actor] + bits);
+            seen_cards |= cards;
+            last_seat = actor;
+            previous_move = next_move;
+            passes = 0u;
+            if (played_by_seat[actor] == (actor == landlord ? 20u : 17u) &&
+                i + 1u < (size_t)count) {
+                status = MYGAMES_STORE_CORRUPT;
+                goto finished;
+            }
+        } else {
+            if (last_seat == MYGAMES_DDZ_NO_SEAT) {
+                status = MYGAMES_STORE_CORRUPT;
+                goto finished;
+            }
+            ++passes;
+            if (passes == MYGAMES_DDZ_SEATS - 1u) {
+                last_seat = MYGAMES_DDZ_NO_SEAT;
+                previous_move = (mygames_ddz_move){0};
+                passes = 0u;
+            }
+        }
+        local[i].turn_id = (uint64_t)fields[0];
+        local[i].committed_sequence = (uint64_t)fields[1];
+        local[i].cards_mask = cards;
+        local[i].actor_seat = actor;
+        prev_seq = local[i].committed_sequence;
+        expected_actor = (uint8_t)((actor + 1u) % MYGAMES_DDZ_SEATS);
+    }
+    if ((uint64_t)capacity < count) {
+        *out_count = (size_t)count;
+        status = MYGAMES_STORE_CAPACITY;
+        goto finished;
+    }
+    if (count > 0u && out_moves)
+        memcpy(out_moves, local, (size_t)count * sizeof(local[0]));
+    *out_count = (size_t)count;
+    status = MYGAMES_STORE_OK;
+finished:
+    orm_result_destroy(result);
+    return status;
 }
 
 /* Strictly checked immutable historical game result. Do not reuse a live
