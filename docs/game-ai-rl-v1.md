@@ -525,3 +525,62 @@ small CONTRACT/SECURITY test, not an experimental dataset proving
 generalization or improvement over a baseline; the private corpus
 index/manifest, multi-worker supervision, trained-model action
 inference and a statistically powered tournament remain separate.
+
+
+## M5k three-way verified PRIVATE experiment orchestrator
+
+ai/dmc/experiment.py runs ONE bounded, opt-in offline experiment
+inside an existing operator-owned Linux private (0700) root. It calls
+ONLY the existing pure C11 corpus generator in three explicit,
+nonoverlapping complete-episode partitions: train, validation, test.
+Each partition owns fresh episode IDs (never per-step random splits)
+and is created with restrictive 0700 permissions, fails closed on
+pre-existing names, and accepts at most 96 episodes per partition.
+
+All Replay bytes are independently decoded by ai/dmc/replay.py,
+reverified against exact rules_version=1, model_version=1,
+objective, canonical per-seat role semantics, 0600/no-extra-hardlink
+file permissions, and their original source-episode identifiers.
+A PRIVATE manifest.v1.json is published only AFTER every
+partition and its learner reader are verified. It contains the
+EXACT Git commit SHA, objective, UNTRAINED source policy,
+per-file SHA256 and public result/role counts. It does NOT
+contain physical card/hidden-hand lists, private feature arrays,
+private user IDs or raw game history. The operator owns these
+samples, not the CFlow/TurboDB Game Owner or M5h business ledger.
+A failed/interrupted experiment cannot publish a completed
+manifest; do not recycle leftover private partial files as data.
+
+The operator may explicitly add --train, requiring an already
+configured PyTorch backend. This invokes the existing
+ai/dmc/train_dmc.py optimizer with disjoint training/validation
+games, writes an immutable PRIVATE model checkpoint, reloads and
+checks numerical parity, and then independently scores a third,
+previously unseen COMPLETE-game test partition. The private
+manifest is the final admission step. Metrics are off-policy
+DMC MSE/MAE, *NOT* paired-deck competitive win rate, and no
+production KFCore inference promotion is implied. No torch
+wheel is downloaded by the standard native CI gate.
+
+Example on a trusted offline Linux machine:
+
+    mkdir -m 700 /data/private-dmc-experiment
+    python3 ai/dmc/experiment.py \
+      --native-generator ./build/ddz/mygames_ddz_dmc_generate \
+      --private-root /data/private-dmc-experiment \
+      --source-revision "$(git rev-parse HEAD)" \
+      --first-id 20001 --train-games 36 \
+      --validation-games 12 --test-games 12 \
+      --objective win-sign --train \
+      --steps 1000 --batch-size 64 --device cpu
+
+The existing M5a Linux source-acceptance job tests a SMALL
+3/3/3 triple-split *without importing or downloading PyTorch*
+using a temporary 0700 directory and nine genuine,
+independently OS-shuffled complete native episodes. It checks
+no-clobber retries, private permissions, digest/label consistency,
+role coverage, source revision and no train/validation/test
+ID overlap. These 9 games are CI evidence for the experiment
+orchestration contract, not a trained-policy quality statistic.
+The next separate acceptance remains real large-corpus PyTorch
+training plus a KFCore/natively scored frozen-policy tournament.
