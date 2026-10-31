@@ -12,10 +12,12 @@ from pathlib import Path
 import stat
 import subprocess
 import sys
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from ai.dmc.replay import read_episode
+from ai.dmc.experiment import optimizer_policy_flags
 
 
 def main() -> int:
@@ -111,6 +113,35 @@ def main() -> int:
     assert manifest_file.read_bytes() == manifest_raw
     assert len([v for v in root.iterdir() if v.name not in
                 ("train", "validation", "test", "manifest.v1.json")]) == 0
+
+    # New optional sampler/validation selection MUST remain reachable via
+    # the same trusted experiment CLI, not silently reverted to defaults.
+    defaults = optimizer_policy_flags(SimpleNamespace(
+        sampling="transition", checkpoint_policy="final",
+        validation_interval=20, require_validation_advantage=False))
+    assert defaults == [
+        "--sampling", "transition", "--checkpoint-policy", "final",
+        "--validation-interval", "20"]
+    balanced = optimizer_policy_flags(SimpleNamespace(
+        sampling="episode-source-outcome",
+        checkpoint_policy="best-validation",
+        validation_interval=7, require_validation_advantage=True))
+    assert balanced == [
+        "--sampling", "episode-source-outcome",
+        "--checkpoint-policy", "best-validation",
+        "--validation-interval", "7", "--require-validation-advantage"]
+    for flags in (
+        ["--sampling", "episode-source-outcome"],
+        ["--checkpoint-policy", "best-validation"],
+        ["--validation-interval", "7"],
+        ["--require-validation-advantage"],
+    ):
+        invalid = subprocess.run(same + ["--reuse", *flags], cwd=ROOT,
+                                 capture_output=True, text=True)
+        assert invalid.returncode != 0
+        assert "require --train" in invalid.stderr
+        assert manifest_file.read_bytes() == manifest_raw
+        assert not (root / "models").exists()
 
     # Complete experiment is immutable: a second invocation MUST NOT alter
     # previously published private bytes, split ownership or metadata.

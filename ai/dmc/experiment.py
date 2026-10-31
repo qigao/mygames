@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -288,42 +289,121 @@ def verify_reader(root: Path, manifest: dict, repo: Path) -> dict:
             "test_decisions": test_report["completed_steps"]}
 
 
+def optimizer_policy_flags(args) -> list[str]:
+    """Forward explicitly selected policy to the SINGLE native-Replay learner."""
+    options = [
+        "--sampling", args.sampling,
+        "--checkpoint-policy", args.checkpoint_policy,
+        "--validation-interval", str(args.validation_interval),
+    ]
+    if args.require_validation_advantage:
+        options.append("--require-validation-advantage")
+    return options
+
+
+def admit_balanced_sources(root: Path, manifest: dict) -> None:
+    """Fail before creating a model directory or importing PyTorch.
+
+    Both independent complete-game pools must contain WIN and LOSS for every
+    acting role of every recorded behavior source. Digest/ACL checks remain
+    the responsibility of verify_existing_manifest/build_experiment.
+    """
+    from train_policy import make_role_sampler
+    pools = {}
+    for split in ("train", "validation"):
+        paths = file_list(root, manifest["splits"][split])
+        pools[split] = [read_episode(p) for p in paths]
+    if {e.model_version for e in pools["train"]} != {
+            e.model_version for e in pools["validation"]}:
+        raise ValueError("train/validation source-policy cohorts differ")
+    for role in range(3):
+        make_role_sampler(pools["train"], role)
+        make_role_sampler(pools["validation"], role)
+
+
 def train_and_test(root: Path, manifest: dict, repo: Path, args) -> dict:
     # Generate/test examples are PRIVATE. This command never publishes
     # a model into the Room Owner, public CI artifacts or production.
     modeldir = root / "models"
-    modeldir.mkdir(mode=0o700, exist_ok=False)
-    check_private_dir(modeldir)
-    checkpoint = modeldir / "dmc-unpromoted-v3.pt"
+    if modeldir.exists() or modeldir.is_symlink():
+        raise FileExistsError("private model directory exists; refuse overwrite")
+    if args.sampling == "episode-source-outcome":
+        admit_balanced_sources(root, manifest)
     base = [sys.executable, str(repo / "ai/dmc/train_dmc.py")]
     train_files = file_list(root, manifest["splits"]["train"])
     val_files = file_list(root, manifest["splits"]["validation"])
     test_files = file_list(root, manifest["splits"]["test"])
-    training = json.loads(execute(base + [
-        "--train", "--replay", *train_files,
-        "--validation-replay", *val_files,
-        "--objective", manifest["objective"], "--rules-version", "1",
-        "--output", str(checkpoint), "--model-version", str(args.model_version),
-        "--steps", str(args.steps),
-        "--batch-size", str(args.batch_size), "--learning-rate",
-        str(args.learning_rate), "--device", args.device,
-        "--seed", str(args.seed)
-    ], cwd=repo))
-    held_out = json.loads(execute(base + [
-        "--evaluate-only", "--replay", *test_files,
-        "--objective", manifest["objective"], "--rules-version", "1",
-        "--checkpoint", str(checkpoint), "--model-version", str(args.model_version),
-        "--device", args.device,
-        "--batch-size", str(args.batch_size)
-    ], cwd=repo))
-    digest = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
-    if training["optimizer"]["checkpoint_sha256"] != digest:
-        raise ValueError("checkpoint digest changed between fitting and test")
-    return {"checkpoint_sha256": digest,
-            "validation_before": training["optimizer"]["validation_before"],
-            "validation_after": training["optimizer"]["validation_after"],
-            "independent_test": held_out["metrics"],
-            "trained_policy_qualified": False}
+    # Do not poison an immutable --reuse corpus with an empty 'models'
+    # directory if balanced-source admission, optimizer, zero-Q gate, or
+    # independent held-out evaluation fails. Publish only after all succeed.
+    staging = Path(tempfile.mkdtemp(prefix=".dmc-training-stage-", dir=root))
+    try:
+        check_private_dir(staging)
+        checkpoint = staging / "dmc-unpromoted-v3.pt"
+        training = json.loads(execute(base + [
+            "--train", "--replay", *train_files,
+            "--validation-replay", *val_files,
+            "--objective", manifest["objective"], "--rules-version", "1",
+            "--output", str(checkpoint), "--model-version", str(args.model_version),
+            "--steps", str(args.steps),
+            "--batch-size", str(args.batch_size), "--learning-rate",
+            str(args.learning_rate), "--device", args.device,
+            "--seed", str(args.seed), *optimizer_policy_flags(args)
+        ], cwd=repo))
+        # Explicitly verify that the subprocess used the requested policy,
+        # rather than silently accepting/reporting a different learner mode.
+        optimizer = training["optimizer"]
+        if optimizer["sampling"] != args.sampling or \
+                optimizer["checkpoint_policy"] != args.checkpoint_policy or \
+                optimizer["validation_selection_weighting"] != (
+                    "episode-source-outcome" if args.sampling == "episode-source-outcome"
+                    else "transition") or \
+                optimizer["validation_zero_baseline_gate"] is not bool(
+                    args.require_validation_advantage):
+            raise ValueError("learner policy report does not match selected experiment")
+        held_out = json.loads(execute(base + [
+            "--evaluate-only", "--replay", *test_files,
+            "--objective", manifest["objective"], "--rules-version", "1",
+            "--checkpoint", str(checkpoint),
+            "--model-version", str(args.model_version),
+            "--device", args.device, "--batch-size", str(args.batch_size)
+        ], cwd=repo))
+        digest = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+        if optimizer["checkpoint_sha256"] != digest:
+            raise ValueError("checkpoint digest changed between fitting and test")
+        # No model file is published before a successful independent test.
+        # A hard link is immutable/no-clobber and remains in the same private
+        # filesystem; unlinking the staging source leaves exactly one owner.
+        modeldir.mkdir(mode=0o700, exist_ok=False)
+        check_private_dir(modeldir)
+        os.link(checkpoint, modeldir / checkpoint.name)
+        dirfd = os.open(modeldir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(dirfd)
+        finally:
+            os.close(dirfd)
+        result = {"checkpoint_sha256": digest,
+                  "validation_before": optimizer["validation_before"],
+                  "validation_after": optimizer["validation_after"],
+                  "independent_test": held_out["metrics"],
+                  "sampling": optimizer["sampling"],
+                  "checkpoint_policy": optimizer["checkpoint_policy"],
+                  "validation_selection_weighting":
+                      optimizer["validation_selection_weighting"],
+                  "selected_validation_step_by_role":
+                      optimizer["selected_validation_step_by_role"],
+                  "validation_zero_baseline_gate":
+                      optimizer["validation_zero_baseline_gate"],
+                  "trained_policy_qualified": False}
+        if args.sampling == "episode-source-outcome":
+            result["validation_aligned_before"] = optimizer[
+                "validation_aligned_before"]
+            result["validation_aligned_after"] = optimizer[
+                "validation_aligned_after"]
+        return result
+    finally:
+        shutil.rmtree(staging)
+
 
 
 def main() -> int:
@@ -347,10 +427,22 @@ def main() -> int:
     parser.add_argument("--learning-rate", type=float, default=0.0001)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--sampling",
+                        choices=("transition", "episode-source-outcome"),
+                        default="transition")
+    parser.add_argument("--checkpoint-policy",
+                        choices=("final", "best-validation"), default="final")
+    parser.add_argument("--validation-interval", type=int, default=20)
+    parser.add_argument("--require-validation-advantage", action="store_true")
     args = parser.parse_args()
     if args.steps < 1 or args.batch_size < 1 or args.seed < 0 or \
-            not 0 < args.learning_rate <= 1:
+            not 0 < args.learning_rate <= 1 or args.validation_interval < 1:
         parser.error("invalid optimizer configuration")
+    if not args.train and (args.sampling != "transition" or \
+                           args.checkpoint_policy != "final" or \
+                           args.validation_interval != 20 or \
+                           args.require_validation_advantage):
+        parser.error("optimizer policy flags require --train")
     if args.train and (args.model_version is None or
                        not 1 < args.model_version < 2**64):
         parser.error("--train requires --model-version > native source model 1")

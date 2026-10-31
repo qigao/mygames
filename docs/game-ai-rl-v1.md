@@ -1372,3 +1372,36 @@ arithmetic, NOT measured live game strength. Standard GitHub CI has no Torch
 trainer install and therefore cannot assert real optimizer quality or
 independent frozen tournament superiority. Strong shed-most paired-deal,
 three-role/swapped-team NEW holdout and KFCore parity remain separate gates.
+
+## R7c — one private experiment entrypoint for the optional R7b learner
+
+The exact same `ai/dmc/experiment.py --reuse --train` private corpus
+entrypoint now forwards the optional `--sampling episode-source-outcome`,
+`--checkpoint-policy best-validation`, `--validation-interval N`, and
+`--require-validation-advantage` flags to the existing `train_dmc.py`
+learner. Without explicit flags the old `transition` / `final`
+behavior is unchanged. Nondefault optimizer settings without `--train`
+fail immediately.
+
+For the balanced mode the reused TRAIN/TUNING VALIDATION corpus passes
+complete-game source and +/- outcome admission *before* opening PyTorch
+or creating any model directory. The executable and raw private datasets
+remain digest-verified by the existing source manifest; model source IDs
+alone are not provenance or authenticity.
+
+Optimization and disjoint held-out testing use an ephemeral, private
+owner-only staging directory. It is cleaned after success or failure;
+`models/dmc-unpromoted-v3.pt` is published with no-clobber hard-link
+only after BOTH the optimizer, optional zero-Q gate and independent
+TEST evaluation succeed. A rejected model does not leave an empty
+`models/` directory that prevents safe corpus reuse. The existing
+`training.v1.json` remains the final private completion marker and
+records selected validation steps, sampling/selection flags, aligned
+metrics (if selected), ordinary transition MSE, frozen model digest and
+independent test MSE. New options do not relax prior hidden-data or
+model-publication restrictions.
+
+The native M5a CI reuses its existing complete C11 Replay 3-way
+experiment test and checks option forwarding and fail-fast admission
+without installing heavy Torch. Full Torch gradient success and actual
+new held-out game superiority remain separate, unproven gates.
