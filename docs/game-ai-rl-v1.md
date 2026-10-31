@@ -1623,3 +1623,40 @@ scores, and benchmark throughput. R2 game-skill acceptance remains
 fresh held-out paired 3-seat swapped-team native C11 matches against
 the strong shed-most baseline; no model/production bot promotion yet.
 
+## KFCore R1a staged three-role ONNX publication (Draft)
+
+The optional `ai/dmc/export_q_onnx.py` no longer exposes the first
+landlord role package before validating the other two roles. Export now
+creates one private, owner-only hidden staging directory and generates
+ALL THREE role-specific ONNX images there. It checks the configured
+CPU ONNX Runtime vs exact frozen Torch predictions at N=1,7,64 for
+every role, the dynamic float32 tensor names/shapes, and the source
+checkpoint/model version/rules/objective before publishing ANY visible
+role-specific package. Before publication, all three staged model
+files and package manifests are re-opened, private ownership and one
+hard-link checked, and the package SHA256 matched to the staged bytes.
+
+Only after this full pass are three role directories materialized in
+the existing 0700 private root, with no-clobber hard-link file publication
+and fsync. `q_onnx_manifest_v1.json` is published **LAST** as the only
+complete three-role acceptance marker. A Python exception midway through
+publication rolls back each newly published role directory; an unexpected
+process crash without that marker leaves any partial output UNADMITTED,
+never a complete model snapshot. No data or weight artifact is published
+to GitHub Actions or a public model repository.
+
+The existing Python-stdlib C11 job `tests/test_dmc_onnx_contract.py`
+now tests a public **non-ONNX** fake-byte publication fixture:
+missing final role, injected mid-publication hard-link failure,
+cleanup/no marker, successful completed set, repeated no-clobber
+publication. This proves file ownership/commit mechanics ONLY,
+not the real ONNX export, which must be tested against configured
+Torch/ONNX/ORT and the KFCore R1a actual backend loader.
+
+Upstream [KFCore Draft PR #357](https://github.com/qigao/KFCore/pull/357)
+also runs a real ONNX Runtime CPU test-only dynamic 3-role fixture
+(N=1,7,64) using the existing focused native SDK CI. Its graph is a
+known analytic sum, NOT the learned DouZero LSTM/MLP; final real
+Torch↔KFCore↔C11 full-legal Q-value ordering parity remains a strict
+separate gate. No model is eligible for deployment or Game Owner admission.
+
