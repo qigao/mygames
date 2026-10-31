@@ -154,6 +154,23 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     -Wall -Wextra -Wpedantic -Werror)
 endif()
 
+
+# Offline model-to-rules inference boundary: version-fenced batched Q score
+# provider, canonical COMPLETE legal mask list, bounded 64-action batches.
+# No torch/ONNX/KFCore dependency, second DDZ engine or fallback scorer.
+add_library(mygames_ddz_dmc_q_selector STATIC
+  ai/dmc/src/ddz_dmc_q_selector.c)
+add_library(MyGames::DMCQSelector ALIAS mygames_ddz_dmc_q_selector)
+target_compile_features(mygames_ddz_dmc_q_selector PUBLIC c_std_11)
+target_include_directories(mygames_ddz_dmc_q_selector PUBLIC ai/dmc/include)
+target_link_libraries(mygames_ddz_dmc_q_selector PUBLIC MyGames::DMCSelfPlay)
+if(MSVC)
+  target_compile_options(mygames_ddz_dmc_q_selector PRIVATE /W4 /WX)
+else()
+  target_compile_options(mygames_ddz_dmc_q_selector PRIVATE
+    -Wall -Wextra -Wpedantic -Werror)
+endif()
+
 # M5c: portable, fixed-size canonical PRIVATE match state codec. No native
 # file persistence and no public game-state serialization API is provided.
 add_library(mygames_ddz_checkpoint STATIC
@@ -481,6 +498,23 @@ if(BUILD_TESTING)
   endif()
   add_test(NAME mygames.ddz_dmc_paired_eval
     COMMAND mygames_ddz_dmc_paired_eval_test)
+  # Real-offline Self-Play adapter with injectable scoring callback.
+  # The fake scorer is TEST-ONLY and not linked into any production service.
+  add_executable(mygames_ddz_dmc_q_selector_test
+    tests/ddz_dmc_q_selector_test.c)
+  target_compile_features(mygames_ddz_dmc_q_selector_test PRIVATE c_std_11)
+  target_link_libraries(mygames_ddz_dmc_q_selector_test PRIVATE
+    MyGames::DMCQSelector)
+  if(MSVC)
+    target_compile_options(mygames_ddz_dmc_q_selector_test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_ddz_dmc_q_selector_test PRIVATE
+      -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME mygames.ddz_dmc_q_selector
+    COMMAND mygames_ddz_dmc_q_selector_test)
+
+
 
 
 

@@ -35,6 +35,9 @@ name: M5a Dou Dizhu gameplay rules (C11)
       - 'tests/test_dmc_corpus.py'
       - 'ai/dmc/experiment.py'
       - 'tests/test_dmc_experiment.py'
+      - 'ai/dmc/include/mygames/ddz_dmc_q_selector.h'
+      - 'ai/dmc/src/ddz_dmc_q_selector.c'
+      - 'tests/ddz_dmc_q_selector_test.c'
       - 'CMakeLists.txt'
       - '.github/workflows/ddz-m5a-rules.yml'
   workflow_dispatch:
@@ -128,7 +131,7 @@ jobs:
             -DMYGAMES_ENABLE_FLOWIE=OFF \
             -DCMAKE_C_FLAGS='-fsanitize=address,undefined -g -fno-omit-frame-pointer -Wall -Wextra -Wpedantic -Werror' \
             -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=address,undefined'
-          cmake --build build/ddz-asan --target mygames_ddz_round_test mygames_ddz_ai_actions_test mygames_rl_targets_test mygames_ddz_ai_features_test mygames_ddz_dmc_episode_test mygames_ddz_dmc_selfplay_test mygames_ddz_dmc_paired_eval_test --parallel 2
+          cmake --build build/ddz-asan --target mygames_ddz_round_test mygames_ddz_ai_actions_test mygames_rl_targets_test mygames_ddz_ai_features_test mygames_ddz_dmc_episode_test mygames_ddz_dmc_selfplay_test mygames_ddz_dmc_paired_eval_test mygames_ddz_dmc_q_selector_test --parallel 2
 
       - name: Check all gameplay operations under sanitizers
         shell: bash
@@ -143,5 +146,5 @@ jobs:
 
           ctest --test-dir build/ddz-asan --no-tests=error \
             --output-on-failure --timeout 180 \
-            -R 'mygames[.](ddz_ai_features|ddz_dmc_episode|ddz_dmc_selfplay|ddz_dmc_paired_eval)'
+            -R 'mygames[.](ddz_ai_features|ddz_dmc_episode|ddz_dmc_selfplay|ddz_dmc_paired_eval|ddz_dmc_q_selector)'
 

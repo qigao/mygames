@@ -621,3 +621,50 @@ ensures no replay regeneration, and still deliberately runs
 WITHOUT installing large PyTorch wheels. Real Torch training
 on full native Replay is an explicitly gated offline operation,
 not performed or falsely claimed by this lightweight CI.
+
+
+## M5k version-fenced bounded Q scoring boundary
+
+MyGames::DMCQSelector is a pure, allocation-free C11, PRIVATE
+offline/native inference boundary for an explicitly selected
+model snapshot. It does NOT provide a built-in scoring engine,
+a second DDZ rules implementation, random or best-legal fallback,
+and has no dependency on PyTorch, KFCore, HTTP, Flowie or TurboDB.
+
+The trusted caller MUST provide the COMPLETE legal mask list from
+mygames_ddz_ai_legal_actions(); the selector rechecks every offered
+physical mask using the acting player's own hand and authoritative
+M5a classify/beat contract. It encodes the 319/430 acting-role
+state feature and chronological 5x162 history ONCE per turn.
+For each 1..65536 real legal actions, it streams complete, bounded
+batches of at most 64 canonical 54-card action feature vectors
+to an explicitly supplied model scoring callback. Every returned
+Q is required to be finite, with a deterministic physical-mask
+tie break for equal Q values. No Top-K truncation is permitted.
+
+The provider must carry an immutable nonzero model version, exact
+rules version and acting role. The selector also checks the exact
+expected turn ID against the observed round revision. Missing
+model, stale version/turn/role, illegal own-hand mask, scorer
+failure, NaN/Inf result or over-capacity action count leaves the
+output mask untouched and returns an explicit status. This is a
+PROPOSAL ONLY; the unique existing CFlow Room Owner must
+independently revalidate epoch/game/turn/seat and use the sole
+M5a round_submit and durable M5c Game COMMIT path before any ACK.
+
+A separate small MyGames::DMCQSelector policy adapter feeds the
+existing OFFLINE C11 Self-Play callback directly. All THREE
+role providers must be supplied by the experiment; if even one
+fails or mismatches its required snapshot, Self-Play returns
+POLICY_REJECTED with no terminal labels or implicit alternate
+model. This is the native integration contract needed before
+binding a genuine immutable PyTorch/KFCore model.
+
+Existing M5a three-OS and Linux ASan+UBSan CTest now covers:
+genuine 20-card M5a legal action list, complete argmax,
+bounded multi-batch streaming, stale model/rules/turn/role,
+NaN, scorer failure, illegal PASS and no-output mutation;
+then a full genuine OS-shuffled offline MyGames match using
+three explicit TEST-ONLY cardinality scorers. This proves a
+model-shaped legal-proposal boundary, NOT real learned Q
+weights, numeric Torch/KFCore parity or higher game strength.
