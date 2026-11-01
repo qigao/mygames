@@ -505,8 +505,16 @@ def main() -> int:
         args._verified_train_sources = verified_behavior["train_source_by_episode"]
         args._verified_validation_sources = (
             verified_behavior["validation_source_by_episode"])
-    episodes, by_role = load_checked(args.replay, args.rules_version,
-                                     OBJECTIVES[args.objective])
+    if verified_behavior is not None:
+        # Use precisely the in-memory snapshots that were SHA-validated by
+        # the cohort verifier. Never reopen paths after admission: external
+        # owner-side changes must not swap optimizer inputs between checks.
+        episodes = list(verified_behavior["train_episodes"])
+        by_role = {r: [s for ep in episodes for s in ep.samples if s.role == r]
+                   for r in ROLES}
+    else:
+        episodes, by_role = load_checked(args.replay, args.rules_version,
+                                         OBJECTIVES[args.objective])
     if args.train and args.model_version <= max(e.model_version for e in episodes):
         raise ValueError("candidate model-version must exceed every Replay source model version")
     report = {
@@ -525,8 +533,13 @@ def main() -> int:
         report["source_provenance_is_not_signed_attestation"] = True
         report["qualified_gameplay_skill"] = False
     if args.validation_replay:
-        val, roles = load_checked(args.validation_replay, args.rules_version,
-                                  OBJECTIVES[args.objective])
+        if verified_behavior is not None:
+            val = list(verified_behavior["validation_episodes"])
+            roles = {r: [s for ep in val for s in ep.samples if s.role == r]
+                     for r in ROLES}
+        else:
+            val, roles = load_checked(args.validation_replay, args.rules_version,
+                                      OBJECTIVES[args.objective])
         require_disjoint(episodes, val)
         report["validation_episodes"] = len(val)
         report["validation_steps"] = sum(len(e.samples) for e in val)
