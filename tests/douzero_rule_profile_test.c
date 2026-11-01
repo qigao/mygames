@@ -54,6 +54,30 @@ int main(void) {
     REQUIRE(mygames_douzero_classify_move(rocket, &move) == MYGAMES_DDZ_OK);
     REQUIRE(move.kind == MYGAMES_DDZ_MOVE_ROCKET && move.card_count == 2u);
     REQUIRE(mygames_douzero_classify_move(plane, NULL) == MYGAMES_DDZ_INVALID_MOVE);
+    /* Original upstream move_selector compares max triple including a wing.
+     * MyGames live beats() compares only body high; neither is rewritten. */
+    {
+        const uint64_t rival = rank_cards(0u,3u) | rank_cards(1u,3u) |
+                               rank_cards(2u,3u) | rank_cards(12u,3u);
+        const uint64_t challenge = rank_cards(3u,3u) | rank_cards(4u,3u) |
+                                   rank_cards(5u,3u) | rank_cards(9u,3u);
+        mygames_ddz_move a = {0}, b = {0};
+        bool accepted = true;
+        REQUIRE(mygames_douzero_classify_move(rival, &a) == MYGAMES_DDZ_OK);
+        REQUIRE(mygames_douzero_classify_move(challenge, &b) == MYGAMES_DDZ_OK);
+        REQUIRE(mygames_ddz_beats(&b, &a));  /* unchanged online semantics */
+        REQUIRE(mygames_douzero_beats_move(challenge, rival, &accepted) ==
+                MYGAMES_DDZ_OK && !accepted); /* original upstream semantics */
+        REQUIRE(mygames_douzero_beats_move(challenge, 0u, &accepted) ==
+                MYGAMES_DDZ_OK && accepted);
+        REQUIRE(mygames_douzero_beats_move(0u, rival, &accepted) ==
+                MYGAMES_DDZ_INVALID_MOVE && accepted);
+        REQUIRE(mygames_douzero_beats_move(challenge, UINT64_C(1)<<54u,
+                                          &accepted) == MYGAMES_DDZ_INVALID_MOVE &&
+                accepted);
+        REQUIRE(mygames_douzero_beats_move(challenge, rival, NULL) ==
+                MYGAMES_DDZ_INVALID_ARGUMENT);
+    }
     REQUIRE(old.kind == MYGAMES_DDZ_MOVE_BOMB && old.high_rank == 11u);
     REQUIRE(mygames_ddz_classify(plane, &old) == MYGAMES_DDZ_INVALID_MOVE);
     puts("mygames.douzero_offline_native_profile: PASS");
