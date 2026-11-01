@@ -130,6 +130,41 @@ def make_record(*, checkpoint_sha256, model_version, source_revision,
     }
 
 
+def public_training_evidence(record: dict) -> dict:
+    """Only outcome-free per-role TUNING aggregates, never private Replay.
+
+    This is an authentic report of a frozen candidate's recorded objective
+    metrics, NOT held-out performance or a game-skill qualification. A unit
+    fixture with fake checkpoint bytes only validates this report contract.
+    """
+    _admit_content(record)
+    selected = record["selected_validation_step_by_role"]
+    aligned = record["validation_aligned_mse_by_role"]
+    roles = {}
+    for role in ROLES:
+        mse = aligned[role]["mse"]
+        zero_mse = aligned[role]["zero_q_mse"]
+        roles[role] = {
+            "selected_optimizer_step": selected[role],
+            "tuning_aligned_q_mse": mse,
+            "tuning_zero_q_mse": zero_mse,
+            "tuning_q_mse_reduction": zero_mse - mse,
+        }
+    return {
+        "schema": "mygames-r9-public-training-evidence-v1",
+        "candidate_model_version": record["candidate_model_version"],
+        "source_policy_labels": list(record["verified_behavior_sources"]),
+        "complete_training_games": record["training_complete_games"],
+        "complete_tuning_games": record["tuning_complete_games"],
+        "roles": roles,
+        "all_tuning_roles_better_than_zero_q": all(
+            item["tuning_q_mse_reduction"] > 0 for item in roles.values()),
+        "unseen_test_measured": False,
+        "gameplay_skill_qualified": False,
+        "production_bot_promoted": False,
+    }
+
+
 def verify_record(checkpoint: str | Path, *, expected_model_version: int,
                   expected_bundle_sha256: str | None = None):
     model = Path(checkpoint).absolute()
