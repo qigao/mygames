@@ -36,3 +36,96 @@ The old v102/v103/v104 weights are **retired experimental artifacts, not trainin
 ## Retired implementation
 
 The old Draft PR chain #22, #24–#27, #29–#30 implemented a separate custom DMC trainer, custom Replay and heuristic-data collection. None of that unmerged code is carried into this new branch. Preserve historical Git records for reproducibility, mark old PRs/issues obsolete, and make this pinned upstream algorithm the only active RL implementation in the new development line.
+
+
+## Executed ORIGINAL CPU Actor-Learner and evaluation (R0)
+
+**This is a real upstream training smoke, not a new algorithm.** Original
+kwai/DouZero at 718a5c920bf3361e34178a38f3b80458e176b351 was executed
+from the verified local MyGames exact source checkout
+0f9ad67d703c1a86f6cf93d82051e566fbd040c3. The entire vendored
+upstream source was unchanged (32/32 original Git blobs). Runtime:
+Python 3.13; PyTorch 2.10.0 CPU; NumPy; pinned public metadata-only wheels
+GitPython 3.1.43, gitdb 4.0.11 and smmap 5.0.1. Original training and
+random baseline evaluation did not require RLCard. No PyTorch installation
+or private model/replay upload was added to GitHub CI.
+
+An unchanged upstream train.py run with the upstream default **ADP**
+objective, one CPU Actor, one learner thread, unroll_length 10, batch_size
+2, num_buffers 4 and requested total_frames 160 completed **200 frames**
+(the asynchronous learner can overshoot a finite limit): actual frame
+counts landlord/up/down **60/80/60**. The exact three RMSprop optimizer
+steps were **3/4/3**; all last sampled MSE losses were finite:
+2.72384 / 1.69367 / 2.74503. The original private full model.tar
+checkpoint SHA256 was:
+
+    c79f7cc05cc4c98506870e1e831171291000f4535f6e5b8d9a1bfa201b730ec3
+
+The source-trained checkpoint was actually loaded and contained the original
+three role state_dicts, RMSprop states, position_frames, frames and stats,
+plus three separate role weight images. For this small sample the original
+mean_episode_return logging field was **NaN** because sampled mini-batches
+did not contain terminal done rows. It is not valid evidence of convergence.
+A finite external CPU supervisor stopped the original still-running Actor
+process group **after** the checkpoint was committed, without patching
+upstream code or discarding weights.
+
+Using the original generate_eval_data.py and evaluate.py on a local
+48-deal **developer-only** schedule, trained landlord vs two random farmers
+won **1/48** complete games, and two trained farmers vs random landlord
+won **35/48** complete games. This verifies saved model loading and real
+actions; it is **not** a strong trained policy, C11 integration,
+generalization claim, or new strategy-skill qualification.
+
+## R1 original DouZero vs authoritative MyGames C11 rule parity: RED
+
+A separate genuine source comparison used ORIGINAL
+douzero.env.move_generator.MovesGener and get_move_type against
+the EXISTING authoritative MyGames M5j ddz_round.c compiled as a
+Linux shared library. On 100 deterministic parity-only random landlord
+hands (seed 20261102), **10,075 upstream legal candidate actions** were
+generated: **10,074** classified with agreeing types; **1** was accepted
+as airplane-with-single-wings by official DouZero but REJECTED by C11.
+
+Exact counterexample, in upstream rank notation:
+
+    [7,7,7, 8,8,8, 9,9,9, 17,17,17]
+
+Official DouZero recognizes three consecutive triple groups plus a
+fourth triple used as three single wings (TYPE_11_SERIAL_3_1).
+The C11 v1 house-rule classifier prohibits an extra triple wing and
+rejects it. A classifier-only example is [3,3,3,3,4,4,4,4]:
+upstream move_detector recognizes TYPE_14_4_22 while C11 rejects two
+quads as four-plus-two-pairs; this example is NOT claimed to be
+generated in the sampled upstream move list.
+
+Developer reproduction (builds the ONE original C11 Round, no extra
+engine/installer/consumer):
+
+    cc -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -fPIC -shared -I games/doudizhu/include games/doudizhu/src/ddz_round.c -o /PRIVATE_OUTSIDE_GIT/libmygames-ddz-round-audit.so
+    python3 ai/douzero/audit_c11_rule_parity.py --c11-library /PRIVATE_OUTSIDE_GIT/libmygames-ddz-round-audit.so --hands 100 --seed 20261102 --report-only
+
+Without the explicit **report-only** diagnostic switch the parity audit
+must fail closed until every move agrees. It never changes upstream
+source, performs training, or qualifies a native inference adapter.
+
+Two other material differences prevent a drop-in C11 Env:
+
+- Original DouZero Env.reset directly sets **20 landlord / 17 / 17**
+  dealt cards and a fixed landlord *position*. MyGames C11 Match has an
+  authoritative, separately staged **0..3 bidding** phase and a physical
+  landlord-seat selection/kitty procedure.
+- Original DouZero **ADP** terminal objective is signed 2^bomb_count.
+  MyGames C11 M5j terminal scoring uses bid_base multiplied by
+  2^(bomb_or_rocket_count+spring), including spring or counter-spring
+  and explicit per-seat point deltas. Even DouZero WP (+1/-1) is not a
+  complete replacement for the existing C11 settlement ledger.
+
+**Decision: R1 C11 integration remains BLOCKED.** Choose, version and
+test an explicit DouZero-compatible offline C11 game-rule profile
+(including exact move legality, observations, reward contract and
+original 319/430+54, 5x162 feature layout), without changing existing
+M5j online game/settlement behavior. Then connect only a narrow C11
+Env bridge to the UNMODIFIED upstream actor and learner. No new DMC
+algorithm, heuristic source sampler, silent rule conversion or
+unverified pretrained checkpoint is allowed.
