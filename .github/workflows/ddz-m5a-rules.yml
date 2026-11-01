@@ -9,6 +9,7 @@ name: M5a Dou Dizhu gameplay rules (C11)
       - 'tests/douzero_rule_profile_test.c'
       - 'tests/test_douzero_rule_profile.py'
       - 'tests/test_douzero_round_state_parity.py'
+      - 'tests/test_douzero_actor_feature_parity.py'
       - 'CMakeLists.txt'
       - 'third_party/DouZero/**'
       - 'ai/douzero/**'
@@ -68,6 +69,9 @@ jobs:
           python3 -m py_compile ai/douzero/audit_c11_rule_parity.py ai/douzero/audit_c11_reward_parity.py tests/test_douzero_rule_profile.py
           python3 tests/test_douzero_rule_profile.py --offline-library build/ddz/libmygames_douzero_offline_rules.so --hands 1000
           python3 tests/test_douzero_round_state_parity.py --library build/ddz/libmygames_douzero_offline_rules.so --games 24 --seed 91024
+          # NumPy-backed original get_obs feature parity is an explicit OFFLINE
+          # integration test; never auto-install heavy ML deps in M5a.
+          python3 -m py_compile tests/test_douzero_actor_feature_parity.py
 
   pure-source-asan:
     name: Pure C11 rules / Linux ASan+UBSan
