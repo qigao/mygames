@@ -9,7 +9,6 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -106,6 +105,18 @@ def main():
         try:
             manifest["behavior"] = "unverified-policy"
             marker.write_text(json.dumps(manifest))
+            call(verifier_args(cohorts, generator_sha, revision), successful=False)
+        finally:
+            marker.write_bytes(original_manifest)
+        # JSON bool/float are not valid integer source provenance.
+        try:
+            altered_type = json.loads(original_manifest)
+            altered_type["model_version"] = True
+            marker.write_text(json.dumps(altered_type))
+            call(verifier_args(cohorts, generator_sha, revision), successful=False)
+            altered_type = json.loads(original_manifest)
+            altered_type["episodes"][0]["role_decisions"] = [1.0, 1.0, 1.0]
+            marker.write_text(json.dumps(altered_type))
             call(verifier_args(cohorts, generator_sha, revision), successful=False)
         finally:
             marker.write_bytes(original_manifest)
