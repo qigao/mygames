@@ -88,6 +88,37 @@ def main():
         assert verified["ready_for_multisource_optimization"] is False
         assert verified["cross_split_episode_ids_and_bytes_disjoint"]
 
+        # R9b rejects an UNBALANCED real C11 cohort before importing Torch or
+        # publishing weights. One completed game per source/split cannot
+        # possibly contain both winner and loser games for all actor roles.
+        train_files, val_files = [], []
+        for index, behavior in enumerate(BEHAVIORS):
+            train_files.append(
+                base / f"{behavior}-train" /
+                f"episode-{33001 + index * 100}.mgdmc")
+            val_files.append(
+                base / f"{behavior}-validation" /
+                f"episode-{33011 + index * 100}.mgdmc")
+        optimizer = [
+            ROOT / "ai/dmc/train_dmc.py", "--train",
+            "--replay", *train_files,
+            "--validation-replay", *val_files,
+            "--objective", "win-sign",
+            "--output", base / "models" / "unqualified.pt",
+            "--model-version", 4, "--sampling", "episode-source-outcome",
+            "--checkpoint-policy", "best-validation",
+            "--require-validation-advantage",
+            "--behavior-source-revision", revision,
+            "--behavior-generator-sha256", generator_sha,
+        ]
+        for behavior in BEHAVIORS:
+            optimizer += ["--behavior-required-source", behavior]
+            optimizer += ["--behavior-train-cohort", base / f"{behavior}-train"]
+            optimizer += ["--behavior-validation-cohort",
+                          base / f"{behavior}-validation"]
+        call(optimizer, successful=False)  # missing BOTH outcome signs
+        assert not (base / "models").exists()  # no checkpoint, no optimizer
+
         # Wrong binary/source pin, omission, duplication, and a reused cohort
         # are rejected BEFORE any optimizer can interpret numerical model IDs.
         call(verifier_args(cohorts, "0" * 64, revision), successful=False)
