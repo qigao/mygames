@@ -111,6 +111,11 @@ if(BUILD_TESTING)
   add_library(mygames_douzero_offline_rules SHARED
     ai/douzero/src/douzero_rule_profile.c
     games/doudizhu/src/ddz_round.c)
+  # Windows C symbols are not automatically exported from a test-only DLL.
+  # Export the actual existing Round and offline wrapper symbols to the native
+  # CTest executable, without changing the production static Round target.
+  set_target_properties(mygames_douzero_offline_rules PROPERTIES
+    WINDOWS_EXPORT_ALL_SYMBOLS ON)
   target_compile_features(mygames_douzero_offline_rules PUBLIC c_std_11)
   target_include_directories(mygames_douzero_offline_rules PUBLIC
     games/doudizhu/include ai/douzero/include)
