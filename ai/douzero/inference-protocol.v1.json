@@ -97,7 +97,7 @@
     "owner_must_revalidate_move_at_commit": true
   },
   "json_encoding": {
-    "u64_fields": "all params/results 64-bit identity fields are canonical unsigned decimal strings; JSON-RPC envelope id is the sole bounded numeric exception",
+    "u64_fields": "canonical unsigned decimal strings for all params/result 64-bit identity fields; JSON-RPC envelope id is a bounded numeric exception",
     "uint32_fields": "JSON nonnegative integers",
     "model_sha256": "64 lowercase hexadecimal characters; exact authenticated ONNX artifact bytes",
     "legal_list_sha256": "64 lowercase hexadecimal characters",
