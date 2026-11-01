@@ -230,3 +230,89 @@ mygames_douzero_wire_status mygames_douzero_wire_decode_reply(
     }
     return MYGAMES_DOUZERO_WIRE_OK;
 }
+
+
+mygames_douzero_wire_status mygames_douzero_score_collector_begin(
+    const mygames_douzero_ticket *first, float *scores, size_t capacity,
+    mygames_douzero_score_collector *out) {
+    mygames_douzero_score_collector tmp;
+    uint32_t first_count;
+    uint32_t count;
+    if (!out || !scores || !valid_ticket(first) ||
+        first->first_action != 0u ||
+        capacity < (size_t)first->total_actions)
+        return MYGAMES_DOUZERO_WIRE_INVALID;
+    count = (first->total_actions + 63u) / 64u;
+    first_count = first->total_actions < 64u ? first->total_actions : 64u;
+    if (count == 0u || count > MYGAMES_DOUZERO_REMOTE_CHUNKS_MAX ||
+        first->action_count != first_count ||
+        UINT64_MAX - first->request_id < (uint64_t)count - 1u)
+        return MYGAMES_DOUZERO_WIRE_INVALID;
+    memset(&tmp, 0, sizeof(tmp));
+    tmp.initial = *first;
+    tmp.scores = scores;
+    tmp.score_capacity = capacity;
+    tmp.expected_count = (uint16_t)count;
+    *out = tmp;
+    return MYGAMES_DOUZERO_WIRE_OK;
+}
+
+mygames_douzero_wire_status mygames_douzero_score_collector_ticket(
+    const mygames_douzero_score_collector *owner, size_t batch,
+    mygames_douzero_ticket *out) {
+    mygames_douzero_ticket ticket;
+    uint32_t remain;
+    if (!owner || !out || !owner->scores ||
+        !owner->expected_count || batch >= owner->expected_count ||
+        owner->score_capacity < owner->initial.total_actions)
+        return MYGAMES_DOUZERO_WIRE_INVALID;
+    ticket = owner->initial;
+    ticket.request_id += (uint64_t)batch;
+    ticket.first_action = (uint32_t)batch * 64u;
+    remain = ticket.total_actions - ticket.first_action;
+    ticket.action_count = (uint16_t)(remain < 64u ? remain : 64u);
+    if (!valid_ticket(&ticket))
+        return MYGAMES_DOUZERO_WIRE_INVALID;
+    *out = ticket;
+    return MYGAMES_DOUZERO_WIRE_OK;
+}
+
+mygames_douzero_wire_status mygames_douzero_score_collector_accept(
+    mygames_douzero_score_collector *owner, const void *reply, size_t n) {
+    const uint8_t *p = (const uint8_t *)reply;
+    mygames_douzero_ticket expected;
+    mygames_douzero_wire_status result;
+    float temporary[MYGAMES_DOUZERO_REMOTE_BATCH_MAX];
+    uint32_t first;
+    size_t batch;
+    if (!owner || !owner->scores || !owner->expected_count ||
+        !reply || n < MYGAMES_DOUZERO_REMOTE_HEADER_BYTES)
+        return MYGAMES_DOUZERO_WIRE_INVALID;
+    /* Packet data is UNTRUSTED. Indexing the bitmap or the score storage
+     * is forbidden until the offset is checked and the full owner ticket
+     * was authenticated against the immutable locally expected batch. */
+    first = get32(p + 56u);
+    if ((first % 64u) != 0u) return MYGAMES_DOUZERO_WIRE_INVALID;
+    batch = first / 64u;
+    if (batch >= owner->expected_count)
+        return MYGAMES_DOUZERO_WIRE_INVALID;
+    if ((owner->received[batch / 8u] & (1u << (batch % 8u))) != 0u)
+        return MYGAMES_DOUZERO_WIRE_STALE;
+    if (mygames_douzero_score_collector_ticket(owner, batch, &expected)
+        != MYGAMES_DOUZERO_WIRE_OK)
+        return MYGAMES_DOUZERO_WIRE_INVALID;
+    result = mygames_douzero_wire_decode_reply(
+        reply, n, &expected, temporary, MYGAMES_DOUZERO_REMOTE_BATCH_MAX);
+    if (result != MYGAMES_DOUZERO_WIRE_OK) return result;
+    memcpy(owner->scores + first, temporary,
+           (size_t)expected.action_count * sizeof(float));
+    owner->received[batch / 8u] |= (uint8_t)(1u << (batch % 8u));
+    ++owner->received_count;
+    return MYGAMES_DOUZERO_WIRE_OK;
+}
+
+int mygames_douzero_score_collector_complete(
+    const mygames_douzero_score_collector *owner) {
+    return owner && owner->scores && owner->expected_count > 0u &&
+           owner->received_count == owner->expected_count;
+}
