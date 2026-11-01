@@ -109,10 +109,11 @@
   },
   "legal_list_digest": {
     "algorithm": "SHA-256",
-    "domain": "mygames.douzero.legal.v1\\0 (literal ASCII bytes with one NUL terminator)",
+    "domain": "mygames.douzero.legal.v1",
     "body": "uint32_le(full_action_count) || uint64_le(each canonical original ordered 54-bit physical action mask including zero for PASS)",
     "owner_computed": true,
-    "service_echo_only": true
+    "service_echo_only": true,
+    "domain_separator": "append exactly one NUL byte (0x00)"
   },
   "staged_contract": {
     "owner_ticket_c11_implemented": true,
