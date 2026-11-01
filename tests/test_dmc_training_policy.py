@@ -46,7 +46,28 @@ def main():
         for landlord_wins in (False, True)
         for length in (1, 20)
     ]
+    # Every synthetic fixture uses source model_version 1 or 3. An explicit
+    # source identity must group by verified BEHAVIOR POLICY rather than
+    # silently merging two untrained heuristics that both encode version=1.
+    policy_labels = {e.episode_id: (
+        "shed-most" if e.model_version == 1 else "legal-index")
+        for e in episodes}
     for role in range(3):
+        source_sampler = make_role_sampler(
+            episodes, role, verified_source_by_episode=policy_labels)
+        assert source_sampler.strata_counts() == {
+            "shed-most": {"positive_games": 2, "negative_games": 2},
+            "legal-index": {"positive_games": 2, "negative_games": 2}}
+        missing = dict(policy_labels)
+        del missing[episodes[0].episode_id]
+        require_rejected(lambda: make_role_sampler(
+            episodes, role, verified_source_by_episode=missing))
+        bad = dict(policy_labels)
+        bad[episodes[0].episode_id] = "unverified-policy"
+        require_rejected(lambda: make_role_sampler(
+            episodes, role, verified_source_by_episode=bad))
+        source_sampling = source_sampler.batch(random.Random(91), 4096)
+        assert len(source_sampling) == 4096
         sampler = make_role_sampler(episodes, role)
         assert sampler.strata_counts() == {
             "1": {"positive_games": 2, "negative_games": 2},
