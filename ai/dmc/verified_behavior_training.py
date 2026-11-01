@@ -7,9 +7,10 @@ Only the source-verified mapping may be passed to the policy-balanced learner.
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
-from replay import read_episode
+from replay import parse_episode
 from train_policy import make_role_sampler
 from verify_behavior_sources import (
     BEHAVIORS, HEX40, HEX64, MANIFEST, require_private, verify_cohort,
@@ -67,14 +68,26 @@ def admit_training_sources(*, train_cohorts, validation_cohorts,
             require_private(marker, directory=False)
             # The source manifest was already verified by verify_cohort.
             # Its exact bytes/digest bind the private checkpoint report.
-            import json
             content = marker.read_bytes()
             data = json.loads(content)
             digest_inputs.append((split, behavior,
                                   hashlib.sha256(content).hexdigest()))
             for entry in data["episodes"]:
                 private_file = root / entry["file"]
-                game = read_episode(private_file)
+                require_private(private_file, directory=False)
+                # Capture and VERIFY the exact bytes once, then parse those
+                # very bytes into an in-memory immutable Episode. Passing only
+                # paths to a later learner would allow an owner-side rewrite
+                # between provenance admission and optimizer input reading.
+                raw = private_file.read_bytes()
+                if hashlib.sha256(raw).hexdigest() != entry["sha256"]:
+                    raise ValueError("native Replay changed during source admission")
+                game = parse_episode(raw)
+                if (game.episode_id != entry["episode_id"] or
+                        game.model_version != 1 or game.rules_version != 1 or
+                        game.landlord_seat != entry["landlord_seat"] or
+                        game.winner_seat != entry["winner_seat"]):
+                    raise ValueError("source snapshot differs from sealed manifest")
                 local_files.append(private_file)
                 episodes.append(game)
                 local_labels[game.episode_id] = behavior
@@ -98,6 +111,8 @@ def admit_training_sources(*, train_cohorts, validation_cohorts,
     return {
         "train_files": files["train"],
         "validation_files": files["validation"],
+        "train_episodes": all_episodes["train"],
+        "validation_episodes": all_episodes["validation"],
         "train_source_by_episode": source_by_episode["train"],
         "validation_source_by_episode": source_by_episode["validation"],
         "sources": tuple(sorted(required)),
