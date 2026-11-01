@@ -260,7 +260,7 @@ static void test_cancel_deadline_connection_reuse(void) {
         500u, 101u) == OK);
     CHECK(mygames_douzero_remote_accept(&ticket, &old_reply, 102u) == STALE);
     CHECK(mygames_douzero_remote_accept(&ticket,
-        &(mygames_douzero_remote_reply_chunk){0}, 102u) == STALE);
+        &(mygames_douzero_remote_reply_chunk){0}, 102u) == INVALID);
     CHECK(scores[0] == 123.25f);
     CHECK(mygames_douzero_remote_cancel(&ticket) == OK);
     CHECK(mygames_douzero_remote_cancel(&ticket) ==
