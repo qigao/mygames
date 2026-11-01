@@ -137,8 +137,10 @@ mygames_douzero_remote_status mygames_douzero_remote_accept(
     size_t needed, offset, i;
     mygames_douzero_remote_status status = live(ticket, now_ms);
     if (status != MYGAMES_DOUZERO_REMOTE_OK) return status;
-    if (!reply || !reply->scores || ticket->phase != PHASE_COLLECTING)
+    if (!reply || !reply->scores)
         return MYGAMES_DOUZERO_REMOTE_INVALID;
+    if (ticket->phase != PHASE_COLLECTING)
+        return MYGAMES_DOUZERO_REMOTE_REPLAY;
     status = mygames_douzero_remote_expected_chunk(
         ticket, now_ms, &wire, &index, &count, &needed);
     if (status != MYGAMES_DOUZERO_REMOTE_OK) return status;
