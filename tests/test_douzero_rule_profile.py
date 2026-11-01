@@ -99,6 +99,16 @@ def main():
             if accepted is None or C11_TO_DOUZERO[accepted.kind] != expected["type"]:
                 raise AssertionError(f"offline profile deviates from original {candidate} {expected}")
             assert accepted.card_count == len(candidate)
+            if "rank" in expected:
+                sequence = expected["type"] in (8, 9, 10, 11, 12)
+                official_high = (INDEX[expected["rank"]] +
+                                 (expected["len"] - 1 if sequence else 0))
+                if accepted.high_rank != official_high:
+                    raise AssertionError(
+                        f"original/C11 primary-rank mismatch: {candidate} "
+                        f"{expected}, native_high={accepted.high_rank}")
+                if sequence and accepted.chain_length != expected["len"]:
+                    raise AssertionError("original/C11 sequence-length mismatch")
             compared += 1
     assert compared >= args.hands * 20
     print(f"mygames.douzero_native_move_profile: PASS original_actions={compared} "
