@@ -53,15 +53,12 @@ def run(args):
         raise PermissionError("private checkpoint directory must already be owned 0700")
     if os.path.commonpath((str(parent.resolve(strict=True)), str(ROOT))) == str(ROOT):
         raise ValueError("store private learned weights OUTSIDE the source checkout")
-    # The learner will re-admit all sources independently before importing
-    # Torch. The training command never includes any TEST file or directory.
+    # The learner re-admits each cohort and obtains its exact immutable
+    # Replay list from trusted manifests. Do NOT expand the thousands of
+    # individual private files into OS command-line arguments. TEST unopened.
     cmd = [
         sys.executable, str(ROOT / "ai/dmc/train_dmc.py"),
-        "--train", "--replay",
-        *(str(x) for x in audited["train_files"]),
-        "--validation-replay",
-        *(str(x) for x in audited["validation_files"]),
-        "--rules-version", "1", "--objective", "win-sign",
+        "--train", "--rules-version", "1", "--objective", "win-sign",
         "--output", str(target),
         "--model-version", str(args.model_version),
         "--steps", str(args.steps),
