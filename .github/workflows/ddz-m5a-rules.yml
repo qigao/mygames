@@ -163,7 +163,7 @@ jobs:
 
       # One-time public tracked-code snapshot used ONLY to execute an actual
       # offline R9 PyTorch experiment. No generated Replay, weights, model
-      # outputs, untracked local files, credentials or workflow artifacts.
+      # outputs, untracked local files, credentials or private artifacts.
       - name: Prepare public tracked-only R9 source checkout
         if: runner.os == 'Linux' && github.event_name == 'pull_request' && github.event.pull_request.number == 27
         shell: bash
@@ -177,7 +177,7 @@ jobs:
           cp .git/HEAD "$export_root/.git/HEAD"
           cp .git/index "$export_root/.git/index"
           if [ -f .git/shallow ]; then cp .git/shallow "$export_root/.git/shallow"; fi
-          printf '[core]\\nrepositoryformatversion = 0\\nfilemode = true\\nbare = false\\n' > "$export_root/.git/config"
+          printf '[core]\nrepositoryformatversion = 0\nfilemode = true\nbare = false\n' > "$export_root/.git/config"
           test "$(git -C "$export_root" rev-parse HEAD)" = "$(git rev-parse HEAD)"
           test -z "$(git -C "$export_root" status --porcelain --untracked-files=no)"
           tar -C "$export_root" -czf "$RUNNER_TEMP/mygames-r9-public-checkout.tar.gz" .
