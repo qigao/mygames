@@ -20,6 +20,13 @@ extern "C" {
 mygames_ddz_status mygames_douzero_classify_move(
     uint64_t physical_cards, mygames_ddz_move *out_move);
 
+/* Offline original DouZero response-move comparison (PASS is separate).
+ * Uses the original C11 beats classifier except the upstream airplane-wing
+ * rank comparison quirk. A valid non-beating move returns OK/false; invalid
+ * masks return INVALID_MOVE without touching out_beats. Never for Room Owner. */
+mygames_ddz_status mygames_douzero_beats_move(
+    uint64_t candidate_cards, uint64_t previous_cards, bool *out_beats);
+
 #ifdef __cplusplus
 }
 #endif
