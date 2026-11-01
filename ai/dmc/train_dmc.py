@@ -259,7 +259,25 @@ def train(episodes: list[Episode], by_role: dict[int, list],
                 episodes, role, verified_source_by_episode=train_sources)
             validation_samplers[role] = make_role_sampler(
                 validation, role, verified_source_by_episode=val_sources)
-    models = {role: DouZeroQ(role).to(device) for role in ROLES}
+    warm = getattr(args, "_verified_warmstart", None)
+    if warm is not None:
+        models, parent_meta = load_model_checkpoint(
+            args.warm_start_checkpoint,
+            expected_rules=args.rules_version,
+            expected_objective=args.objective,
+            expected_model_version=args.warm_start_model_version,
+            torch=torch, device=device)
+        # A warm start is the EXACT verified frozen source-Q weights, not an
+        # independently initialized network trained on its own Replay.
+        observed_ids = {e.episode_id for e in episodes + validation}
+        old_ids = set(parent_meta["train_episode_ids"]) | set(
+            parent_meta["validation_episode_ids"])
+        if observed_ids & old_ids or any(
+                e.model_version != args.warm_start_model_version
+                for e in episodes + validation):
+            raise ValueError("warm-start source episodes overlap parent training/tuning or use other Q")
+    else:
+        models = {role: DouZeroQ(role).to(device) for role in ROLES}
     before = {ROLES[r]: evaluate_rows(models[r], val_roles[r], device,
                                        args.batch_size) for r in ROLES}
     aligned_before = ({ROLES[r]: evaluate_aligned_episodes(
@@ -437,13 +455,47 @@ def main() -> int:
     parser.add_argument("--behavior-generator-sha256")
     parser.add_argument("--behavior-learner-revision",
                         help="pinned exact clean Python learner Git HEAD (R9 only)")
+    # R9d explicit TRUE warm-start from a frozen v3 parent. The source C11
+    # Replay-v1 model_version MUST be that parent version for all seats.
+    parser.add_argument("--warm-start-checkpoint", type=Path)
+    parser.add_argument("--warm-start-model-version", type=int)
+    parser.add_argument("--warm-train-dir", type=Path)
+    parser.add_argument("--warm-validation-dir", type=Path)
+    parser.add_argument("--warm-source-revision")
+    parser.add_argument("--warm-native-library-sha256")
     args = parser.parse_args()
     source_requested = any((
         args.behavior_train_cohort, args.behavior_validation_cohort,
         args.behavior_required_source, args.behavior_source_revision,
         args.behavior_generator_sha256, args.behavior_learner_revision,
     ))
-    if not source_requested and not args.replay:
+    warm_requested = any((
+        args.warm_start_checkpoint is not None,
+        args.warm_start_model_version is not None,
+        args.warm_train_dir is not None,
+        args.warm_validation_dir is not None,
+        args.warm_source_revision,
+        args.warm_native_library_sha256,
+    ))
+    if warm_requested:
+        if (source_requested or not args.train or args.replay or
+                args.validation_replay or not args.warm_start_checkpoint or
+                args.warm_start_model_version is None or
+                not args.warm_train_dir or not args.warm_validation_dir or
+                not args.warm_source_revision or
+                not args.warm_native_library_sha256 or
+                args.objective != "win-sign" or args.rules_version != 1 or
+                args.sampling != "episode-source-outcome" or
+                args.checkpoint_policy != "best-validation" or
+                not args.require_validation_advantage or
+                args.model_version is None or
+                type(args.warm_start_model_version) is not int or
+                args.warm_start_model_version < 2 or
+                args.model_version <= args.warm_start_model_version):
+            parser.error("R9d warm-start requires ONLY verified private C11 "
+                         "on-policy TRAIN/TUNING roots, exact parent v3 checkpoint, "
+                         "newer candidate model, balanced source/validation and zero-Q gate")
+    if not source_requested and not warm_requested and not args.replay:
         parser.error("legacy learner modes require explicit --replay files")
     if source_requested and (args.replay or args.validation_replay):
         parser.error("R9 verified source mode accepts cohort roots ONLY, not "
@@ -455,7 +507,8 @@ def main() -> int:
                            args.checkpoint_policy != "final" or
                            args.require_validation_advantage):
         parser.error("optimizer sampling and checkpoint-selection options require --train")
-    if args.train and ((not args.validation_replay and not source_requested) or
+    if args.train and ((not args.validation_replay and not source_requested
+                        and not warm_requested) or
                        not args.output or args.checkpoint or
                        args.model_version is None):
         parser.error("--train requires validated tuning data, --output and --model-version")
@@ -480,6 +533,7 @@ def main() -> int:
                              args.model_version is not None):
         parser.error("--verify-only does not accept model checkpoint paths or model version")
     verified_behavior = None
+    verified_warm = None
     if source_requested:
         if (not args.train or not args.behavior_train_cohort or
                 not args.behavior_validation_cohort or
@@ -518,11 +572,28 @@ def main() -> int:
         args._verified_train_sources = verified_behavior["train_source_by_episode"]
         args._verified_validation_sources = (
             verified_behavior["validation_source_by_episode"])
+    if warm_requested:
+        from warmstart_source import admit_warmstart_source
+        verified_warm = admit_warmstart_source(
+            parent_checkpoint=args.warm_start_checkpoint,
+            parent_model_version=args.warm_start_model_version,
+            native_library_sha256=args.warm_native_library_sha256,
+            source_revision=args.warm_source_revision,
+            train_root=args.warm_train_dir,
+            validation_root=args.warm_validation_dir,
+        )
+        if args.model_version <= verified_warm["parent_model_version"]:
+            raise ValueError("new warm-start candidate model-version must be strictly newer")
+        args._verified_warmstart = verified_warm
     if verified_behavior is not None:
         # Use precisely the in-memory snapshots that were SHA-validated by
         # the cohort verifier. Never reopen paths after admission: external
         # owner-side changes must not swap optimizer inputs between checks.
         episodes = list(verified_behavior["train_episodes"])
+        by_role = {r: [s for ep in episodes for s in ep.samples if s.role == r]
+                   for r in ROLES}
+    elif verified_warm is not None:
+        episodes = list(verified_warm["train_episodes"])
         by_role = {r: [s for ep in episodes for s in ep.samples if s.role == r]
                    for r in ROLES}
     else:
@@ -545,9 +616,21 @@ def main() -> int:
         report["heldout_test_opened_for_training"] = False
         report["source_provenance_is_not_signed_attestation"] = True
         report["qualified_gameplay_skill"] = False
-    if args.validation_replay:
+    if verified_warm is not None:
+        report["warm_start_parent_model_version"] = verified_warm["parent_model_version"]
+        report["warm_start_parent_checkpoint_sha256"] = verified_warm[
+            "parent_checkpoint_sha256"]
+        report["onpolicy_source_manifest_bundle_sha256"] = verified_warm[
+            "onpolicy_source_manifest_bundle_sha256"]
+        report["heldout_test_opened_for_training"] = False
+        report["qualified_gameplay_skill"] = False
+    if args.validation_replay or verified_warm is not None:
         if verified_behavior is not None:
             val = list(verified_behavior["validation_episodes"])
+            roles = {r: [s for ep in val for s in ep.samples if s.role == r]
+                     for r in ROLES}
+        elif verified_warm is not None:
+            val = list(verified_warm["validation_episodes"])
             roles = {r: [s for ep in val for s in ep.samples if s.role == r]
                      for r in ROLES}
         else:
@@ -558,6 +641,11 @@ def main() -> int:
         report["validation_steps"] = sum(len(e.samples) for e in val)
         if args.train:
             report["optimizer"] = train(episodes, by_role, val, roles, args)
+            if verified_warm is not None:
+                from warmstart_source import publish_lineage
+                report["warmstart_lineage"] = publish_lineage(
+                    Path(args.output), args.warm_start_checkpoint,
+                    verified_warm, args.model_version, report["optimizer"])
             if verified_behavior is not None:
                 # Legacy checkpoint ABI v3 contains only numeric source IDs.
                 # R9 needs separate, digest-bound actual behavior identities.
