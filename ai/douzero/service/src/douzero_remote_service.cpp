@@ -154,9 +154,13 @@ int RemoteInferenceService::on_http(
         return reject(response, kHttpInvalid);
 
     Work work;
-    work.request.assign(
-        static_cast<const std::uint8_t*>(request->body),
-        static_cast<const std::uint8_t*>(request->body) + request->body_size);
+    try {
+        work.request.assign(
+            static_cast<const std::uint8_t*>(request->body),
+            static_cast<const std::uint8_t*>(request->body) + request->body_size);
+    } catch (...) {
+        return reject(response, kHttpModelFailure);
+    }
     /* Defer rather than run potentially slow ONNX computation on fixed CHttp
      * connection/stream owner. H2 stream generation controls late replies. */
     if (chttp_server_response_defer(response, &work.deferred) != SALTS_OK)
@@ -203,7 +207,12 @@ void RemoteInferenceService::on_ws_event(
         (void)chttp_websocket_close(peer, 1011u, nullptr, 0u);
         return;
     }
-    work.request.assign(event->data, event->data + event->size);
+    try {
+        work.request.assign(event->data, event->data + event->size);
+    } catch (...) {
+        (void)chttp_websocket_close(peer, 1011u, nullptr, 0u);
+        return;
+    }
     if (!self->queue_work(std::move(work))) {
         (void)chttp_websocket_close(peer, 1013u, nullptr, 0u);
     }
