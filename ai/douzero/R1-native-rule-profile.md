@@ -53,12 +53,38 @@ Re-run using the already-built Linux M5a test target:
 These deterministic tests are developer action-classification audits, not
 production dealing entropy, original DouZero training data, or game skill.
 
+## Original response-move selection, not just isolated action types
+
+The original upstream move_selector.filter_type_11_serial_3_1 has a
+specific response ordering: it compares the highest rank of **all triple
+groups**, even when the extra triple is an airplane wing. The original
+C11 mygames_ddz_beats instead compares the airplane body high rank.
+
+A physically possible two-player counterexample (rank notation):
+- Rival has 3+3+3 cards of ranks 3/4/5 and three cards of rank 2 as wings.
+- Challenger has triple ranks 6/7/8 and three Q cards as wings.
+
+Original DouZero GameEnv.get_legal_card_play_actions REJECTS the
+challenger: the wing triple rank 2 in the previous move is higher than
+the challenger wing rank Q. Online native C11 compares body 8 > 5 and
+ACCEPTS. The offline-only mygames_douzero_beats_move now preserves the
+original move_selector behavior without modifying mygames_ddz_beats.
+
+The positive no-NumPy/no-Torch audit calls the **actual unchanged**
+original GameEnv.get_legal_card_play_actions against 100 games of
+physically disjoint 17-/20-card hands from a single 54-card deck.
+Three rival moves per pair give **300 real original rival move sets
+and 30,669 native candidate response comparisons**, all matching
+the original GameEnv. This is pairwise response legality only; it does
+not apply or commit any C11 Round action.
+
 ## R1 remains RED — not yet a complete authoritative C11 Env
 
-This validates generated **lead action classification only**. It does NOT
-prove the response legal list, PASS/turn transitions, bids, 20/17/17 card
-distribution, serialized 319/430+54 and 5x162 actor features, or rewards
-under the native C11 Match.
+This validates generated action classifications and pairwise response
+eligibility against the original GameEnv only. It does NOT yet prove
+whole-game PASS/turn transitions, bidding, 20/17/17 dealing, full original
+infoset legal-list order/duplicates, serialized 319/430+54 and 5x162
+actor features, or rewards through actual native C11 Match settlement.
 
 Original DouZero Env starts with fixed landlord and no bidding.
 MyGames C11 Match executes its own 0..3 staged bidding. Separate real
@@ -67,8 +93,8 @@ native settlement cases, while original ADP magnitude disagreed in
 612/801 due to bid and spring multipliers.
 
 No C11-powered DouZero Actor training environment or model promotion is
-enabled yet. The next step is strict native Round turn/PASS and response
-legal-action parity, then the exact actor-only feature interface, followed
+enabled yet. The next step is strict native Round turn/PASS progression
+and full actor-only feature parity, followed
 by the thinnest possible authoritative C11 Env adapter with the ORIGINAL,
 unmodified upstream actor/learner. Never silently change online M5j rules
 or reintroduce retired custom DMC/checkpoints as upstream weights.
