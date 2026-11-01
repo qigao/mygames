@@ -24,6 +24,10 @@ extern "C" {
 #define MYGAMES_DOUZERO_REMOTE_PROTOCOL_V1 UINT32_C(1)
 #define MYGAMES_DOUZERO_REMOTE_CHUNK_ACTIONS 64u
 #define MYGAMES_DOUZERO_REMOTE_MAX_ACTIONS 16384u
+/* CHttp's JSON-RPC envelope carries numeric request IDs. Keep these within
+ * exact IEEE-754 integer range even if a WS/diagnostic client uses JS. Other
+ * 64-bit identity values are canonical decimal STRINGS inside params. */
+#define MYGAMES_DOUZERO_REMOTE_JSON_SAFE_WIRE_ID_MAX UINT64_C(9007199254740991)
 #define MYGAMES_DOUZERO_REMOTE_SHA256_BYTES 32u
 #define MYGAMES_DOUZERO_REMOTE_PROFILE_ORIGINAL_WP_V1 UINT32_C(1)
 
