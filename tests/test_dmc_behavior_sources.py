@@ -101,8 +101,6 @@ def main():
                 f"episode-{33011 + index * 100}.mgdmc")
         optimizer = [
             ROOT / "ai/dmc/train_dmc.py", "--train",
-            "--replay", *train_files,
-            "--validation-replay", *val_files,
             "--objective", "win-sign",
             "--output", base / "models" / "unqualified.pt",
             "--model-version", 4, "--sampling", "episode-source-outcome",
@@ -117,7 +115,28 @@ def main():
             optimizer += ["--behavior-train-cohort", base / f"{behavior}-train"]
             optimizer += ["--behavior-validation-cohort",
                           base / f"{behavior}-validation"]
-        call(optimizer, successful=False)  # missing BOTH outcome signs
+        # In R9, each Replay comes exclusively from its verified private
+        # cohort. Individual --replay/--validation-replay CLI paths are NEVER
+        # admitted (especially not TEST/foreign files). The reject must
+        # happen BEFORE any Torch/model publication.
+        for injection in (
+            ["--replay", train_files[0]],
+            ["--validation-replay", val_files[0]],
+            ["--replay", val_files[0]],
+        ):
+            command = [sys.executable, *map(str, optimizer + injection)]
+            rejected = subprocess.run(
+                command, cwd=ROOT, capture_output=True, text=True, timeout=60)
+            assert rejected.returncode != 0
+            assert "R9 verified source mode accepts cohort roots ONLY" in rejected.stderr
+        command = [sys.executable, *map(str, optimizer)]
+        rejected = subprocess.run(
+            command, cwd=ROOT, capture_output=True, text=True, timeout=60)
+        assert rejected.returncode != 0
+        # This should reach the real immutable C11 source sampler and reject
+        # a one-game-per-source cohort for missing complete win/loss groups.
+        # A syntax error, wrong argparse schema, or missing Torch is NOT PASS.
+        assert "lacks winning/losing complete episodes" in rejected.stderr
         assert not (base / "models").exists()  # no checkpoint, no optimizer
 
         # Wrong binary/source pin, omission, duplication, and a reused cohort
