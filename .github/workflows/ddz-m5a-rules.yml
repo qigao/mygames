@@ -60,42 +60,9 @@ jobs:
 
       - name: Verify unmodified pinned DouZero Actor-Learner sources
         if: runner.os == 'Linux'
-        run: python3 tests/test_douzero_upstream_source.py
-
-      # Temporary one-time transfer of tracked PUBLIC source to an isolated
-      # local CPU runtime; no private data, weights or generated Replay.
-      - name: Archive exact public upstream-only training source for local CPU check
-        if: runner.os == 'Linux' && github.event_name == 'pull_request' && github.event.pull_request.number == 32
-        shell: bash
         run: |
-          set -euo pipefail
-          snapshot="$RUNNER_TEMP/mygames-douzero-upstream-public"
-          mkdir -p "$snapshot/.git"
-          git archive --format=tar HEAD | tar -xf - -C "$snapshot"
-          cp -a .git/objects "$snapshot/.git/objects"
-          cp -a .git/refs "$snapshot/.git/refs"
-          cp .git/HEAD "$snapshot/.git/HEAD"
-          cp .git/index "$snapshot/.git/index"
-          if [ -f .git/shallow ]; then cp .git/shallow "$snapshot/.git/shallow"; fi
-          printf '[core]\nrepositoryformatversion = 0\nfilemode = true\nbare = false\n' > "$snapshot/.git/config"
-          test "$(git -C "$snapshot" rev-parse HEAD)" = "$(git rev-parse HEAD)"
-          test -z "$(git -C "$snapshot" status --porcelain --untracked-files=no)"
-          # Only tiny public metadata dependencies, never torch/rlcard/GPU.
-          # Download bytes only; no dependency installation in GitHub CI.
-          mkdir -p "$snapshot/.offline-gitpython-wheels"
-          python3 -m pip download --disable-pip-version-check --only-binary=:all: --no-deps \
-            --dest "$snapshot/.offline-gitpython-wheels" \
-            GitPython==3.1.43 gitdb==4.0.11 smmap==5.0.1
-          tar -C "$snapshot" -czf "$RUNNER_TEMP/mygames-douzero-upstream-public.tar.gz" .
-      - name: Upload PUBLIC upstream-only source snapshot (one-time)
-        if: runner.os == 'Linux' && github.event_name == 'pull_request' && github.event.pull_request.number == 32
-        uses: actions/upload-artifact@v4
-        with:
-          name: mygames-douzero-upstream-r0-public-sources
-          path: ${{ runner.temp }}/mygames-douzero-upstream-public.tar.gz
-          retention-days: 1
-          if-no-files-found: error
-          compression-level: 0
+          python3 tests/test_douzero_upstream_source.py
+          python3 -m py_compile ai/douzero/audit_c11_rule_parity.py
 
   pure-source-asan:
     name: Pure C11 rules / Linux ASan+UBSan
