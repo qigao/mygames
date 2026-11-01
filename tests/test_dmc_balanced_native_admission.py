@@ -21,16 +21,17 @@ from verified_behavior_training import admit_training_sources, exact_replay_path
 
 BEHAVIORS = ("mixed-v1", "shed-most", "legal-index")
 SPLITS = ("train", "validation")
-GAMES_PER_COHORT = 24
+GAMES_PER_BEHAVIOR_AND_SPLIT = 24
 
 
-def run_collector(generator, digest, revision, folder, source, split, first_id):
+def run_collector(generator, digest, revision, folder, source, split,
+                  first_id, count):
     cmd = [
         sys.executable, str(ROOT / "ai/dmc/collect_behavior_source.py"),
         "--native-generator", str(generator), "--generator-sha256", digest,
         "--source-checkout", str(ROOT), "--source-revision", revision,
         "--private-dir", str(folder), "--first-id", str(first_id),
-        "--episodes", str(GAMES_PER_COHORT), "--behavior", source,
+        "--episodes", str(count), "--behavior", source,
         "--split", split, "--objective", "win-sign",
     ]
     completed = subprocess.run(
@@ -40,7 +41,7 @@ def run_collector(generator, digest, revision, folder, source, split, first_id):
         raise RuntimeError("true native C11 behavior cohort collection rejected")
     report = json.loads(completed.stdout)
     if (report.get("status") != "sealed-native-C11-cohort" or
-            report.get("episodes") != GAMES_PER_COHORT or
+            report.get("episodes") != count or
             report.get("ready_for_multisource_optimization") is not False or
             report.get("behavior") != source or report.get("split") != split):
         raise ValueError("native private source completion metadata mismatch")
@@ -59,12 +60,19 @@ def main():
         train_roots, validation_roots = [], []
         for source_index, source in enumerate(BEHAVIORS):
             for split_index, split in enumerate(SPLITS):
-                folder = base / f"{source}-{split}"
-                folder.mkdir(mode=0o700)
-                first_id = 50001 + source_index * 1000 + split_index * 100
-                run_collector(generator, digest, revision, folder,
-                              source, split, first_id)
-                (train_roots if split == "train" else validation_roots).append(folder)
+                # Keep exactly the same 144 real native games, but prove
+                # that one behavior may span independent sealed shards.
+                shards = 2 if source == "mixed-v1" else 1
+                per_shard = GAMES_PER_BEHAVIOR_AND_SPLIT // shards
+                for shard in range(shards):
+                    folder = base / f"{source}-{split}-shard{shard}"
+                    folder.mkdir(mode=0o700)
+                    first_id = (50001 + source_index * 1000 +
+                                split_index * 100 + shard * per_shard)
+                    run_collector(generator, digest, revision, folder,
+                                  source, split, first_id, per_shard)
+                    (train_roots if split == "train" else
+                     validation_roots).append(folder)
 
         admitted = admit_training_sources(
             train_cohorts=train_roots,
@@ -74,15 +82,34 @@ def main():
             generator_sha256=digest,
             objective="win-sign",
         )
+        expected_shards = {"mixed-v1": 2, "shed-most": 1, "legal-index": 1}
         if (admitted["episodes_by_split"] != {
-                "train": GAMES_PER_COHORT * 3,
-                "validation": GAMES_PER_COHORT * 3} or
+                "train": GAMES_PER_BEHAVIOR_AND_SPLIT * 3,
+                "validation": GAMES_PER_BEHAVIOR_AND_SPLIT * 3} or
+                admitted["shards_by_split"] != {
+                    split: expected_shards for split in SPLITS} or
                 set(admitted["sources"]) != set(BEHAVIORS) or
                 admitted["qualified_gameplay_skill"] is not False):
             raise AssertionError("native 3-source 2-split admission mismatch")
         train = admitted["train_episodes"]
         validation = admitted["validation_episodes"]
-        assert len(train) == len(validation) == GAMES_PER_COHORT * 3
+        assert len(train) == len(validation) == GAMES_PER_BEHAVIOR_AND_SPLIT * 3
+        # Operator root-order changes cannot affect the sealed corpus,
+        # optimizer episode order or the bound model-source manifest digest.
+        alternate = admit_training_sources(
+            train_cohorts=list(reversed(train_roots)),
+            validation_cohorts=list(reversed(validation_roots)),
+            required_behaviors=tuple(reversed(BEHAVIORS)),
+            source_revision=revision,
+            generator_sha256=digest,
+            objective="win-sign",
+        )
+        assert alternate["manifest_bundle_sha256"] == admitted[
+            "manifest_bundle_sha256"]
+        assert [e.episode_id for e in alternate["train_episodes"]] == [
+            e.episode_id for e in train]
+        assert [e.episode_id for e in alternate["validation_episodes"]] == [
+            e.episode_id for e in validation]
         assert {e.episode_id for e in train}.isdisjoint(
             {e.episode_id for e in validation})
         for role in range(3):
@@ -112,7 +139,8 @@ def main():
         assert not (base / "test").exists()
         assert not (base / "models").exists()
     print("mygames.dmc_real_native_balanced_source_admission: PASS")
-    print("3 sources x 2 sealed TRAIN/TUNING cohorts x 24 genuine C11 games")
+    print("3 behavior sources, 8 independently sealed TRAIN/TUNING shards, "
+          "144 genuine C11 games")
     print("All roles and source-outcome buckets present; TEST unopened; Torch not invoked")
 
 
