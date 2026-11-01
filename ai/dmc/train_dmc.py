@@ -435,6 +435,8 @@ def main() -> int:
                         choices=("mixed-v1", "shed-most", "legal-index"))
     parser.add_argument("--behavior-source-revision")
     parser.add_argument("--behavior-generator-sha256")
+    parser.add_argument("--behavior-learner-revision",
+                        help="pinned exact clean Python learner Git HEAD (R9 only)")
     args = parser.parse_args()
     if args.rules_version <= 0 or args.steps <= 0 or args.batch_size <= 0 or \
             not (0.0 < args.learning_rate <= 1.0) or args.validation_interval < 1:
@@ -469,7 +471,7 @@ def main() -> int:
     source_requested = any((
         args.behavior_train_cohort, args.behavior_validation_cohort,
         args.behavior_required_source, args.behavior_source_revision,
-        args.behavior_generator_sha256,
+        args.behavior_generator_sha256, args.behavior_learner_revision,
     ))
     verified_behavior = None
     if source_requested:
@@ -478,6 +480,7 @@ def main() -> int:
                 not args.behavior_required_source or
                 not args.behavior_source_revision or
                 not args.behavior_generator_sha256 or
+                not args.behavior_learner_revision or
                 args.objective != "win-sign" or
                 args.sampling != "episode-source-outcome" or
                 args.checkpoint_policy != "best-validation" or
@@ -490,7 +493,10 @@ def main() -> int:
         # Crucially, the virgin TEST files are NOT opened by this mode.
         from verified_behavior_training import (
             admit_training_sources, exact_replay_paths,
+            verify_exact_learner_revision,
         )
+        verify_exact_learner_revision(
+            args.behavior_learner_revision, Path(__file__).resolve().parents[2])
         verified_behavior = admit_training_sources(
             train_cohorts=args.behavior_train_cohort,
             validation_cohorts=args.behavior_validation_cohort,
@@ -545,6 +551,27 @@ def main() -> int:
         report["validation_steps"] = sum(len(e.samples) for e in val)
         if args.train:
             report["optimizer"] = train(episodes, by_role, val, roles, args)
+            if verified_behavior is not None:
+                # Legacy checkpoint ABI v3 contains only numeric source IDs.
+                # R9 needs separate, digest-bound actual behavior identities.
+                from model_source_record import make_record, publish_record
+                selected = report["optimizer"]
+                record = make_record(
+                    checkpoint_sha256=selected["checkpoint_sha256"],
+                    model_version=args.model_version,
+                    source_revision=args.behavior_source_revision,
+                    learner_revision=args.behavior_learner_revision,
+                    generator_sha256=args.behavior_generator_sha256,
+                    source_bundle_sha256=verified_behavior[
+                        "manifest_bundle_sha256"],
+                    sources=verified_behavior["sources"],
+                    train_count=verified_behavior["episodes_by_split"]["train"],
+                    tuning_count=verified_behavior["episodes_by_split"]["validation"],
+                    steps_by_role=selected["selected_validation_step_by_role"],
+                    aligned_by_role=selected["validation_aligned_after"],
+                )
+                report["immutable_verified_source_record"] = publish_record(
+                    args.output, record)
     elif args.evaluate_only:
         torch, device = torch_runtime(args.device, args.seed)
         models, payload = load_model_checkpoint(args.checkpoint,
