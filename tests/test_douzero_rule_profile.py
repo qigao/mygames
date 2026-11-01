@@ -10,14 +10,25 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 import ctypes as ct
+import importlib
 from pathlib import Path
 import random
 import sys
+from types import ModuleType
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "third_party" / "DouZero"))
-from douzero.env.move_generator import MovesGener
-from douzero.env.move_detector import get_move_type
+UPSTREAM = ROOT / "third_party" / "DouZero" / "douzero"
+# Upstream env/__init__.py eagerly imports the full NumPy-backed game Env.
+# This CI test exercises ONLY the original stdlib-only move-generator and
+# detector files: install import package SEARCH PATHS, not fake methods or
+# rewritten game code. Python then loads the actual pinned upstream .py files.
+for name, source in (("douzero", UPSTREAM),
+                     ("douzero.env", UPSTREAM / "env")):
+    package = ModuleType(name)
+    package.__path__ = [str(source)]
+    sys.modules[name] = package
+MovesGener = importlib.import_module("douzero.env.move_generator").MovesGener
+get_move_type = importlib.import_module("douzero.env.move_detector").get_move_type
 
 RANKS = tuple(range(3, 15)) + (17, 20, 30)
 INDEX = {r: i for i, r in enumerate(RANKS)}
