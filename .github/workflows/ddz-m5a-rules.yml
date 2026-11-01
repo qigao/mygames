@@ -7,6 +7,9 @@ name: M5a Dou Dizhu gameplay rules (C11)
       - 'games/doudizhu/include/mygames/ddz_round.h'
       - 'tests/ddz_round_test.c'
       - 'CMakeLists.txt'
+      - 'third_party/DouZero/**'
+      - 'ai/douzero/**'
+      - 'tests/test_douzero_upstream_source.py'
       - '.github/workflows/ddz-m5a-rules.yml'
   workflow_dispatch:
 
@@ -53,7 +56,45 @@ jobs:
         run: >-
           ctest --test-dir build/ddz -C Debug --no-tests=error
           --output-on-failure --timeout 30 --repeat until-fail:20
-          -R '^mygames[.]ddz_round$'
+          -R '^mygames[.]ddz_round
+
+  pure-source-asan:
+    name: Pure C11 rules / Linux ASan+UBSan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Build game rules without networking or dependency SDKs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S . -B build/ddz-asan \
+            -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON \
+            -DMYGAMES_ENABLE_GATEWAY=OFF -DMYGAMES_ENABLE_TURBODB=OFF \
+            -DMYGAMES_ENABLE_FLOWIE=OFF \
+            -DCMAKE_C_FLAGS='-fsanitize=address,undefined -g -fno-omit-frame-pointer -Wall -Wextra -Wpedantic -Werror' \
+            -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=address,undefined'
+          cmake --build build/ddz-asan --target mygames_ddz_round_test --parallel 2
+
+      - name: Check all gameplay operations under sanitizers
+        shell: bash
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          set -euo pipefail
+          ctest --test-dir build/ddz-asan --no-tests=error \
+            --output-on-failure --timeout 30 --repeat until-fail:20 \
+            -R '^mygames[.]ddz_round$'
+
+
+      - name: Verify unmodified pinned DouZero actor-learner sources
+        if: runner.os == 'Linux'
+        run: python3 tests/test_douzero_upstream_source.py
 
   pure-source-asan:
     name: Pure C11 rules / Linux ASan+UBSan
