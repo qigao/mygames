@@ -68,12 +68,19 @@ def verify_cohort(root: Path, *, source_revision: str,
             manifest["split"] not in SPLITS or
             manifest["source_revision"] != source_revision or
             manifest["generator_sha256"] != generator_sha256 or
+            type(manifest["model_version"]) is not int or
             manifest["model_version"] != 1 or
+            type(manifest["rules_version"]) is not int or
             manifest["rules_version"] != 1 or
             manifest["objective"] != objective or
             manifest["shuffle"] != "OS-CSPRNG-c11"):
         raise ValueError("source/behavior/split/ABI manifest does not match")
     episodes = manifest["episodes"]
+    totals = manifest["role_decisions"]
+    if (not isinstance(totals, list) or len(totals) != 3 or
+            not all(_integer(count, minimum=1) for count in totals) or
+            not _integer(manifest["total_decisions"], minimum=1)):
+        raise ValueError("invalid private source role/decision counts")
     if (not isinstance(episodes, list) or
             not 1 <= len(episodes) <= 96 or
             not _integer(manifest["episode_count"], minimum=1) or
@@ -93,8 +100,15 @@ def verify_cohort(root: Path, *, source_revision: str,
         name = entry["file"]
         if (not _integer(eid, minimum=1) or
                 not isinstance(name, str) or name != f"episode-{eid}.mgdmc" or
-                eid in ids or not _sha(entry["sha256"])):
-            raise ValueError("duplicate/malformed native Replay identity")
+                eid in ids or not _sha(entry["sha256"]) or
+                not _integer(entry["accepted_actions"], minimum=1) or
+                not _integer(entry["landlord_seat"]) or
+                not _integer(entry["winner_seat"]) or
+                not isinstance(entry["role_decisions"], list) or
+                len(entry["role_decisions"]) != 3 or
+                not all(_integer(v, minimum=1)
+                        for v in entry["role_decisions"])):
+            raise ValueError("duplicate/malformed native Replay identity/counts")
         ids.add(eid)
         seen_names.add(name)
         path = root / name
@@ -141,7 +155,7 @@ def verify_matrix(args):
     required = set(args.require_behavior or BEHAVIORS)
     if (not required or not required.issubset(BEHAVIORS) or
             len(roots) != len(required) * len(SPLITS) or
-            len(set(roots)) != len(roots)):
+            len({p.resolve(strict=True) for p in roots}) != len(roots)):
         raise ValueError("expected one distinct sealed cohort per source and split")
     seen_pairs, seen_ids, seen_hashes = set(), set(), set()
     totals = {"train": 0, "validation": 0, "test": 0}
