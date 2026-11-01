@@ -400,8 +400,8 @@ def main() -> int:
     mode.add_argument("--evaluate-only", action="store_true")
     mode.add_argument("--compare-frozen", action="store_true",
                       help="private paired held-out Q-MSE for TWO frozen candidates")
-    parser.add_argument("--replay", nargs="+", required=True,
-                        help="private, complete native C11 DMC Replay v1 files")
+    parser.add_argument("--replay", nargs="+",
+                        help="legacy direct Replay-v1 files (not accepted with verified R9 cohorts)")
     parser.add_argument("--validation-replay", nargs="+",
                         help="entire validation episodes, disjoint from training")
     parser.add_argument("--rules-version", type=int, default=1)
@@ -438,6 +438,16 @@ def main() -> int:
     parser.add_argument("--behavior-learner-revision",
                         help="pinned exact clean Python learner Git HEAD (R9 only)")
     args = parser.parse_args()
+    source_requested = any((
+        args.behavior_train_cohort, args.behavior_validation_cohort,
+        args.behavior_required_source, args.behavior_source_revision,
+        args.behavior_generator_sha256, args.behavior_learner_revision,
+    ))
+    if not source_requested and not args.replay:
+        parser.error("legacy learner modes require explicit --replay files")
+    if source_requested and (args.replay or args.validation_replay):
+        parser.error("R9 verified source mode accepts cohort roots ONLY, not "
+                     "separately supplied Replay file paths")
     if args.rules_version <= 0 or args.steps <= 0 or args.batch_size <= 0 or \
             not (0.0 < args.learning_rate <= 1.0) or args.validation_interval < 1:
         parser.error("positive version/steps/batch-size/interval and 0<lr<=1 required")
@@ -445,9 +455,10 @@ def main() -> int:
                            args.checkpoint_policy != "final" or
                            args.require_validation_advantage):
         parser.error("optimizer sampling and checkpoint-selection options require --train")
-    if args.train and (not args.validation_replay or not args.output or args.checkpoint
-                       or args.model_version is None):
-        parser.error("--train requires --validation-replay, --output and --model-version")
+    if args.train and ((not args.validation_replay and not source_requested) or
+                       not args.output or args.checkpoint or
+                       args.model_version is None):
+        parser.error("--train requires validated tuning data, --output and --model-version")
     if args.evaluate_only and (not args.checkpoint or args.output or args.validation_replay
                                or args.model_version is None):
         parser.error("--evaluate-only requires --checkpoint and --model-version, no output/validation-replay")
@@ -468,11 +479,6 @@ def main() -> int:
     if args.verify_only and (args.output or args.checkpoint or
                              args.model_version is not None):
         parser.error("--verify-only does not accept model checkpoint paths or model version")
-    source_requested = any((
-        args.behavior_train_cohort, args.behavior_validation_cohort,
-        args.behavior_required_source, args.behavior_source_revision,
-        args.behavior_generator_sha256, args.behavior_learner_revision,
-    ))
     verified_behavior = None
     if source_requested:
         if (not args.train or not args.behavior_train_cohort or
@@ -492,8 +498,7 @@ def main() -> int:
         # private manifests. Never infer policy from numeric model_version=1.
         # Crucially, the virgin TEST files are NOT opened by this mode.
         from verified_behavior_training import (
-            admit_training_sources, exact_replay_paths,
-            verify_exact_learner_revision,
+            admit_training_sources, verify_exact_learner_revision,
         )
         verify_exact_learner_revision(
             args.behavior_learner_revision, Path(__file__).resolve().parents[2])
@@ -505,9 +510,11 @@ def main() -> int:
             generator_sha256=args.behavior_generator_sha256,
             objective=args.objective,
         )
-        exact_replay_paths(args.replay, verified_behavior["train_files"])
-        exact_replay_paths(args.validation_replay,
-                           verified_behavior["validation_files"])
+        # Construct canonical file rosters exclusively from checked private
+        # cohort manifests, not operator-provided per-episode CLI paths.
+        # This also avoids OS ARG_MAX when a pool has thousands of games.
+        args.replay = verified_behavior["train_files"]
+        args.validation_replay = verified_behavior["validation_files"]
         args._verified_train_sources = verified_behavior["train_source_by_episode"]
         args._verified_validation_sources = (
             verified_behavior["validation_source_by_episode"])
