@@ -103,7 +103,39 @@ if(MYGAMES_ENABLE_GATEWAY)
   endif()
 endif()
 
+# Remote DouZero inference correlation is a pure C11 Owner-facing
+# primitive: no CHttp, KFCore, C++ toolchain, network or model dependency
+# in MyGames core-only builds. It NEVER commits an authoritative move.
+add_library(mygames_douzero_remote_ticket STATIC
+  ai/douzero/src/douzero_remote_ticket.c)
+add_library(MyGames::DouZeroRemoteTicket ALIAS mygames_douzero_remote_ticket)
+target_compile_features(mygames_douzero_remote_ticket PUBLIC c_std_11)
+target_include_directories(mygames_douzero_remote_ticket PUBLIC
+  ai/douzero/include)
+if(MSVC)
+  target_compile_options(mygames_douzero_remote_ticket PRIVATE /W4 /WX)
+else()
+  target_compile_options(mygames_douzero_remote_ticket PRIVATE
+    -Wall -Wextra -Wpedantic -Werror)
+endif()
+
 include(CTest)
+if(BUILD_TESTING)
+  add_executable(mygames_douzero_remote_ticket_test
+    tests/douzero_remote_ticket_test.c)
+  target_compile_features(mygames_douzero_remote_ticket_test PRIVATE c_std_11)
+  target_link_libraries(mygames_douzero_remote_ticket_test PRIVATE
+    MyGames::DouZeroRemoteTicket)
+  if(MSVC)
+    target_compile_options(mygames_douzero_remote_ticket_test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_douzero_remote_ticket_test PRIVATE
+      -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME mygames.douzero_remote_ticket
+    COMMAND mygames_douzero_remote_ticket_test)
+endif()
+
 # R1: optional OFFLINE ONLY DouZero classifier compatibility profile.
 # No production Room/Match or native game rule target changes. Uses the
 # original authoritative Round classifier for all ordinary patterns.
