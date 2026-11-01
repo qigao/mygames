@@ -61,6 +61,9 @@ name: M5a Dou Dizhu gameplay rules (C11)
       - 'tests/test_dmc_paired_stats.py'
       - 'ai/dmc/src/ddz_dmc_generate.c'
       - 'tests/test_dmc_corpus.py'
+      - 'ai/dmc/collect_behavior_source.py'
+      - 'ai/dmc/verify_behavior_sources.py'
+      - 'tests/test_dmc_behavior_sources.py'
       - 'ai/dmc/experiment.py'
       - 'tests/test_dmc_experiment.py'
       - 'ai/dmc/include/mygames/ddz_dmc_q_selector.h'
@@ -142,6 +145,8 @@ jobs:
           python3 tests/test_dmc_onpolicy_manifest.py
           ./build/ddz/mygames_ddz_dmc_generate --private-dir "$corpus_dir"             --episodes 3 --first-id 9101 --objective win-sign
           python3 tests/test_dmc_corpus.py "$corpus_dir"             "$(pwd)/build/ddz/mygames_ddz_dmc_generate"
+          python3 -m py_compile ai/dmc/collect_behavior_source.py ai/dmc/verify_behavior_sources.py tests/test_dmc_behavior_sources.py
+          python3 tests/test_dmc_behavior_sources.py "$(pwd)/build/ddz/mygames_ddz_dmc_generate" "$(git rev-parse HEAD)"
           python3 ai/dmc/experiment.py --native-generator             "$(pwd)/build/ddz/mygames_ddz_dmc_generate"             --private-root "$experiment_root"             --source-revision "$(git rev-parse HEAD)" --first-id 9201             --train-games 3 --validation-games 3 --test-games 3             --objective win-sign
           python3 tests/test_dmc_experiment.py "$experiment_root"             "$(pwd)/build/ddz/mygames_ddz_dmc_generate" "$(git rev-parse HEAD)"
 
