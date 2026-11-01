@@ -94,6 +94,43 @@ mygames_douzero_wire_status mygames_douzero_wire_decode_reply(
     const void *frame, size_t size, const mygames_douzero_ticket *expected,
     float *out_scores, size_t score_capacity);
 
+/* Complete original legal-action list collection. A Game Owner may receive
+ * HTTP/2 streams or WS responses OUT OF ORDER. This owner-local ledger tracks
+ * an exact fixed partition into 64-row batches; each batch has a distinct
+ * request ID and is accepted once only. Partial scores MUST NOT be consumed.
+ * The owner must compare live turn/generation/model/legal list again AFTER
+ * collector_complete() before it selects/commits a physical-card action.
+ */
+#define MYGAMES_DOUZERO_REMOTE_CHUNKS_MAX 1024u
+typedef struct mygames_douzero_score_collector {
+    mygames_douzero_ticket initial; /* first_action=0, first batch exact */
+    float *scores;                    /* caller-owned total_actions slots */
+    size_t score_capacity;
+    uint8_t received[MYGAMES_DOUZERO_REMOTE_CHUNKS_MAX / 8u];
+    uint16_t received_count;
+    uint16_t expected_count;
+} mygames_douzero_score_collector;
+
+/* Begin has no effect on caller output if initial identity/buffer invalid.
+ * Must use a fresh, non-recycled ID range for every proposal. */
+mygames_douzero_wire_status mygames_douzero_score_collector_begin(
+    const mygames_douzero_ticket *first_batch, float *scores,
+    size_t score_capacity, mygames_douzero_score_collector *out);
+
+/* Exact expected batch ticket (unique ID base+i, first=i*64), no fallback. */
+mygames_douzero_wire_status mygames_douzero_score_collector_ticket(
+    const mygames_douzero_score_collector *collector,
+    size_t batch_index, mygames_douzero_ticket *out);
+
+/* Accept arbitrary order, but never missing/overlapping/duplicate frames.
+ * Any bad frame leaves all collected Q slots and the received bitmap alone. */
+mygames_douzero_wire_status mygames_douzero_score_collector_accept(
+    mygames_douzero_score_collector *collector, const void *reply,
+    size_t reply_size);
+
+int mygames_douzero_score_collector_complete(
+    const mygames_douzero_score_collector *collector);
+
 #ifdef __cplusplus
 }
 #endif
