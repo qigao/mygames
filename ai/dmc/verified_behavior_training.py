@@ -17,6 +17,13 @@ from verify_behavior_sources import (
     BEHAVIORS, HEX40, HEX64, MANIFEST, require_private, verify_cohort,
 )
 
+# Each existing native source generator remains bounded to 1..96 complete
+# episodes. Multi-source learning can scale by using multiple independently
+# sealed and verified chunks for a behavior/split; no unbounded collection.
+MAX_SHARDS_PER_SOURCE = 16
+MAX_GAMES_PER_SHARD = 96
+MAX_GAMES_PER_SPLIT = len(BEHAVIORS) * MAX_SHARDS_PER_SOURCE * MAX_GAMES_PER_SHARD
+
 
 def _roster(value):
     if (not isinstance(value, (list, tuple)) or
@@ -44,24 +51,36 @@ def admit_training_sources(*, train_cohorts, validation_cohorts,
         raise ValueError("exact source/binary SHAs and win-sign objective required")
     train = [Path(x).absolute() for x in train_cohorts]
     validation = [Path(x).absolute() for x in validation_cohorts]
-    if len(train) != len(required) or len(validation) != len(required):
-        raise ValueError("each behavior source needs TRAIN and TUNING cohorts")
+    for roots in (train, validation):
+        if not len(required) <= len(roots) <= (
+                len(required) * MAX_SHARDS_PER_SOURCE):
+            raise ValueError("TRAIN/TUNING must provide bounded per-policy cohorts")
     if len({x.resolve(strict=True) for x in train + validation}) != len(
             train + validation):
         raise ValueError("source cohort root reused across pools")
+    # Normalize caller-provided root ordering: an identical immutable corpus
+    # must yield the SAME batch order and training result regardless of
+    # argv ordering. No provenance checks depend on lexical directory names.
+    train.sort(key=lambda x: str(x.resolve(strict=True)))
+    validation.sort(key=lambda x: str(x.resolve(strict=True)))
 
     seen_ids, seen_hashes = set(), set()
     bundles, source_by_episode, files, all_episodes = {}, {}, {}, {}
+    shard_counts_by_split = {}
     digest_inputs = []
     for split, roots in (("train", train), ("validation", validation)):
         present, local_labels, local_files, episodes = set(), {}, [], []
+        shards = {source: 0 for source in required}
         for root in roots:
             behavior, verified_split, ids, hashes, _ = verify_cohort(
                 root, source_revision=source_revision,
                 generator_sha256=generator_sha256, objective=objective)
             if (verified_split != split or behavior not in required or
-                    behavior in present or seen_ids & ids or seen_hashes & hashes):
+                    seen_ids & ids or seen_hashes & hashes):
                 raise ValueError("mislabeled source/split, duplication or leak")
+            shards[behavior] += 1
+            if shards[behavior] > MAX_SHARDS_PER_SOURCE:
+                raise ValueError("behavior source exceeds sealed shard budget")
             present.add(behavior)
             seen_ids.update(ids)
             seen_hashes.update(hashes)
@@ -92,8 +111,16 @@ def admit_training_sources(*, train_cohorts, validation_cohorts,
                 local_files.append(private_file)
                 episodes.append(game)
                 local_labels[game.episode_id] = behavior
-        if present != required:
+        if present != required or not all(shards.values()):
             raise ValueError("TRAIN/VALIDATION source rosters differ")
+        if len(episodes) > MAX_GAMES_PER_SPLIT:
+            raise ValueError("bounded total complete-game source budget exceeded")
+        # Canonical episode order is stable even when a source has multiple
+        # shards or the operator passes the roots in a different order.
+        ordered = sorted(zip(episodes, local_files),
+                         key=lambda pair: pair[0].episode_id)
+        episodes = [item[0] for item in ordered]
+        local_files = [item[1] for item in ordered]
         # Check source AND actor reward-sign coverage in each split, BEFORE
         # importing Torch or allocating model weights; one source with only
         # winning or only losing games is not eligible.
@@ -103,6 +130,7 @@ def admit_training_sources(*, train_cohorts, validation_cohorts,
             make_role_sampler(
                 episodes, role, verified_source_by_episode=local_labels)
         bundles[split] = len(local_files)
+        shard_counts_by_split[split] = dict(sorted(shards.items()))
         files[split] = tuple(local_files)
         source_by_episode[split] = local_labels
         all_episodes[split] = tuple(episodes)
@@ -119,6 +147,8 @@ def admit_training_sources(*, train_cohorts, validation_cohorts,
         "sources": tuple(sorted(required)),
         "manifest_bundle_sha256": bundle_hash,
         "episodes_by_split": bundles,
+        "shards_by_split": shard_counts_by_split,
+        "max_shards_per_source": MAX_SHARDS_PER_SOURCE,
         "source_provenance_not_cryptographic_attestation": True,
         "qualified_gameplay_skill": False,
     }
