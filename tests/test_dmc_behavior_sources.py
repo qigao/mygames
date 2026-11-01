@@ -110,6 +110,7 @@ def main():
             "--require-validation-advantage",
             "--behavior-source-revision", revision,
             "--behavior-generator-sha256", generator_sha,
+            "--behavior-learner-revision", revision,
         ]
         for behavior in BEHAVIORS:
             optimizer += ["--behavior-required-source", behavior]
