@@ -165,6 +165,35 @@ jobs:
           python3 tests/test_dmc_experiment.py "$experiment_root"             "$(pwd)/build/ddz/mygames_ddz_dmc_generate" "$(git rev-parse HEAD)"
 
 
+      # One-time PUBLIC tracked-code export, restricted to Draft PR #29.
+      # Never export private C11 Replay or weights. Remove after local retrieval.
+      - name: Prepare exact public tracked-only R9 warm-start source snapshot
+        if: runner.os == 'Linux' && github.event_name == 'pull_request' && github.event.pull_request.number == 29
+        shell: bash
+        run: |
+          set -euo pipefail
+          export_root="$RUNNER_TEMP/mygames-r9-warm-public-checkout"
+          mkdir -p "$export_root/.git"
+          git archive --format=tar HEAD | tar -xf - -C "$export_root"
+          cp -a .git/objects "$export_root/.git/objects"
+          cp -a .git/refs "$export_root/.git/refs"
+          cp .git/HEAD "$export_root/.git/HEAD"
+          cp .git/index "$export_root/.git/index"
+          if [ -f .git/shallow ]; then cp .git/shallow "$export_root/.git/shallow"; fi
+          printf '[core]\nrepositoryformatversion = 0\nfilemode = true\nbare = false\n' > "$export_root/.git/config"
+          test "$(git -C "$export_root" rev-parse HEAD)" = "$(git rev-parse HEAD)"
+          test -z "$(git -C "$export_root" status --porcelain --untracked-files=no)"
+          tar -C "$export_root" -czf "$RUNNER_TEMP/mygames-r9-warm-public-checkout.tar.gz" .
+      - name: Upload exact public R9 warm-start source snapshot (one-time 1-day retention)
+        if: runner.os == 'Linux' && github.event_name == 'pull_request' && github.event.pull_request.number == 29
+        uses: actions/upload-artifact@v4
+        with:
+          name: mygames-r9-warm-public-source-only
+          path: ${{ runner.temp }}/mygames-r9-warm-public-checkout.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
   pure-source-asan:
     name: Pure C11 rules / Linux ASan+UBSan
     runs-on: ubuntu-24.04
