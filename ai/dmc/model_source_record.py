@@ -16,6 +16,7 @@ import stat
 import tempfile
 
 from verify_behavior_sources import BEHAVIORS, HEX40, HEX64
+from verified_behavior_training import MAX_GAMES_PER_SPLIT
 
 SCHEMA = "mygames-dmc-verified-sources-v1"
 ROLES = ("landlord", "landlord_up", "landlord_down")
@@ -76,7 +77,8 @@ def _admit_content(record: dict):
         raise ValueError("model missing verified distinct policy identities")
     for count in ("training_complete_games", "tuning_complete_games"):
         value = record[count]
-        if type(value) is not int or value < len(sources) or value > 288:
+        if (type(value) is not int or value < len(sources) or
+                value > MAX_GAMES_PER_SPLIT):
             raise ValueError("invalid bounded complete-game source counts")
     steps = record["selected_validation_step_by_role"]
     metrics = record["validation_aligned_mse_by_role"]
