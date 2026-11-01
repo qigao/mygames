@@ -1,4 +1,5 @@
 #include "mygames/douzero_remote_ticket.h"
+#include "mygames/ddz_round.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -304,7 +305,59 @@ static void test_role_and_one_chunk(void) {
     CHECK(mygames_douzero_remote_reset(&ticket) == OK);
 }
 
+static void test_real_native_turn_transition_rejects_late_q(void) {
+    uint8_t deck[MYGAMES_DDZ_CARDS];
+    mygames_ddz_round round = {0};
+    mygames_ddz_public_view before = {0}, after = {0};
+    mygames_ddz_action_result commit = {0};
+    mygames_douzero_remote_ticket ticket = {0};
+    mygames_douzero_remote_identity id = owner_identity(), current;
+    float scores[1] = {91.0f}, q[1] = {0.5f};
+    mygames_douzero_remote_reply_chunk reply;
+    size_t selected_index = 777u;
+    unsigned i;
+
+    /* Real authoritative M5a physical cards and turn history. The remote
+     * ticket is only a read-only observer, not a playing authority. */
+    for (i = 0u; i < MYGAMES_DDZ_CARDS; ++i) deck[i] = (uint8_t)i;
+    CHECK(mygames_ddz_round_deal(&round, deck, 0u) == MYGAMES_DDZ_OK);
+    CHECK(mygames_ddz_round_public_view(&round, &before) == MYGAMES_DDZ_OK);
+    CHECK(before.turn_seat == 0u && before.landlord_seat == 0u);
+    id.turn_id = before.turn_id;
+    id.seat = before.turn_seat;
+    id.landlord_seat = before.landlord_seat;
+    id.role = 0u;
+    id.legal_action_count = 1u;
+    CHECK(mygames_douzero_remote_begin(&ticket, &id, scores, 1u,
+        300u, 100u) == OK);
+    reply = valid_reply(&id, 0u, q, 1u);
+    reply.chunk_count = 1u;
+    CHECK(mygames_douzero_remote_accept(&ticket, &reply, 110u) == OK);
+
+    /* The actual C11 turn changed while the remote Q was in flight:
+     * our test actor legally plays one of its OWN cards through Round,
+     * not through the remote ticket. The native Game/Room store and ACK
+     * are separate; no online Game Owner integration is claimed. */
+    CHECK(round.hands[0] & UINT64_C(1));
+    CHECK(mygames_ddz_round_submit(&round, 0u, before.turn_id,
+        UINT64_C(1), &commit) == MYGAMES_DDZ_OK);
+    CHECK(mygames_ddz_round_public_view(&round, &after) == MYGAMES_DDZ_OK);
+    CHECK(after.turn_id == before.turn_id + 1u);
+    CHECK(after.turn_seat == 1u && after.landlord_seat == 0u);
+    current = id;
+    current.turn_id = after.turn_id;
+    current.seat = after.turn_seat;
+    current.role = 2u;
+    CHECK(mygames_douzero_remote_best_index(&ticket, &current,
+        111u, &selected_index) == STALE);
+    CHECK(selected_index == 777u); /* late response cannot select action */
+    CHECK(round.turn_id == after.turn_id);
+    CHECK(mygames_douzero_remote_cancel(&ticket) == OK);
+    CHECK(mygames_douzero_remote_reset(&ticket) == OK);
+}
+
 int main(void) {
+    test_real_native_turn_transition_rejects_late_q();
     test_begin_atomic();
     test_chunk_and_owner_fences();
     test_cancel_deadline_connection_reuse();
