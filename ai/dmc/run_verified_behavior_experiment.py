@@ -43,6 +43,17 @@ def run(args):
         generator_sha256=args.generator_sha256,
         objective="win-sign",
     )
+    # This outer coordinator only needs the verified source digests/labels
+    # after admission. Drop thousands of in-memory Episode objects before
+    # spawning the real PyTorch learner: the child performs its own complete
+    # source audit and holds the exact accepted training snapshot. Keeping
+    # both full copies needlessly doubles peak resident memory at scale.
+    for large_key in (
+        "train_episodes", "validation_episodes",
+        "train_source_by_episode", "validation_source_by_episode",
+        "train_files", "validation_files",
+    ):
+        audited.pop(large_key, None)
     target = args.output.absolute()
     if (target.exists() or target.is_symlink() or
             record_path(target).exists() or record_path(target).is_symlink()):
