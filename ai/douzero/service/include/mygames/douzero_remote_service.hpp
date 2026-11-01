@@ -85,6 +85,7 @@ private:
     std::condition_variable changed_;
     std::deque<Work> queue_;
     std::vector<std::thread> workers_;
+    std::size_t inflight_ = 0u; /* queued + executing, hard capacity */
     bool stopping_ = false;
     bool mounted_ = false;
 };
