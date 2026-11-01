@@ -62,7 +62,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           python3 tests/test_douzero_upstream_source.py
-          python3 -m py_compile ai/douzero/audit_c11_rule_parity.py
+          python3 -m py_compile ai/douzero/audit_c11_rule_parity.py ai/douzero/audit_c11_reward_parity.py
 
   pure-source-asan:
     name: Pure C11 rules / Linux ASan+UBSan
