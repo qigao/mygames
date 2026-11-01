@@ -77,7 +77,7 @@ jobs:
           cp .git/HEAD "$snapshot/.git/HEAD"
           cp .git/index "$snapshot/.git/index"
           if [ -f .git/shallow ]; then cp .git/shallow "$snapshot/.git/shallow"; fi
-          printf '[core]\\nrepositoryformatversion = 0\\nfilemode = true\\nbare = false\\n' > "$snapshot/.git/config"
+          printf '[core]\nrepositoryformatversion = 0\nfilemode = true\nbare = false\n' > "$snapshot/.git/config"
           test "$(git -C "$snapshot" rev-parse HEAD)" = "$(git rev-parse HEAD)"
           test -z "$(git -C "$snapshot" status --porcelain --untracked-files=no)"
           tar -C "$snapshot" -czf "$RUNNER_TEMP/mygames-douzero-upstream-public.tar.gz" .
