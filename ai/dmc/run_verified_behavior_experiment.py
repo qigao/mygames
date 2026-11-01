@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 
-from model_source_record import verify_record
+from model_source_record import verify_record, record_path
 from verified_behavior_training import (
     admit_training_sources, verify_exact_learner_revision,
 )
@@ -40,10 +42,17 @@ def run(args):
         objective="win-sign",
     )
     target = args.output.absolute()
-    if target.exists() or target.is_symlink():
-        raise FileExistsError("refuse overwrite of existing private checkpoint")
-    if not target.parent.is_dir():
-        raise ValueError("private checkpoint parent must exist (owned 0700)")
+    if (target.exists() or target.is_symlink() or
+            record_path(target).exists() or record_path(target).is_symlink()):
+        raise FileExistsError("refuse overwrite of any existing checkpoint/source record")
+    parent = target.parent
+    info = parent.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or
+            info.st_uid != os.geteuid() or
+            stat.S_IMODE(info.st_mode) & 0o077):
+        raise PermissionError("private checkpoint directory must already be owned 0700")
+    if os.path.commonpath((str(parent.resolve(strict=True)), str(ROOT))) == str(ROOT):
+        raise ValueError("store private learned weights OUTSIDE the source checkout")
     # The learner will re-admit all sources independently before importing
     # Torch. The training command never includes any TEST file or directory.
     cmd = [
