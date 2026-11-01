@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "ai" / "dmc"))
 from model_source_record import make_record, publish_record
 from virgin_holdout import (PLAN, LOCK, RESULT, OLD_DEALS, admit_and_lock,
-                            prepare, qualification, read_plan,
+                            claim_path, prepare, qualification, read_plan,
                             validate_fresh_deal_seeds)
 
 
@@ -62,6 +62,21 @@ def main():
         assert prepared["tested_game_skill"] is False
         assert prepared["production_bot_promoted"] is False
         plan, digest = read_plan(holdout)
+        assert claim_path(model).is_file()
+        assert stat.S_IMODE(claim_path(model).stat().st_mode) & 0o077 == 0
+        second = private / "duplicate-attempt"
+        second.mkdir(mode=0o700)
+        reject(lambda: prepare(root=second, checkpoint=model,
+                               native_library=native, model_version=31,
+                               seed_clusters=30, identity_clusters=2))
+        assert list(second.iterdir()) == []
+        # Copying the exact sealed seed plan to a new private folder must
+        # fail its checkpoint-local path binding, not give a second test.
+        (second / PLAN).write_bytes((holdout / PLAN).read_bytes())
+        (second / PLAN).chmod(0o600)
+        reject(lambda: admit_and_lock(root=second, checkpoint=model,
+                                      native_library=native, model_version=31))
+        assert not (second / LOCK).exists()
         assert len(plan["seeds"]) == 30
         assert set(plan["seeds"]).isdisjoint(OLD_DEALS)
         assert stat.S_IMODE((holdout / PLAN).stat().st_mode) & 0o077 == 0
@@ -74,6 +89,17 @@ def main():
             list(plan["seeds"][:-1]) + [next(iter(OLD_DEALS))], 30))
         reject(lambda: validate_fresh_deal_seeds(
             list(plan["seeds"][:-1]) + [True], 30))
+        claim = claim_path(model)
+        original_claim = claim.read_bytes()
+        try:
+            altered_claim = json.loads(original_claim)
+            altered_claim["private_root_sha256"] = "f" * 64
+            claim.write_text(json.dumps(altered_claim))
+            reject(lambda: admit_and_lock(root=holdout, checkpoint=model,
+                                          native_library=native, model_version=31))
+            assert not (holdout / LOCK).exists()
+        finally:
+            claim.write_bytes(original_claim)
         original = native.read_bytes()
         try:
             native.write_bytes(b"TAMPERED NATIVE LIBRARY")
