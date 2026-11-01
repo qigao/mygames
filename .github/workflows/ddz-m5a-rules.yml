@@ -107,6 +107,4 @@ jobs:
           set -euo pipefail
           ctest --test-dir build/ddz-asan --no-tests=error \
             --output-on-failure --timeout 30 --repeat until-fail:20 \
-            -R '^mygames[.](ddz_round|douzero_rule_profile|douzero_remote_ticket)
-
-
+            -R "mygames[.](ddz_round|douzero_rule_profile|douzero_remote_ticket)"
