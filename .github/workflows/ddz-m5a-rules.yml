@@ -10,6 +10,8 @@ name: M5a Dou Dizhu gameplay rules (C11)
       - 'tests/test_douzero_rule_profile.py'
       - 'tests/test_douzero_round_state_parity.py'
       - 'tests/test_douzero_actor_feature_parity.py'
+      - 'tests/douzero_remote_ticket_test.c'
+      - 'tests/test_douzero_remote_protocol.py'
       - 'CMakeLists.txt'
       - 'third_party/DouZero/**'
       - 'ai/douzero/**'
@@ -72,6 +74,7 @@ jobs:
           # NumPy-backed original get_obs feature parity is an explicit OFFLINE
           # integration test; never auto-install heavy ML deps in M5a.
           python3 -m py_compile tests/test_douzero_actor_feature_parity.py
+          python3 tests/test_douzero_remote_protocol.py
 
   pure-source-asan:
     name: Pure C11 rules / Linux ASan+UBSan
@@ -93,7 +96,7 @@ jobs:
             -DMYGAMES_ENABLE_FLOWIE=OFF \
             -DCMAKE_C_FLAGS='-fsanitize=address,undefined -g -fno-omit-frame-pointer -Wall -Wextra -Wpedantic -Werror' \
             -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=address,undefined'
-          cmake --build build/ddz-asan --target mygames_ddz_round_test mygames_douzero_rule_profile_test --parallel 2
+          cmake --build build/ddz-asan --target mygames_ddz_round_test mygames_douzero_rule_profile_test mygames_douzero_remote_ticket_test --parallel 2
 
       - name: Check all gameplay operations under sanitizers
         shell: bash
@@ -104,4 +107,5 @@ jobs:
           set -euo pipefail
           ctest --test-dir build/ddz-asan --no-tests=error \
             --output-on-failure --timeout 30 --repeat until-fail:20 \
-            -R '^mygames[.](ddz_round|douzero_rule_profile)$'
+            -R '^mygames[.](ddz_round|douzero_rule_profile|douzero_remote_ticket)
+
