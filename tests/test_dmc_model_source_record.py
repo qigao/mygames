@@ -15,7 +15,8 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "ai" / "dmc"))
 from model_source_record import (
-    make_record, publish_record, record_path, verify_record,
+    make_record, publish_record, public_training_evidence,
+    record_path, verify_record,
 )
 
 
@@ -61,6 +62,22 @@ def main():
         assert not record_path(model).exists()
 
         good = make_record(**params)
+        evidence = public_training_evidence(good)
+        assert evidence["schema"] == "mygames-r9-public-training-evidence-v1"
+        assert evidence["source_policy_labels"] == labels
+        assert evidence["all_tuning_roles_better_than_zero_q"]
+        assert evidence["unseen_test_measured"] is False
+        assert evidence["gameplay_skill_qualified"] is False
+        assert evidence["production_bot_promoted"] is False
+        for role in metrics:
+            assert evidence["roles"][role] == {
+                "selected_optimizer_step": steps[role],
+                "tuning_aligned_q_mse": 0.6,
+                "tuning_zero_q_mse": 1.0,
+                "tuning_q_mse_reduction": 0.4,
+            }
+        assert "episode_id" not in str(evidence)
+        assert "private" not in str(evidence)
         result = publish_record(model, good)
         assert result["source_record_verified"]
         assert result["qualified_as_production_bot"] is False
