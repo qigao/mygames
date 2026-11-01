@@ -76,7 +76,12 @@ static void test_begin_atomic(void) {
     id.wire_request_id_base = UINT64_MAX - UINT64_C(1);
     CHECK(mygames_douzero_remote_begin(&ticket, &id, scores, 130u,
         1000u, 50u) == INVALID); /* 3 chunk wire IDs overflow */
+    id.wire_request_id_base = UINT64_C(9007199254740992);
+    id.legal_action_count = 1u;
+    CHECK(mygames_douzero_remote_begin(&ticket, &id, scores, 130u,
+        1000u, 50u) == INVALID); /* H2 outer id would round in JavaScript */
     id.wire_request_id_base = UINT64_C(9001);
+    id.legal_action_count = 130u;
     memset(id.model_sha256, 0, sizeof(id.model_sha256));
     CHECK(mygames_douzero_remote_begin(&ticket, &id, scores, 130u,
         1000u, 50u) == INVALID);
