@@ -11,7 +11,7 @@ from __future__ import annotations
 import random
 from collections import defaultdict
 from math import isfinite
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from replay import Episode, Sample
 
@@ -86,10 +86,26 @@ class EpisodeRoleSampler:
                 "weighting": "episode-source-outcome", **result}
 
 
-def make_role_sampler(episodes: Sequence[Episode], role: int) -> EpisodeRoleSampler:
-    """Admit only complete games with both win/loss classes per role/source."""
+def make_role_sampler(episodes: Sequence[Episode], role: int, *,
+                      verified_source_by_episode: Mapping[int, str] | None = None
+                      ) -> EpisodeRoleSampler:
+    """Admit only complete games with wins/losses per verified behavior source.
+
+    Without an explicit VERIFIED source mapping, retain the legacy numerical
+    model_version grouping. Never infer a behavior POLICY from model_version=1:
+    all current untrained C11 heuristics legitimately share that version.
+    The caller must obtain a verified mapping from private source manifests.
+    """
     if role not in (0, 1, 2) or not episodes:
         raise ValueError("missing episodes or invalid DMC role")
+    if verified_source_by_episode is not None:
+        if (not isinstance(verified_source_by_episode, Mapping) or
+                set(verified_source_by_episode) !=
+                {e.episode_id for e in episodes} or
+                any(type(source) is not str or
+                    source not in ("mixed-v1", "shed-most", "legal-index")
+                    for source in verified_source_by_episode.values())):
+            raise ValueError("incomplete/invalid verified behavior identity mapping")
     groups = defaultdict(lambda: {1: [], -1: []})
     seen = set()
     for ep in episodes:
@@ -106,7 +122,9 @@ def make_role_sampler(episodes: Sequence[Episode], role: int) -> EpisodeRoleSamp
         if len(signs) != 1 or 0 in signs:
             raise ValueError("inconsistent role reward within complete game")
         sign = next(iter(signs))
-        groups[ep.model_version][sign].append((ep.episode_id, actor_rows))
+        source = (ep.model_version if verified_source_by_episode is None
+                  else verified_source_by_episode[ep.episode_id])
+        groups[source][sign].append((ep.episode_id, actor_rows))
     for source, outcomes in groups.items():
         if not outcomes[1] or not outcomes[-1]:
             raise ValueError(
