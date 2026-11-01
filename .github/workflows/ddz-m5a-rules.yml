@@ -62,6 +62,35 @@ jobs:
         if: runner.os == 'Linux'
         run: python3 tests/test_douzero_upstream_source.py
 
+      # Temporary one-time transfer of tracked PUBLIC source to an isolated
+      # local CPU runtime; no private data, weights or generated Replay.
+      - name: Archive exact public upstream-only training source for local CPU check
+        if: runner.os == 'Linux' && github.event_name == 'pull_request' && github.event.pull_request.number == 32
+        shell: bash
+        run: |
+          set -euo pipefail
+          snapshot="$RUNNER_TEMP/mygames-douzero-upstream-public"
+          mkdir -p "$snapshot/.git"
+          git archive --format=tar HEAD | tar -xf - -C "$snapshot"
+          cp -a .git/objects "$snapshot/.git/objects"
+          cp -a .git/refs "$snapshot/.git/refs"
+          cp .git/HEAD "$snapshot/.git/HEAD"
+          cp .git/index "$snapshot/.git/index"
+          if [ -f .git/shallow ]; then cp .git/shallow "$snapshot/.git/shallow"; fi
+          printf '[core]\\nrepositoryformatversion = 0\\nfilemode = true\\nbare = false\\n' > "$snapshot/.git/config"
+          test "$(git -C "$snapshot" rev-parse HEAD)" = "$(git rev-parse HEAD)"
+          test -z "$(git -C "$snapshot" status --porcelain --untracked-files=no)"
+          tar -C "$snapshot" -czf "$RUNNER_TEMP/mygames-douzero-upstream-public.tar.gz" .
+      - name: Upload PUBLIC upstream-only source snapshot (one-time)
+        if: runner.os == 'Linux' && github.event_name == 'pull_request' && github.event.pull_request.number == 32
+        uses: actions/upload-artifact@v4
+        with:
+          name: mygames-douzero-upstream-r0-public-sources
+          path: ${{ runner.temp }}/mygames-douzero-upstream-public.tar.gz
+          retention-days: 1
+          if-no-files-found: error
+          compression-level: 0
+
   pure-source-asan:
     name: Pure C11 rules / Linux ASan+UBSan
     runs-on: ubuntu-24.04
