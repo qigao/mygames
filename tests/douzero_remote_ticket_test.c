@@ -356,7 +356,53 @@ static void test_real_native_turn_transition_rejects_late_q(void) {
     CHECK(mygames_douzero_remote_reset(&ticket) == OK);
 }
 
+static void test_two_independent_room_tickets_do_not_crosstalk(void) {
+    mygames_douzero_remote_ticket a = {0}, b = {0};
+    mygames_douzero_remote_identity first = owner_identity();
+    mygames_douzero_remote_identity second = owner_identity();
+    mygames_douzero_remote_reply_chunk from_b;
+    float a_scores[1] = {-99.0f}, b_scores[1] = {-99.0f};
+    const float qa = 0.75f, qb = 0.25f;
+    size_t result = 777u;
+
+    first.seat = 0u;
+    first.role = 0u;
+    first.legal_action_count = 1u;
+    second.seat = 1u;
+    second.role = 2u;
+    second.legal_action_count = 1u;
+    second.room_generation = 99u;
+    second.owner_epoch = 88u;
+    second.game_id = 77u;
+    second.ticket_id = 111u;
+    second.wire_request_id_base = 9100u;
+    second.transport_generation = 18u;
+    second.model_sha256[0] ^= 1u;
+    second.legal_list_sha256[0] ^= 1u;
+
+    CHECK(mygames_douzero_remote_begin(&a, &first, a_scores, 1u,
+        500u, 100u) == OK);
+    CHECK(mygames_douzero_remote_begin(&b, &second, b_scores, 1u,
+        500u, 100u) == OK);
+    from_b = valid_reply(&second, 0u, &qb, 1u);
+    from_b.chunk_count = 1u;
+    /* A real asynchronous reply must never enter another room's ticket. */
+    CHECK(mygames_douzero_remote_accept(&a, &from_b, 110u) == STALE);
+    CHECK(a_scores[0] == -99.0f && b_scores[0] == -99.0f);
+    CHECK(mygames_douzero_remote_accept(&b, &from_b, 110u) == OK);
+    CHECK(mygames_douzero_remote_cancel(&a) == OK);
+    CHECK(mygames_douzero_remote_best_index(&a, &first, 111u, &result) ==
+          MYGAMES_DOUZERO_REMOTE_CANCELLED);
+    CHECK(result == 777u);
+    CHECK(mygames_douzero_remote_best_index(&b, &second, 111u, &result) == OK);
+    CHECK(result == 0u && b_scores[0] == qb);
+    CHECK(mygames_douzero_remote_reset(&a) == OK);
+    CHECK(mygames_douzero_remote_reset(&b) == OK);
+    (void)qa;
+}
+
 int main(void) {
+    test_two_independent_room_tickets_do_not_crosstalk();
     test_real_native_turn_transition_rejects_late_q();
     test_begin_atomic();
     test_chunk_and_owner_fences();
