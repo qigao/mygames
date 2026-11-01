@@ -42,7 +42,9 @@ static bool valid_identity(const mygames_douzero_remote_identity *id) {
     role = offset == 0u ? 0u : (offset == 1u ? 2u : 1u);
     if (id->role != role) return false;
     chunks = chunks_needed(id->legal_action_count);
-    return id->wire_request_id_base <= UINT64_MAX - (uint64_t)(chunks - 1u);
+    return id->wire_request_id_base <=
+        MYGAMES_DOUZERO_REMOTE_JSON_SAFE_WIRE_ID_MAX -
+        (uint64_t)(chunks - 1u);
 }
 
 static bool same_identity(const mygames_douzero_remote_identity *a,
