@@ -15,7 +15,6 @@ namespace {
 constexpr unsigned kHttpUnauthorized = 403u;
 constexpr unsigned kHttpInvalid = 400u;
 constexpr unsigned kHttpUnsupported = 421u;
-constexpr unsigned kHttpBusy = 429u;
 constexpr unsigned kHttpModelFailure = 503u;
 constexpr unsigned kHttpOk = 200u;
 
