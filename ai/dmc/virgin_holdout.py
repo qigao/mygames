@@ -32,6 +32,7 @@ from verify_behavior_sources import HEX64
 PLAN = "r9-holdout-plan.v1.json"
 LOCK = "r9-holdout-lock.v1.json"
 RESULT = "r9-holdout-result.v1.json"
+CLAIM_SUFFIX = ".r9-final-test-claim.v1.json"
 SCHEMA = "mygames-private-r9-fresh-paired-plan-v1"
 PLAN_KEYS = frozenset((
     "schema", "checkpoint_sha256", "source_record_sha256",
@@ -63,15 +64,32 @@ def private_sha(path: Path, *, max_bytes: int) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def claim_path(checkpoint: Path) -> Path:
+    model = checkpoint.absolute()
+    return model.with_name(model.name + CLAIM_SUFFIX)
+
+
+def private_root_digest(root: Path) -> str:
+    # Bind each one-shot test to the particular owner-private directory.
+    # Replaying/copied plan bytes under a second directory cannot qualify.
+    return hashlib.sha256(str(root.resolve(strict=True)).encode("utf-8")).hexdigest()
+
+
+def canonical_json(document: dict) -> bytes:
+    return (json.dumps(document, sort_keys=True, separators=(",", ":"),
+                       allow_nan=False) + "\n").encode("utf-8")
+
+
 def write_once(root: Path, filename: str, document: dict) -> str:
     private_path(root, directory=True)
-    if filename not in (PLAN, LOCK, RESULT):
+    if (filename not in (PLAN, LOCK, RESULT) and
+            (not filename.endswith(CLAIM_SUFFIX) or
+             Path(filename).name != filename)):
         raise ValueError("invalid R9 fixed completion file name")
     dst = root / filename
     if dst.exists() or dst.is_symlink():
         raise FileExistsError("R9 holdout record already exists; refuse overwrite")
-    raw = (json.dumps(document, sort_keys=True, separators=(",", ":"),
-                      allow_nan=False) + "\n").encode("utf-8")
+    raw = canonical_json(document)
     if len(raw) > 32768:
         raise ValueError("R9 private holdout record exceeds strict bound")
     fd, tmp = tempfile.mkstemp(prefix=".r9-private-", dir=root)
@@ -167,6 +185,9 @@ def prepare(*, root: Path, checkpoint: Path, native_library: Path,
         raise FileExistsError("fresh R9 evaluation directory must start EMPTY")
     record, source_sha, native_sha = checked_model_and_runtime(
         checkpoint, native_library, model_version)
+    model_claim = claim_path(checkpoint)
+    if model_claim.exists() or model_claim.is_symlink():
+        raise FileExistsError("this immutable model has already reserved its FINAL test")
     if type(identity_clusters) is not int or not 1 <= identity_clusters <= seed_clusters:
         raise ValueError("identity-null cluster count invalid")
     seeds = new_deals(seed_clusters)
@@ -182,7 +203,22 @@ def prepare(*, root: Path, checkpoint: Path, native_library: Path,
         "nonce": secrets.token_hex(16),
     }
     validate_plan(plan)
-    digest = write_once(root, PLAN, plan)
+    digest = hashlib.sha256(canonical_json(plan)).hexdigest()
+    # The checkpoint-local claim is committed FIRST. A crash after claim but
+    # before the plan publication fails closed and permanently reserves this
+    # frozen candidate. Never allow a second test plan for the same file.
+    write_once(model_claim.parent, model_claim.name, {
+        "schema": "mygames-private-r9-model-final-test-claim-v1",
+        "checkpoint_sha256": record["checkpoint_sha256"],
+        "source_record_sha256": source_sha,
+        "native_tournament_sha256": native_sha,
+        "plan_sha256": digest,
+        "private_root_sha256": private_root_digest(root),
+        "model_version": model_version,
+        "baseline": BASELINE,
+    })
+    if write_once(root, PLAN, plan) != digest:
+        raise RuntimeError("private R9 plan publication differs from immutable model claim")
     return {"status": "prepared-not-consumed", "plan_sha256": digest,
             "deal_clusters": seed_clusters, "paired_matches": seed_clusters * 6,
             "checkpoint_sha256": record["checkpoint_sha256"],
@@ -199,6 +235,28 @@ def admit_and_lock(*, root: Path, checkpoint: Path, native_library: Path,
         raise FileExistsError("R9 TEST has already been consumed or completed")
     record, source_sha, native_sha = checked_model_and_runtime(
         checkpoint, native_library, model_version)
+    model_claim = claim_path(checkpoint)
+    item = private_path(model_claim, directory=False)
+    if not 0 < item.st_size <= 16384:
+        raise ValueError("immutable model-level R9 test reservation missing or oversized")
+    claim = json.loads(model_claim.read_text(encoding="utf-8"),
+                       parse_constant=lambda _: (_ for _ in ()).throw(
+                           ValueError("nonfinite model final-test claim")))
+    if (not isinstance(claim, dict) or
+            set(claim) != {
+                "schema", "checkpoint_sha256", "source_record_sha256",
+                "native_tournament_sha256", "plan_sha256",
+                "private_root_sha256", "model_version", "baseline"} or
+            claim["schema"] != "mygames-private-r9-model-final-test-claim-v1" or
+            claim["checkpoint_sha256"] != record["checkpoint_sha256"] or
+            claim["source_record_sha256"] != source_sha or
+            claim["native_tournament_sha256"] != native_sha or
+            claim["plan_sha256"] != plan_digest or
+            claim["private_root_sha256"] != private_root_digest(root) or
+            type(claim["model_version"]) is not int or
+            claim["model_version"] != model_version or
+            claim["baseline"] != BASELINE):
+        raise ValueError("plan is not the model's sole registered FINAL holdout")
     if (model_version != plan["model_version"] or
             record["checkpoint_sha256"] != plan["checkpoint_sha256"] or
             source_sha != plan["source_record_sha256"] or
