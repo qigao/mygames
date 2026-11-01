@@ -202,13 +202,41 @@ def schedule_seeds(count: int, schedule: str) -> list[int]:
     return result
 
 
-def evaluate(args) -> dict:
+def validate_fresh_deal_seeds(seeds, expected_count: int) -> tuple[int, ...]:
+    """Reject the ALREADY OBSERVED R5 development/holdout schedules.
+
+    A trusted offline caller must independently bind these TEST-only seeds
+    to an immutable frozen model and a durable single-consumption lock.
+    Passing this function is not itself proof of never-observed seeds.
+    """
+    if (type(expected_count) is not int or not 30 <= expected_count <= 256 or
+            not isinstance(seeds, (list, tuple)) or
+            len(seeds) != expected_count or
+            any(type(s) is not int or not 1 <= s < 2**32 for s in seeds) or
+            len(set(seeds)) != expected_count):
+        raise ValueError("invalid fresh TEST-only shuffle-deal clusters")
+    old = (set(schedule_seeds(256, "development")) |
+           set(schedule_seeds(256, "holdout")))
+    if not old.isdisjoint(seeds):
+        raise ValueError("R9 TEST deal repeats a previously observed R5 schedule")
+    return tuple(seeds)
+
+
+def evaluate(args, *, frozen_test_seeds=None) -> dict:
+    # A new R9 schedule is usable only through an explicit trusted caller.
+    # Legacy development / already-observed holdout behaviour is unchanged.
+    if frozen_test_seeds is None:
+        seeds = schedule_seeds(args.seed_clusters, args.seed_schedule)
+        schedule_label = args.seed_schedule
+    else:
+        seeds = validate_fresh_deal_seeds(
+            frozen_test_seeds, args.seed_clusters)
+        schedule_label = "sealed-r9-frozen-model-one-shot"
     import torch
     torch.set_num_threads(2)
     native = load_native(args.native_library)
     callback, calls, failures, _ = frozen_scorer(
         args.checkpoint, args.model_version)
-    seeds = schedule_seeds(args.seed_clusters, args.seed_schedule)
     clusters = []
     for index, seed in enumerate(seeds):
         signed_win = 0
@@ -262,7 +290,7 @@ def evaluate(args) -> dict:
         "paired_complete_matches": 6 * len(clusters),
         "independent_shuffle_clusters": len(clusters),
         "baseline": args.baseline,
-        "test_seed_schedule": args.seed_schedule,
+        "test_seed_schedule": schedule_label,
         "candidate_win_rate": (1.0 + sum(wins) / len(wins)) / 2.0,
         "candidate_mean_nonmonetary_points":
             sum(points) / len(points),
