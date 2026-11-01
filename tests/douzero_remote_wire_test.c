@@ -199,12 +199,83 @@ static void test_roundtrip(uint8_t role) {
     (void)role;
 }
 
+static void test_full_legal_batches(void) {
+    mygames_douzero_ticket first = make_ticket(0u), batch[3];
+    mygames_douzero_score_collector tracker = {0};
+    uint8_t packet[3][MYGAMES_DOUZERO_REMOTE_REPLY_BYTES_MAX];
+    size_t bytes[3] = {0};
+    float values[130], expected[130], rows[64];
+    size_t i, j;
+    first.first_action = 0u;
+    first.action_count = 64u;
+    for (i = 0; i < 130u; ++i) {
+        values[i] = 991.25f;
+        expected[i] = ((float)i - 52.0f) / 8.0f;
+    }
+    REQUIRE(mygames_douzero_score_collector_begin(
+        &first, values, 129u, &tracker) == MYGAMES_DOUZERO_WIRE_INVALID);
+    REQUIRE(tracker.expected_count == 0u);
+    REQUIRE(mygames_douzero_score_collector_begin(
+        &first, values, 130u, &tracker) == MYGAMES_DOUZERO_WIRE_OK);
+    REQUIRE(tracker.expected_count == 3u);
+    REQUIRE(!mygames_douzero_score_collector_complete(&tracker));
+    for (i = 0; i < 3u; ++i) {
+        REQUIRE(mygames_douzero_score_collector_ticket(
+            &tracker, i, &batch[i]) == MYGAMES_DOUZERO_WIRE_OK);
+        REQUIRE(batch[i].first_action == 64u * i);
+        REQUIRE(batch[i].request_id == first.request_id + i);
+        REQUIRE(batch[i].action_count == (i == 2u ? 2u : 64u));
+        for (j = 0u; j < batch[i].action_count; ++j)
+            rows[j] = expected[64u * i + j];
+        REQUIRE(mygames_douzero_wire_encode_reply(
+            &batch[i], rows, batch[i].action_count,
+            packet[i], sizeof(packet[i]), &bytes[i]) ==
+            MYGAMES_DOUZERO_WIRE_OK);
+    }
+    /* HTTP/2 responses need not arrive in request order. */
+    REQUIRE(mygames_douzero_score_collector_accept(
+        &tracker, packet[2], bytes[2]) == MYGAMES_DOUZERO_WIRE_OK);
+    REQUIRE(!mygames_douzero_score_collector_complete(&tracker));
+    REQUIRE(values[128] == expected[128] && values[129] == expected[129]);
+    REQUIRE(values[0] == 991.25f && values[64] == 991.25f);
+    REQUIRE(mygames_douzero_score_collector_accept(
+        &tracker, packet[2], bytes[2]) == MYGAMES_DOUZERO_WIRE_STALE);
+    REQUIRE(tracker.received_count == 1u);
+    REQUIRE(mygames_douzero_score_collector_accept(
+        &tracker, packet[0], bytes[0]) == MYGAMES_DOUZERO_WIRE_OK);
+    REQUIRE(!mygames_douzero_score_collector_complete(&tracker));
+    /* Wrong owner generation must not corrupt missing batch scores. */
+    packet[1][40] ^= 1u;
+    REQUIRE(mygames_douzero_score_collector_accept(
+        &tracker, packet[1], bytes[1]) == MYGAMES_DOUZERO_WIRE_STALE);
+    check_scores(values + 64, 64u, 991.25f);
+    packet[1][40] ^= 1u;
+    /* Incorrect full-list ordered digest is also a stale proposal. */
+    packet[1][72] ^= 1u;
+    REQUIRE(mygames_douzero_score_collector_accept(
+        &tracker, packet[1], bytes[1]) == MYGAMES_DOUZERO_WIRE_STALE);
+    check_scores(values + 64, 64u, 991.25f);
+    packet[1][72] ^= 1u;
+    REQUIRE(mygames_douzero_score_collector_accept(
+        &tracker, packet[1], bytes[1]) == MYGAMES_DOUZERO_WIRE_OK);
+    REQUIRE(mygames_douzero_score_collector_complete(&tracker));
+    REQUIRE(tracker.received_count == 3u);
+    REQUIRE(memcmp(values, expected, sizeof(expected)) == 0);
+    REQUIRE(mygames_douzero_score_collector_accept(
+        &tracker, packet[0], bytes[0]) == MYGAMES_DOUZERO_WIRE_STALE);
+    REQUIRE(memcmp(values, expected, sizeof(expected)) == 0);
+    REQUIRE(mygames_douzero_score_collector_ticket(
+        &tracker, 3u, &batch[0]) == MYGAMES_DOUZERO_WIRE_INVALID);
+}
+
 int main(void) {
+    test_full_legal_batches();
     test_roundtrip(0u);
     test_roundtrip(1u);
     test_roundtrip(2u);
     puts("mygames.douzero_remote_h2_ws_wire: PASS "
          "roles=3 batch64=true terminal_chunk=true "
-         "owner_turn_model_sha_fences=true nonfinite_no_mutation=true");
+         "owner_turn_model_sha_fences=true nonfinite_no_mutation=true "
+         "complete_130_actions_three_batches_out_of_order=true");
     return 0;
 }
