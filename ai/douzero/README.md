@@ -129,3 +129,65 @@ M5j online game/settlement behavior. Then connect only a narrow C11
 Env bridge to the UNMODIFIED upstream actor and learner. No new DMC
 algorithm, heuristic source sampler, silent rule conversion or
 unverified pretrained checkpoint is allowed.
+
+
+## R0 extended original WP CPU training: complete finite reward statistics
+
+With the SAME untouched upstream actor/learner and privately installed
+GitPython-only metadata wheels, a second official experiment used
+the EXISTING upstream **--objective wp** flag (rather than the default
+ADP), CPU actor=1, learner threads=1, unroll_length=20, batch_size=2,
+num_buffers=4, requested total_frames=1200, RMSprop defaults.
+The asynchronous learner actually finished **1,280 frames**:
+landlord/up/down **440/400/440 frames**, optimizer steps **11/10/11**.
+Unlike the smaller ADP smoke, all last checkpoint loss and
+mean_episode_return fields were finite:
+
+| Upstream role | Last sampled loss | Last logged mean episode return |
+| --- | ---: | ---: |
+| landlord | 0.292679 | -0.909091 |
+| landlord_up | 0.355744 | +0.933333 |
+| landlord_down | 0.254079 | +0.939394 |
+
+Re-loaded original full checkpoint SHA256:
+
+    5fc21c8667be575dc8a1e7c1b10df55df136877eef36cc8c427c277d0868ead4
+
+Original evaluate.py on the SAME 48 already-observed developer-only
+deals found trained WP landlord **0/48** wins versus two random
+farmers and trained WP farmers **37/48** wins versus random landlord.
+The original checkpoint and three role-specific state dicts were kept
+PRIVATE outside the Git worktree and not released. This is STILL
+a bounded runtime smoke, not gameplay-skill acceptance or complete
+training. Its return statistics describe the training actor's games,
+not any frozen independent skill qualification.
+
+## Real original WP vs C11 signed settlement comparison
+
+A third independent script calls the ORIGINAL DouZero
+Env._get_reward and the EXISTING C11
+mygames_ddz_score_compute (not a replicated scoring implementation)
+over the complete bounded matrix: bid base 1..3, all landlord
+and winning seats, bomb counts 0..2, landlord nonpass 1..3 and
+farmers nonpass 0..3.
+
+Out of **801 native-accepted cases**, original **WP win/loss sign
+agreed in all 801** with the C11 landlord team win sign. The full
+ADP numeric reward magnitude differed from C11 settlement's
+nonmonetary unit in **612/801** cases. A concrete example is
+base bid 1, bombs 0 and landlord spring: MyGames unit 2 but
+original DouZero ADP magnitude 1.
+
+Reproduce against the exact existing C11 Match/Room/Round (offline
+developer test; never a second production rules runtime):
+
+    cc -std=c11 -O2 -Wall -Wextra -Wpedantic -Werror -fPIC -shared -I games/doudizhu/include games/doudizhu/src/ddz_match.c games/doudizhu/src/ddz_round.c games/doudizhu/src/room.c -o /PRIVATE_OUTSIDE_GIT/libmygames-ddz-score-audit.so
+    python3 ai/douzero/audit_c11_reward_parity.py --c11-match-library /PRIVATE_OUTSIDE_GIT/libmygames-ddz-score-audit.so --objective wp
+
+The same audit with **--objective adp** must FAIL CLOSED on the
+existing rules; --report-only emits a diagnostic, never a valid ADP
+parity gate. WP parity proves a **team outcome training target only**.
+The existing owner-controlled MyGames bidding, move legality,
+bomb/spring nonmonetary ledger and Game ACK MUST remain authoritative.
+The R1 C11 adapter remains RED until every legal move and
+observation/seat encoding also agrees.
