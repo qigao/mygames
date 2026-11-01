@@ -242,13 +242,23 @@ def train(episodes: list[Episode], by_role: dict[int, list],
     validation_samplers = {}
     if sampling == "episode-source-outcome":
         from train_policy import make_role_sampler
-        if {e.model_version for e in episodes} != {e.model_version for e in validation}:
-            raise ValueError("train/validation source-policy cohorts differ")
+        train_sources = getattr(args, "_verified_train_sources", None)
+        val_sources = getattr(args, "_verified_validation_sources", None)
+        if (train_sources is None) != (val_sources is None):
+            raise ValueError("incomplete externally verified source mapping")
+        if train_sources is None:
+            if {e.model_version for e in episodes} != {
+                    e.model_version for e in validation}:
+                raise ValueError("train/validation source-policy cohorts differ")
+        elif set(train_sources.values()) != set(val_sources.values()):
+            raise ValueError("TRAIN/VALIDATION verified policy rosters differ")
         # Entire episodes must include WIN and LOSS for EVERY role/source
         # in both independent pools before allocating any role model.
         for role in ROLES:
-            samplers[role] = make_role_sampler(episodes, role)
-            validation_samplers[role] = make_role_sampler(validation, role)
+            samplers[role] = make_role_sampler(
+                episodes, role, verified_source_by_episode=train_sources)
+            validation_samplers[role] = make_role_sampler(
+                validation, role, verified_source_by_episode=val_sources)
     models = {role: DouZeroQ(role).to(device) for role in ROLES}
     before = {ROLES[r]: evaluate_rows(models[r], val_roles[r], device,
                                        args.batch_size) for r in ROLES}
@@ -417,6 +427,14 @@ def main() -> int:
     parser.add_argument("--validation-interval", type=int, default=20)
     parser.add_argument("--require-validation-advantage", action="store_true",
                         help="reject checkpoint if ANY role fails validation zero-Q baseline")
+    # R9b OPTIONAL private source-verifiable training. No TEST paths allowed.
+    # Existing single-source transition/final entrypoints remain unchanged.
+    parser.add_argument("--behavior-train-cohort", action="append", type=Path)
+    parser.add_argument("--behavior-validation-cohort", action="append", type=Path)
+    parser.add_argument("--behavior-required-source", action="append",
+                        choices=("mixed-v1", "shed-most", "legal-index"))
+    parser.add_argument("--behavior-source-revision")
+    parser.add_argument("--behavior-generator-sha256")
     args = parser.parse_args()
     if args.rules_version <= 0 or args.steps <= 0 or args.batch_size <= 0 or \
             not (0.0 < args.learning_rate <= 1.0) or args.validation_interval < 1:
@@ -448,6 +466,45 @@ def main() -> int:
     if args.verify_only and (args.output or args.checkpoint or
                              args.model_version is not None):
         parser.error("--verify-only does not accept model checkpoint paths or model version")
+    source_requested = any((
+        args.behavior_train_cohort, args.behavior_validation_cohort,
+        args.behavior_required_source, args.behavior_source_revision,
+        args.behavior_generator_sha256,
+    ))
+    verified_behavior = None
+    if source_requested:
+        if (not args.train or not args.behavior_train_cohort or
+                not args.behavior_validation_cohort or
+                not args.behavior_required_source or
+                not args.behavior_source_revision or
+                not args.behavior_generator_sha256 or
+                args.objective != "win-sign" or
+                args.sampling != "episode-source-outcome" or
+                args.checkpoint_policy != "best-validation" or
+                not args.require_validation_advantage):
+            parser.error("verified multi-source mode requires --train, complete "
+                         "pinned TRAIN/VALIDATION cohorts, episode-source-outcome, "
+                         "best-validation and strict zero-Q admission")
+        # This source-to-policy mapping MUST come from actual sealed C11
+        # private manifests. Never infer policy from numeric model_version=1.
+        # Crucially, the virgin TEST files are NOT opened by this mode.
+        from verified_behavior_training import (
+            admit_training_sources, exact_replay_paths,
+        )
+        verified_behavior = admit_training_sources(
+            train_cohorts=args.behavior_train_cohort,
+            validation_cohorts=args.behavior_validation_cohort,
+            required_behaviors=args.behavior_required_source,
+            source_revision=args.behavior_source_revision,
+            generator_sha256=args.behavior_generator_sha256,
+            objective=args.objective,
+        )
+        exact_replay_paths(args.replay, verified_behavior["train_files"])
+        exact_replay_paths(args.validation_replay,
+                           verified_behavior["validation_files"])
+        args._verified_train_sources = verified_behavior["train_source_by_episode"]
+        args._verified_validation_sources = (
+            verified_behavior["validation_source_by_episode"])
     episodes, by_role = load_checked(args.replay, args.rules_version,
                                      OBJECTIVES[args.objective])
     if args.train and args.model_version <= max(e.model_version for e in episodes):
@@ -460,6 +517,13 @@ def main() -> int:
         "role_samples": {ROLES[r]: len(by_role[r]) for r in ROLES},
         "source_model_versions": sorted({e.model_version for e in episodes}),
     }
+    if verified_behavior is not None:
+        report["verified_behavior_sources"] = verified_behavior["sources"]
+        report["source_manifest_bundle_sha256"] = (
+            verified_behavior["manifest_bundle_sha256"])
+        report["heldout_test_opened_for_training"] = False
+        report["source_provenance_is_not_signed_attestation"] = True
+        report["qualified_gameplay_skill"] = False
     if args.validation_replay:
         val, roles = load_checked(args.validation_replay, args.rules_version,
                                   OBJECTIVES[args.objective])
