@@ -64,7 +64,7 @@ def main():
         good = make_record(**params)
         evidence = public_training_evidence(good)
         assert evidence["schema"] == "mygames-r9-public-training-evidence-v1"
-        assert evidence["source_policy_labels"] == labels
+        assert evidence["source_policy_labels"] == sorted(labels)
         assert evidence["all_tuning_roles_better_than_zero_q"]
         assert evidence["unseen_test_measured"] is False
         assert evidence["gameplay_skill_qualified"] is False
