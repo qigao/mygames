@@ -7,6 +7,9 @@ name: M5a Dou Dizhu gameplay rules (C11)
       - 'games/doudizhu/include/mygames/ddz_round.h'
       - 'tests/ddz_round_test.c'
       - 'CMakeLists.txt'
+      - 'third_party/DouZero/**'
+      - 'ai/douzero/**'
+      - 'tests/test_douzero_upstream_source.py'
       - '.github/workflows/ddz-m5a-rules.yml'
   workflow_dispatch:
 
@@ -54,6 +57,12 @@ jobs:
           ctest --test-dir build/ddz -C Debug --no-tests=error
           --output-on-failure --timeout 30 --repeat until-fail:20
           -R '^mygames[.]ddz_round$'
+
+      - name: Verify unmodified pinned DouZero Actor-Learner sources
+        if: runner.os == 'Linux'
+        run: |
+          python3 tests/test_douzero_upstream_source.py
+          python3 -m py_compile ai/douzero/audit_c11_rule_parity.py ai/douzero/audit_c11_reward_parity.py
 
   pure-source-asan:
     name: Pure C11 rules / Linux ASan+UBSan

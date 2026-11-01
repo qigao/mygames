@@ -1,5 +1,11 @@
 # MyGames
 
+## DouZero AI baseline (restart)
+
+The former experimental custom DMC and heuristic-data algorithms have been retired. The active AI development line now starts from the **unmodified original [DouZero](https://github.com/kwai/DouZero) Actor–Learner** at pinned commit `718a5c920bf3361e34178a38f3b80458e176b351`, vendored with its Apache-2.0 license in `third_party/DouZero`. Existing MyGames C11 rules and Room Owner remain unchanged.
+
+See [DouZero upstream R0](ai/douzero/README.md) for the source lock, official training commands and the mandatory rule/feature/reward parity work before replacing the offline Python environment with C11.
+
 A server-authoritative multiplayer game platform, initially for Dou Dizhu (斗地主).
 
 ## Current development prototype
