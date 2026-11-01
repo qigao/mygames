@@ -80,6 +80,12 @@ jobs:
           printf '[core]\nrepositoryformatversion = 0\nfilemode = true\nbare = false\n' > "$snapshot/.git/config"
           test "$(git -C "$snapshot" rev-parse HEAD)" = "$(git rev-parse HEAD)"
           test -z "$(git -C "$snapshot" status --porcelain --untracked-files=no)"
+          # Only tiny public metadata dependencies, never torch/rlcard/GPU.
+          # Download bytes only; no dependency installation in GitHub CI.
+          mkdir -p "$snapshot/.offline-gitpython-wheels"
+          python3 -m pip download --disable-pip-version-check --only-binary=:all: --no-deps \
+            --dest "$snapshot/.offline-gitpython-wheels" \
+            GitPython==3.1.43 gitdb==4.0.11 smmap==5.0.1
           tar -C "$snapshot" -czf "$RUNNER_TEMP/mygames-douzero-upstream-public.tar.gz" .
       - name: Upload PUBLIC upstream-only source snapshot (one-time)
         if: runner.os == 'Linux' && github.event_name == 'pull_request' && github.event.pull_request.number == 32
