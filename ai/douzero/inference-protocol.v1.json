@@ -1,0 +1,78 @@
+{
+  "schema": "mygames.douzero.inference/1",
+  "status": "draft-unqualified",
+  "method": "douzero.q.evaluate",
+  "objective": "wp",
+  "transports": [
+    "http2-jsonrpc-2.0",
+    "websocket"
+  ],
+  "required_request": [
+    "protocol_version",
+    "request_id",
+    "game_id",
+    "room_generation",
+    "owner_epoch",
+    "turn_id",
+    "seat",
+    "role",
+    "model_version",
+    "model_sha256",
+    "rules_profile",
+    "objective",
+    "legal_list_sha256",
+    "chunk_index",
+    "chunk_count",
+    "x",
+    "z",
+    "actions"
+  ],
+  "required_response": [
+    "protocol_version",
+    "request_id",
+    "game_id",
+    "room_generation",
+    "owner_epoch",
+    "turn_id",
+    "seat",
+    "role",
+    "model_version",
+    "model_sha256",
+    "legal_list_sha256",
+    "chunk_index",
+    "chunk_count",
+    "scores"
+  ],
+  "limits": {
+    "x_landlord": 319,
+    "x_farmer": 430,
+    "history": 810,
+    "action_width": 54,
+    "max_actions_per_chunk": 64,
+    "min_actions_per_chunk": 1,
+    "max_pending_per_turn": 1
+  },
+  "statuses": [
+    "ok",
+    "invalid_request",
+    "stale_turn",
+    "stale_model",
+    "deadline",
+    "cancelled",
+    "over_capacity",
+    "model_unavailable",
+    "nonfinite_q",
+    "transport_failure"
+  ],
+  "source": {
+    "douzero_upstream_commit": "718a5c920bf3361e34178a38f3b80458e176b351",
+    "kfcore_original_profile": "douzero.original.wp",
+    "legacy_profile_not_accepted": "ddz-dmc-replay-v1"
+  },
+  "rules": {
+    "owner_authoritative": true,
+    "service_may_commit": false,
+    "automatic_fallback": false,
+    "actor_private_hands_only": true
+  }
+}
