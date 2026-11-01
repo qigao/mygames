@@ -362,7 +362,7 @@ static void test_two_independent_room_tickets_do_not_crosstalk(void) {
     mygames_douzero_remote_identity second = owner_identity();
     mygames_douzero_remote_reply_chunk from_b;
     float a_scores[1] = {-99.0f}, b_scores[1] = {-99.0f};
-    const float qa = 0.75f, qb = 0.25f;
+    const float qb = 0.25f;
     size_t result = 777u;
 
     first.seat = 0u;
@@ -398,7 +398,6 @@ static void test_two_independent_room_tickets_do_not_crosstalk(void) {
     CHECK(result == 0u && b_scores[0] == qb);
     CHECK(mygames_douzero_remote_reset(&a) == OK);
     CHECK(mygames_douzero_remote_reset(&b) == OK);
-    (void)qa;
 }
 
 int main(void) {
