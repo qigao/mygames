@@ -178,3 +178,92 @@ loop if CHttp's owner already manages it.
 **Design decision:** C++ is welcomed **where inference benefits**.
 Inference is a remote service, not part of a C11 game runtime, and
 neither a new training algorithm nor another native game authority.
+
+
+## R2a implemented pure C11 remote response ticket
+
+The independent first implementation is
+\`MyGames::DouZeroRemoteTicket\` in
+\`ai/douzero/include/mygames/douzero_remote_ticket.h\` and
+\`ai/douzero/src/douzero_remote_ticket.c\`, with a real native
+\`mygames.douzero_remote_ticket\` CTest in the EXISTING CMake and M5a
+Linux/Windows/macOS/Linux ASan/UBSan matrix. It is **network-agnostic**:
+no CHttp, KFCore, C++, Python, model runtime, actor information encoder,
+dynamic allocation, Game Owner private match pointer or user credentials
+are linked. This is an Owner-facing **callback correlation primitive**,
+not an integrated production Game Owner, an inference server, or a claim
+that HTTP/2/WS are currently connected.
+
+The C11 Owner creates immutable ticket identity with nonzero
+\`room_generation\`, \`owner_epoch\`, \`transport_generation\`, \`game_id\`,
+\`turn_id\`, \`ticket_id\`, role/seat/model/source SHA and the digest of
+the FULL ordered legal list. Physical seat roles are checked relative to
+the chosen landlord seat. Current original fixed-landlord WP profile
+must be explicit; the old custom DMC profile has no alias.
+
+The Owner supplies an already computed SHA256 over exactly:
+
+    ASCII("mygames.douzero.legal.v1") || 0x00 ||
+    uint32_little_endian(total_count) ||
+    for each original ordered legal action: uint64_little_endian(physical_mask)
+
+This covers PASS as zero and the **entire** original legal candidate
+order, not just a single network chunk. The C11 correlator compares
+SHA256 digest bytes but **does not compute or authenticate SHA**:
+the trusted Game Owner must compute it using its existing Crypto
+provider, authenticate the chosen model artifact, and rederive/recheck
+the legal list at COMMIT. Client-supplied hashes are NEVER authoritative.
+
+A ticket holds only metadata and a **caller-owned score scratch span**,
+whose capacity must contain the complete count. The original complete
+legal set may exceed the single request maximum 64, so every chunk
+has a separate, bounded JSON-RPC/WS **wire request ID**:
+\`wire_request_id_base + chunk_index\`. Each echoes a common owner-issued
+logical \`ticket_id\`, full legal-list SHA and every other identity
+field. Input \`request_id\`, model and legal digests, chunk ordinal/count,
+all Q values, and local owner-monotonic absolute deadline are enforced
+before writing any score slot. Remote responses can arrive only through
+the existing serialized Owner callback path, never modifying a C11 Game
+Owner directly from CHttp's async thread.
+
+The full list is capped at 16,384 actions, at most 256 ordered chunks.
+If the real legal list exceeds the cap the Owner must reject inference,
+NOT silently truncate or take a "top 64" shortcut. No guessed action,
+silent PASS, or heuristic fallback is permitted. On a complete vector,
+the Owner verifies the CURRENT owner epoch/game/turn/seat/model/transport
+generation and digest again; only then does it receive a single
+winning **index**, using the earliest original legal-index on a Q tie.
+It must still revalidate the corresponding physical action through
+existing legal Game Owner COMMIT; the correlator cannot create Game ACKs.
+
+C11 native tests include 130 scores split 64/64/2, input buffer
+atomicity, duplicate/out-of-order/partial chunks, wrong model SHA,
+legal list SHA, seat/role, game, owner epoch, connection generation,
+deadline, finite Q failure, completion, one-shot index, cancellation
+and late callbacks after a new transport generation. The tests use
+PUBLIC deterministic score arrays, not a real model. They prove
+response-ticket behavior only.
+
+### Transport implementation gap
+
+- Existing CHttp H2 JSON-RPC request encoding and typed response
+  parsing are **not yet wired** to this C11 ticket: use the existing
+  \`chttp_async_client_rpc_submit\` and cancellation handle rather than
+  introducing another event loop. In wire JSON, every potentially
+  64-bit integer ID is a canonical decimal **string** to avoid
+  JavaScript number rounding; do not trust arbitrary numeric coercion.
+- Existing CHttp's default \`max_request_body_bytes=8192\` is
+  insufficient for a worst-case 64×54 action bit-array plus state and
+  history. The qualified H2/WS service must explicitly configure
+  a bounded **at least 32KiB** request-body budget, independently bound
+  its maximum CSerde/frame/inflight memory, and prove malicious
+  oversized input rejection.
+- The actual C++17 KFCore inference host, HTTP/2 listener, WS
+  reconnection and authenticated TLS/mTLS isolation have **not yet**
+  been implemented or run in this MyGames PR. KFCore's separately
+  versioned original DouZero WP model semantic profile is on
+  [KFCore PR #359](https://github.com/qigao/KFCore/pull/359);
+  actual trained upstream model Torch/ONNX/KFCore parity remains RED.
+- Current online MyGames C11 house rules still reject some original
+  DouZero-only actions. R2a does NOT enable production inference
+  until full legal/actor-feature/bidding/history gates are satisfied.
