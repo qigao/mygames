@@ -70,3 +70,45 @@ mygames_ddz_status mygames_douzero_classify_move(
     }
     return MYGAMES_DDZ_INVALID_MOVE;
 }
+
+/* Original pinned move_selector.filter_type_11_serial_3_1 compares the
+ * highest rank of ALL triple groups, including a triple used as wings.
+ * The original C11 beats() instead compares the body/high_rank; retain the
+ * normal C11 beats path for all other types and never alter live rules. */
+static uint8_t highest_any_triple(uint64_t mask) {
+    uint8_t counts[15] = {0};
+    unsigned int i;
+    uint8_t highest = 0u;
+    for (i = 0u; i < MYGAMES_DDZ_CARDS; ++i)
+        if ((mask & (UINT64_C(1) << i)) != 0u)
+            ++counts[i < 52u ? i / 4u : i - 39u];
+    for (i = 0u; i < 15u; ++i)
+        if (counts[i] == 3u) highest = (uint8_t)i;
+    return highest;
+}
+
+mygames_ddz_status mygames_douzero_beats_move(
+    uint64_t candidate_cards, uint64_t previous_cards, bool *out_beats) {
+    mygames_ddz_move proposed = {0}, previous = {0};
+    mygames_ddz_status status;
+    bool beats;
+    if (!out_beats) return MYGAMES_DDZ_INVALID_ARGUMENT;
+    status = mygames_douzero_classify_move(candidate_cards, &proposed);
+    if (status != MYGAMES_DDZ_OK) return status;
+    if (previous_cards == 0u) {
+        *out_beats = true;
+        return MYGAMES_DDZ_OK;
+    }
+    status = mygames_douzero_classify_move(previous_cards, &previous);
+    if (status != MYGAMES_DDZ_OK) return status;
+    beats = mygames_ddz_beats(&proposed, &previous);
+    if (proposed.kind == MYGAMES_DDZ_MOVE_AIRPLANE_SINGLES &&
+        previous.kind == MYGAMES_DDZ_MOVE_AIRPLANE_SINGLES &&
+        proposed.chain_length == previous.chain_length &&
+        proposed.card_count == previous.card_count) {
+        beats = highest_any_triple(candidate_cards) >
+                highest_any_triple(previous_cards);
+    }
+    *out_beats = beats;
+    return MYGAMES_DDZ_OK;
+}
