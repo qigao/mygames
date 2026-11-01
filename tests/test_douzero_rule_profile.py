@@ -59,6 +59,63 @@ def classify(fn, cards):
     return None if code else output
 
 
+def response_parity(lib):
+    """Call ORIGINAL GameEnv.get_legal_card_play_actions, not a reimplementation.
+
+    Uses two disjoint actual physical 54-card hands; no invented overlapping
+    hidden cards, no second game rules runtime, and no NumPy/Torch import.
+    """
+    GameEnv = importlib.import_module("douzero.env.game").GameEnv
+    beats = lib.mygames_douzero_beats_move
+    beats.argtypes = [ct.c_uint64, ct.c_uint64, ct.POINTER(ct.c_bool)]
+    beats.restype = ct.c_int
+    # Known four-triple-wing rivalry: pinned upstream selector compares the
+    # HIGHEST triple including wing; online native only compares the body.
+    prior = sorted([3]*3 + [4]*3 + [5]*3 + [17]*3)
+    candidate = sorted([6]*3 + [7]*3 + [8]*3 + [12]*3)
+    game = GameEnv({})
+    game.acting_player_position = "landlord"
+    game.info_sets["landlord"].player_hand_cards = candidate[:]
+    game.card_play_action_seq = [prior[:]]
+    assert candidate not in game.get_legal_card_play_actions()
+    accepted = ct.c_bool(True)
+    assert beats(mask(candidate), mask(prior), ct.byref(accepted)) == 0
+    assert not accepted.value
+
+    rng = random.Random(20261102)
+    rival_count = 0
+    action_count = 0
+    for _ in range(100):
+        physical = list(range(54))
+        rng.shuffle(physical)
+        rival_hand = [RANKS[c//4 if c < 52 else c-39]
+                      for c in physical[:17]]
+        actor_hand = [RANKS[c//4 if c < 52 else c-39]
+                      for c in physical[17:37]]
+        rival_options = MovesGener(rival_hand).gen_moves()
+        actor_options = [sorted(x) for x in MovesGener(actor_hand).gen_moves()]
+        game = GameEnv({})
+        game.acting_player_position = "landlord"
+        game.info_sets["landlord"].player_hand_cards = actor_hand[:]
+        for _ in range(3):
+            rival = sorted(rng.choice(rival_options))
+            game.card_play_action_seq = [rival]
+            original_responses = {
+                tuple(x) for x in game.get_legal_card_play_actions() if x
+            }
+            for cards in actor_options:
+                decision = ct.c_bool(False)
+                code = beats(mask(cards), mask(rival), ct.byref(decision))
+                if code != 0 or bool(decision.value) != (
+                        tuple(cards) in original_responses):
+                    raise AssertionError(
+                        f"native response diverges from original DouZero "
+                        f"rival={rival}, candidate={cards}, status={code}")
+                action_count += 1
+            rival_count += 1
+    return rival_count, action_count
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--offline-library", type=Path, required=True)
@@ -122,8 +179,10 @@ def main():
                     raise AssertionError("original/C11 sequence-length mismatch")
             compared += 1
     assert compared >= args.hands * 20
+    rival_count, responses = response_parity(lib)
     print(f"mygames.douzero_native_move_profile: PASS original_actions={compared} "
           f"existing_house_rule_mismatches={legacy_mismatches} "
+          f"original_rivals={rival_count} response_action_checks={responses} "
           "online_house_rules_unchanged=true full_env_qualified=false")
 
 
