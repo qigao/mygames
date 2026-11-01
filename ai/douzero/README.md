@@ -23,12 +23,13 @@
 cd third_party/DouZero
 python3 -m pip install -r requirements.txt  # explicit operator action, NEVER CI auto-download
 python3 train.py --actor_device_cpu --training_device cpu \
-  --num_actors 1 --num_threads 1 --training_device cpu \
+  --num_actors 1 --num_threads 1 \
   --total_frames 2000 --unroll_length 20 --batch_size 2 \
-  --num_buffers 4 --save_interval 1
+  --num_buffers 4 --save_interval 1 \
+  --savedir /PRIVATE_OUTSIDE_GIT/douzero-r0-checkpoints
 ```
 
-The command is an explicit optional **small upstream runtime experiment**, not a verified result or competitive training prescription. Real training and evaluation need a configured PyTorch/RLCard environment and sufficient resources. The default official objective is `adp` unless explicitly changed. Save generated checkpoints outside the repository when running on a trusted training host.
+Create an owner-private directory at `/PRIVATE_OUTSIDE_GIT/douzero-r0-checkpoints` first and replace that example path with your chosen storage. The command is an explicit optional **small upstream runtime experiment**, not a verified result or competitive training prescription. Real training and evaluation need a configured PyTorch/RLCard environment and sufficient resources. The default official objective is `adp` unless explicitly changed. Save generated checkpoints outside the repository when running on a trusted training host.
 
 The old v102/v103/v104 weights are **retired experimental artifacts, not training seeds or new DouZero checkpoints**; do not relabel/reuse them as upstream DouZero. No AI production deployment is authorized by this R0 source import.
 
