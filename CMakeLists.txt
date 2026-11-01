@@ -125,7 +125,7 @@ if(BUILD_TESTING)
     tests/douzero_remote_ticket_test.c)
   target_compile_features(mygames_douzero_remote_ticket_test PRIVATE c_std_11)
   target_link_libraries(mygames_douzero_remote_ticket_test PRIVATE
-    MyGames::DouZeroRemoteTicket)
+    MyGames::DouZeroRemoteTicket MyGames::DouDizhuRound)
   if(MSVC)
     target_compile_options(mygames_douzero_remote_ticket_test PRIVATE /W4 /WX)
   else()
