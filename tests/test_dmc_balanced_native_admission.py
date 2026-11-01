@@ -18,6 +18,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "ai" / "dmc"))
 from train_policy import make_role_sampler
 from verified_behavior_training import admit_training_sources, exact_replay_paths
+from operate_verified_corpus import (
+    PLAN, COMPLETED, admit_complete, private_json,
+)
 
 BEHAVIORS = ("mixed-v1", "shed-most", "legal-index")
 SPLITS = ("train", "validation")
@@ -65,7 +68,7 @@ def main():
                 shards = 2 if source == "mixed-v1" else 1
                 per_shard = GAMES_PER_BEHAVIOR_AND_SPLIT // shards
                 for shard in range(shards):
-                    folder = base / f"{source}-{split}-shard{shard}"
+                    folder = base / f"{source}-{split}-shard{shard:02d}"
                     folder.mkdir(mode=0o700)
                     first_id = (50001 + source_index * 1000 +
                                 split_index * 100 + shard * per_shard)
@@ -112,6 +115,49 @@ def main():
             e.episode_id for e in validation]
         assert {e.episode_id for e in train}.isdisjoint(
             {e.episode_id for e in validation})
+        # The offline operator's immutable completion record must verify
+        # actual C11 shards, not merely accept invented plan metadata.
+        plan = {
+            "schema": "mygames-r9-native-sharded-plan-v1",
+            "source_revision": revision, "generator_sha256": digest,
+            "objective": "win-sign", "behaviors": sorted(BEHAVIORS),
+            "first_episode_id": 50001, "train_games_per_behavior": 24,
+            "validation_games_per_behavior": 24,
+            "max_games_per_shard": 96, "max_shards_per_behavior": 16,
+            "virgin_test_read": False, "model_training_completed": False,
+        }
+        plan_sha = private_json(base, PLAN, plan)
+        completion = {
+            "schema": "mygames-r9-native-sharded-complete-v1",
+            "plan_sha256": plan_sha, "source_revision": revision,
+            "generator_sha256": digest,
+            "cohorts": {
+                "train": [x.name for x in train_roots],
+                "validation": [x.name for x in validation_roots]},
+            "complete_episodes_by_split": admitted["episodes_by_split"],
+            "shards_by_split": admitted["shards_by_split"],
+            "source_bundle_sha256": admitted["manifest_bundle_sha256"],
+            "virgin_test_read": False,
+        }
+        private_json(base, COMPLETED, completion)
+        _, operator_roots, independently_admitted = admit_complete(base)
+        assert len(operator_roots["train"]) == 4
+        assert len(operator_roots["validation"]) == 4
+        assert independently_admitted["manifest_bundle_sha256"] == admitted[
+            "manifest_bundle_sha256"]
+        original_marker = (base / COMPLETED).read_bytes()
+        try:
+            altered = dict(completion)
+            altered["source_bundle_sha256"] = "0" * 64
+            (base / COMPLETED).write_text(json.dumps(altered))
+            try:
+                admit_complete(base)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("changed operator source completion admitted")
+        finally:
+            (base / COMPLETED).write_bytes(original_marker)
         for role in range(3):
             for name, episodes, labels in (
                 ("train", train, admitted["train_source_by_episode"]),
@@ -140,7 +186,7 @@ def main():
         assert not (base / "models").exists()
     print("mygames.dmc_real_native_balanced_source_admission: PASS")
     print("3 behavior sources, 8 independently sealed TRAIN/TUNING shards, "
-          "144 genuine C11 games")
+          "144 genuine C11 games; operator completion verified")
     print("All roles and source-outcome buckets present; TEST unopened; Torch not invoked")
 
 
