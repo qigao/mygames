@@ -16,7 +16,9 @@ import stat
 import subprocess
 import sys
 
-from model_source_record import verify_record, record_path
+from model_source_record import (
+    public_training_evidence, verify_record, record_path,
+)
 from verified_behavior_training import (
     admit_training_sources, verify_exact_learner_revision,
 )
@@ -105,9 +107,25 @@ def run(args):
             record["native_generator_sha256"] != args.generator_sha256 or
             record["verified_behavior_sources"] != list(audited["sources"])):
         raise RuntimeError("frozen checkpoint missing exact policy/source binding")
-    # Only PUBLIC counts and digest are reported, no raw weights/Replay/IDs.
+    # The role-level report comes ONLY from the verified, immutable source
+    # record rather than an untrusted outer subprocess stdout summary.
+    # No private cards, actor observations, episode IDs or paths are exposed.
+    public_evidence = public_training_evidence(record)
+    if (public_evidence["candidate_model_version"] != args.model_version or
+            not public_evidence["all_tuning_roles_better_than_zero_q"] or
+            optimizer["selected_validation_step_by_role"] !=
+            record["selected_validation_step_by_role"]):
+        raise RuntimeError("frozen role-level tuning evidence does not match optimizer")
     return {
         "status": "private-immutable-multisource-candidate",
+        "tuning_evidence": public_evidence,
+        "optimizer_settings": {
+            "steps_per_role": args.steps,
+            "batch_size": args.batch_size,
+            "learning_rate": args.learning_rate,
+            "validation_interval": args.validation_interval,
+            "rng_seed": args.seed, "requested_device": args.device,
+        },
         "candidate_model_version": args.model_version,
         "checkpoint_sha256": optimizer["checkpoint_sha256"],
         "source_bundle_sha256": audited["manifest_bundle_sha256"],
