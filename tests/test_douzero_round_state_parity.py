@@ -64,6 +64,18 @@ class Result(ct.Structure):
     ]
 
 
+class PublicView(ct.Structure):
+    # The real C11 public projection intentionally has no opponent hand,
+    # deck, private match state or secret-card representation.
+    _fields_ = [
+        ("turn_id", ct.c_uint64), ("last_cards", ct.c_uint64),
+        ("last_move", Move), ("remaining", ct.c_uint8 * 3),
+        ("landlord_seat", ct.c_uint8), ("turn_seat", ct.c_uint8),
+        ("last_seat", ct.c_uint8), ("winner_seat", ct.c_uint8),
+        ("finished", ct.c_bool),
+    ]
+
+
 class FixedTestActor:
     def __init__(self):
         self.action = None
@@ -124,6 +136,8 @@ def native_library(library):
         ("mygames_ddz_round_deal",
          (ct.POINTER(Round), ct.POINTER(ct.c_uint8), ct.c_uint)),
         ("mygames_ddz_round_validate", (ct.POINTER(Round),)),
+        ("mygames_ddz_round_public_view",
+         (ct.POINTER(Round), ct.POINTER(PublicView))),
         ("mygames_ddz_round_submit",
          (ct.POINTER(Round), ct.c_uint, ct.c_uint64, ct.c_uint64,
           ct.POINTER(Result))),
@@ -163,6 +177,21 @@ def audit(library, number_of_games, seed):
             if counts["actions"] - start_actions >= 500:
                 raise AssertionError("test policy did not finish the game")
             assert lib.mygames_ddz_round_validate(ct.byref(native)) == C11_OK
+            public = PublicView()
+            assert lib.mygames_ddz_round_public_view(
+                ct.byref(native), ct.byref(public)) == C11_OK
+            counts["public_view_checks"] += 1
+            # Compare ONLY the real C11 actor-authorized public projection;
+            # never read another seat's hand through this interface.
+            assert public.turn_id == native.turn_id
+            assert public.last_cards == native.last_cards
+            assert public.landlord_seat == 0
+            assert public.turn_seat == native.turn_seat
+            assert public.last_seat == native.last_seat
+            assert public.winner_seat == native.winner_seat
+            assert not public.finished
+            assert tuple(public.remaining) == tuple(native.remaining)
+            assert "hands" not in dict(PublicView._fields_)
             seat = int(native.turn_seat)
             position = SEATS[seat]
             assert upstream.acting_player_position == position
@@ -271,6 +300,14 @@ def audit(library, number_of_games, seed):
             assert upstream.card_play_action_seq[-1] == list(action)
             assert bool(native.finished) == bool(upstream.game_over)
             if native.finished:
+                final_public = PublicView()
+                assert lib.mygames_ddz_round_public_view(
+                    ct.byref(native), ct.byref(final_public)) == C11_OK
+                counts["public_view_checks"] += 1
+                assert final_public.finished
+                assert final_public.turn_seat == 3
+                assert final_public.winner_seat == native.winner_seat
+                assert tuple(final_public.remaining) == tuple(native.remaining)
                 assert upstream.get_winner() == (
                     "landlord" if native.winner_seat == 0 else "farmer")
                 counts["completed_games"] += 1
