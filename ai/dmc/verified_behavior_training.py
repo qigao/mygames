@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 
 from replay import parse_episode
 from train_policy import make_role_sampler
@@ -133,3 +134,25 @@ def exact_replay_paths(paths, expected):
             set(p.resolve(strict=True) for p in actual_paths) !=
             set(p.resolve(strict=True) for p in verified_paths)):
         raise ValueError("optimizer Replay list differs from audited TRAIN/VALIDATION")
+
+def verify_exact_learner_revision(revision: str, source_checkout: Path) -> None:
+    """Admit an existing, CLEAN local learner checkout, never download/fallback.
+
+    Native C11 generator source and Python learner may be distinct commits.
+    The operator must explicitly pin the current learner's exact HEAD.
+    """
+    if not isinstance(revision, str) or HEX40.fullmatch(revision) is None:
+        raise ValueError("explicit current learner SHA required")
+    checkout = source_checkout.absolute()
+    if checkout.is_symlink() or not checkout.is_dir():
+        raise ValueError("learner checkout must be an existing real directory")
+    source = checkout.resolve(strict=True)
+    def git(*argv):
+        return subprocess.run(
+            ["git", "-C", str(source), *argv],
+            capture_output=True, text=True, check=True, timeout=15,
+        ).stdout.strip()
+    if git("rev-parse", "HEAD") != revision:
+        raise ValueError("pinned learner revision differs from checkout HEAD")
+    if git("status", "--porcelain", "--untracked-files=no"):
+        raise ValueError("learner has tracked dirty files; refuse source attestation")
