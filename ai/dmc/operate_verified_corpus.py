@@ -253,29 +253,20 @@ def prepare(args):
 
 
 def train(args):
-    _, cohorts, audit = admit_complete(args.private_root)
+    # One verified, immutable plan + completion snapshot drives the TRAIN
+    # invocation. Avoid separately re-reading potentially changed metadata.
+    plan, cohorts, audit = admit_complete(args.private_root)
     from run_verified_behavior_experiment import run
-    _, source_revision = _plan_identity(args.private_root)
     return run(SimpleNamespace(
         train_cohort=cohorts["train"], validation_cohort=cohorts["validation"],
-        source=audit["sources"], source_revision=source_revision,
-        generator_sha256=_plan_generator_sha(args.private_root),
+        source=audit["sources"], source_revision=plan["source_revision"],
+        generator_sha256=plan["generator_sha256"],
         learner_revision=args.learner_revision, output=args.output,
         model_version=args.model_version, steps=args.steps,
         batch_size=args.batch_size, learning_rate=args.learning_rate,
         validation_interval=args.validation_interval, seed=args.seed,
         device=args.device,
     ))
-
-
-def _plan_identity(root: Path):
-    plan = json.loads(checked_file(checked_root(root) / PLAN))
-    return plan["behaviors"], plan["source_revision"]
-
-
-def _plan_generator_sha(root: Path):
-    plan = json.loads(checked_file(checked_root(root) / PLAN))
-    return plan["generator_sha256"]
 
 
 def main():
