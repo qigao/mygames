@@ -4,6 +4,9 @@ project(MyGames VERSION 0.1.0 LANGUAGES C)
 option(MYGAMES_ENABLE_GATEWAY "Build optional CHttp/CNet development gateway" OFF)
 option(MYGAMES_ENABLE_TURBODB "Build optional TurboDB transactional room storage" OFF)
 option(MYGAMES_ENABLE_FLOWIE "Build optional Flowie QoS1 Outbox publisher and local broker test" OFF)
+option(MYGAMES_ENABLE_REMOTE_INFERENCE_SERVICE
+  "Build optional standalone-host C++ KFCore/CHttp DouZero inference service"
+  OFF)
 
 add_library(mygames_room STATIC games/doudizhu/src/room.c
   games/doudizhu/src/room_directory.c
@@ -166,6 +169,34 @@ if(BUILD_TESTING)
   endif()
   add_test(NAME mygames.douzero_rule_profile
     COMMAND mygames_douzero_rule_profile_test)
+endif()
+
+# Only the SEPARATE inference service host links these C++/CHttp/KFCore
+# dependencies. Normal MyGames Room/Match/CTest remains pure C11, and
+# neither server nor model backend executes on a game/CHttp Owner thread.
+if(MYGAMES_ENABLE_REMOTE_INFERENCE_SERVICE)
+  enable_language(CXX)
+  find_package(Chttp CONFIG REQUIRED)
+  find_package(KFCore CONFIG REQUIRED)
+  add_library(mygames_douzero_remote_inference_service STATIC
+    ai/douzero/service/src/douzero_remote_service.cpp)
+  add_library(MyGames::DouZeroRemoteInferenceService ALIAS
+    mygames_douzero_remote_inference_service)
+  target_compile_features(mygames_douzero_remote_inference_service PRIVATE
+    cxx_std_17)
+  set_target_properties(mygames_douzero_remote_inference_service PROPERTIES
+    CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS OFF)
+  target_include_directories(mygames_douzero_remote_inference_service PUBLIC
+    ai/douzero/service/include)
+  target_link_libraries(mygames_douzero_remote_inference_service PUBLIC
+    MyGames::DouZeroRemoteWire CHttp::Server KFCore::dmc_q)
+  if(MSVC)
+    target_compile_options(mygames_douzero_remote_inference_service PRIVATE
+      /W4 /WX)
+  else()
+    target_compile_options(mygames_douzero_remote_inference_service PRIVATE
+      -Wall -Wextra -Wpedantic -Werror)
+  endif()
 endif()
 
 if(MYGAMES_ENABLE_TURBODB)
