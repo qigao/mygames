@@ -104,6 +104,37 @@ if(MYGAMES_ENABLE_GATEWAY)
 endif()
 
 include(CTest)
+
+# Transport-neutral actor-only DouZero Q wire for an INDEPENDENT C++ inference
+# process speaking CHttp HTTP/2 or binary WebSocket. Pure C11, no KFCore, CHttp,
+# inference threads, SDK package or model runtime linked into the Game Owner.
+add_library(mygames_douzero_remote_wire STATIC
+  ai/douzero/src/douzero_remote_wire.c)
+add_library(MyGames::DouZeroRemoteWire ALIAS mygames_douzero_remote_wire)
+target_compile_features(mygames_douzero_remote_wire PUBLIC c_std_11)
+target_include_directories(mygames_douzero_remote_wire PUBLIC
+  ai/douzero/include)
+if(MSVC)
+  target_compile_options(mygames_douzero_remote_wire PRIVATE /W4 /WX)
+else()
+  target_compile_options(mygames_douzero_remote_wire PRIVATE
+    -Wall -Wextra -Wpedantic -Werror)
+endif()
+if(BUILD_TESTING)
+  add_executable(mygames_douzero_remote_wire_test
+    tests/douzero_remote_wire_test.c)
+  target_link_libraries(mygames_douzero_remote_wire_test PRIVATE
+    MyGames::DouZeroRemoteWire)
+  target_compile_features(mygames_douzero_remote_wire_test PRIVATE c_std_11)
+  if(MSVC)
+    target_compile_options(mygames_douzero_remote_wire_test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_douzero_remote_wire_test PRIVATE
+      -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME mygames.douzero_remote_wire
+    COMMAND mygames_douzero_remote_wire_test)
+endif()
 # R1: optional OFFLINE ONLY DouZero classifier compatibility profile.
 # No production Room/Match or native game rule target changes. Uses the
 # original authoritative Round classifier for all ordinary patterns.
