@@ -152,7 +152,11 @@ def native_library(library):
     return lib
 
 
-def audit(library, number_of_games, seed):
+def audit(library, number_of_games, seed, *, actor_feature_check=None):
+    # The optional trusted check receives ONLY native own hand and the
+    # committed public view/events, never the full private C11 Round.
+    if actor_feature_check is not None and not callable(actor_feature_check):
+        raise ValueError("invalid optional developer-only actor feature verifier")
     if not 1 <= number_of_games <= 100 or not 0 <= seed < 2 ** 64:
         raise ValueError("bounded, deterministic developer-only comparison")
     lib = native_library(library)
@@ -172,6 +176,9 @@ def audit(library, number_of_games, seed):
         cdeck = (ct.c_uint8 * 54)(*deck)
         assert lib.mygames_ddz_round_deal(ct.byref(native), cdeck, 0) == C11_OK
         assert native.turn_id == 1 and native.turn_seat == 0
+        # Own/other partitions stay in the authoritative C11 Round; this
+        # immutable per-turn stream contains only committed PUBLIC actions.
+        public_actions = []
         start_actions = counts["actions"]
         while not native.finished:
             if counts["actions"] - start_actions >= 500:
@@ -201,6 +208,11 @@ def audit(library, number_of_games, seed):
                 assert native.remaining[s] == len(
                     upstream.info_sets[SEATS[s]].player_hand_cards)
             assert ranks(native.last_cards) == Counter(upstream.get_last_move())
+            if actor_feature_check is not None:
+                actor_feature_check(
+                    seat, int(native.hands[seat]), public,
+                    tuple(public_actions), upstream.game_infoset)
+                counts["exact_actor_observation_checks"] += 1
 
             legal = upstream.game_infoset.legal_actions
             if not legal:
@@ -288,6 +300,7 @@ def audit(library, number_of_games, seed):
                 ct.byref(result)) == C11_OK
             assert lib.mygames_ddz_round_validate(ct.byref(native)) == C11_OK
             upstream.step()
+            public_actions.append((seat, tuple(action)))
 
             counts["actions"] += 1
             counts["plays" if action else "passes"] += 1
