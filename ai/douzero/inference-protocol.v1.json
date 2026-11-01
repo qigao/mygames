@@ -66,7 +66,8 @@
     "max_pending_per_turn": 1,
     "max_full_legal_actions": 16384,
     "max_chunks_per_ticket": 256,
-    "max_request_body_bytes": 32768
+    "max_request_body_bytes": 32768,
+    "max_safe_jsonrpc_envelope_id": "9007199254740991"
   },
   "statuses": [
     "ok",
@@ -96,13 +97,13 @@
     "owner_must_revalidate_move_at_commit": true
   },
   "json_encoding": {
-    "u64_fields": "canonical unsigned decimal strings, never JSON floating-point numbers",
+    "u64_fields": "all params/results 64-bit identity fields are canonical unsigned decimal strings; JSON-RPC envelope id is the sole bounded numeric exception",
     "uint32_fields": "JSON nonnegative integers",
     "model_sha256": "64 lowercase hexadecimal characters; exact authenticated ONNX artifact bytes",
     "legal_list_sha256": "64 lowercase hexadecimal characters",
     "x_z_actions": "arrays of only integer 0 or 1, ordered exactly as original DouZero actor features",
     "scores": "finite numeric array, exactly the requested chunk length",
-    "request_id": "one distinct active JSON-RPC or WS wire ID per 64-action chunk",
+    "request_id": "numeric JSON-RPC envelope id and canonical decimal string params.request_id must agree, with request_id <= 2^53-1, unique per 64-action chunk",
     "request_id_base": "wire ID for first chunk; expected request_id = base + chunk_index",
     "ticket_id": "immutable owner-generated logical ticket identifier for whole legal list",
     "deadline_ms": "relative request bound; owner separately stores monotonic absolute deadline"
