@@ -104,6 +104,34 @@ if(MYGAMES_ENABLE_GATEWAY)
 endif()
 
 include(CTest)
+# R1: optional OFFLINE ONLY DouZero classifier compatibility profile.
+# No production Room/Match or native game rule target changes. Uses the
+# original authoritative Round classifier for all ordinary patterns.
+if(BUILD_TESTING)
+  add_library(mygames_douzero_offline_rules SHARED
+    ai/douzero/src/douzero_rule_profile.c
+    games/doudizhu/src/ddz_round.c)
+  target_compile_features(mygames_douzero_offline_rules PUBLIC c_std_11)
+  target_include_directories(mygames_douzero_offline_rules PUBLIC
+    games/doudizhu/include ai/douzero/include)
+  add_executable(mygames_douzero_rule_profile_test
+    tests/douzero_rule_profile_test.c)
+  target_link_libraries(mygames_douzero_rule_profile_test PRIVATE
+    mygames_douzero_offline_rules)
+  target_compile_features(mygames_douzero_rule_profile_test PRIVATE c_std_11)
+  if(MSVC)
+    target_compile_options(mygames_douzero_offline_rules PRIVATE /W4 /WX)
+    target_compile_options(mygames_douzero_rule_profile_test PRIVATE /W4 /WX)
+  else()
+    target_compile_options(mygames_douzero_offline_rules PRIVATE
+      -Wall -Wextra -Wpedantic -Werror)
+    target_compile_options(mygames_douzero_rule_profile_test PRIVATE
+      -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME mygames.douzero_rule_profile
+    COMMAND mygames_douzero_rule_profile_test)
+endif()
+
 if(MYGAMES_ENABLE_TURBODB)
   find_package(TurboDB CONFIG REQUIRED)
   # The durable CFlow Game Owner hashes normalized actions with Salts::Core.
