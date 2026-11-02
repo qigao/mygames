@@ -44,11 +44,17 @@ def main():
         checkpoint.write_bytes(b"INTENTIONALLY INVALID CHECKPOINT CONTRACT FIXTURE")
         checkpoint.chmod(0o600)
         sha = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+        full = root / "not-original-model.tar"
+        full.write_bytes(b"INTENTIONALLY INVALID WP MODEL.TAR TEST FIXTURE")
+        full.chmod(0o600)
+        full_sha = hashlib.sha256(full.read_bytes()).hexdigest()
         out = root / "result"
         args = SimpleNamespace(
             role="landlord", checkpoint=checkpoint,
-            expected_checkpoint_sha256=sha, model_version=104,
-            out_dir=out)
+            expected_checkpoint_sha256=sha,
+            full_training_checkpoint=full,
+            expected_full_training_sha256=full_sha,
+            model_version=104, out_dir=out)
         rejected(lambda: exporter.export(SimpleNamespace(
             **{**vars(args), "role": "legacy_dmc"})))
         rejected(lambda: exporter.export(SimpleNamespace(
@@ -57,9 +63,16 @@ def main():
             **{**vars(args), "expected_checkpoint_sha256": "f" * 64})))
         rejected(lambda: exporter.export(SimpleNamespace(
             **{**vars(args), "expected_checkpoint_sha256": "not_sha"})))
+        rejected(lambda: exporter.export(SimpleNamespace(
+            **{**vars(args), "expected_full_training_sha256": "d" * 64})))
+        rejected(lambda: exporter.export(SimpleNamespace(
+            **{**vars(args), "expected_full_training_sha256": "BAD"})))
         checkpoint.chmod(0o644)
         rejected(lambda: exporter.export(args))
         checkpoint.chmod(0o600)
+        full.chmod(0o644)
+        rejected(lambda: exporter.export(args))
+        full.chmod(0o600)
         link = root / "symlink.ckpt"
         link.symlink_to(checkpoint)
         rejected(lambda: exporter.export(SimpleNamespace(
