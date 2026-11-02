@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -91,10 +92,18 @@ def export(args: argparse.Namespace) -> dict[str, Any]:
     import onnx
     import onnxruntime as ort
 
-    sys.path.insert(0, str(UPSTREAM))
-    from douzero.dmc.models import LandlordLstmModel, FarmerLstmModel
-
-    model = LandlordLstmModel() if args.role == "landlord" else FarmerLstmModel()
+    # Execute the exact locked upstream models.py DIRECTLY: Python package
+    # initializers import the training scheduler and GitPython, neither of
+    # which belongs in a standalone model-conversion process.
+    model_source = UPSTREAM / "douzero/dmc/models.py"
+    spec = importlib.util.spec_from_file_location(
+        "_mygames_pinned_original_douzero_models", model_source)
+    if spec is None or spec.loader is None:
+        raise ValueError("original model source module cannot be loaded")
+    original = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(original)
+    model = (original.LandlordLstmModel() if args.role == "landlord"
+             else original.FarmerLstmModel())
     state = torch.load(checkpoint, map_location="cpu", weights_only=True)
     expected = model.state_dict()
     if (not isinstance(state, dict) or set(state) != set(expected) or
