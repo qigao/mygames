@@ -79,8 +79,16 @@ def export(args: argparse.Namespace) -> dict[str, Any]:
             for ch in args.expected_checkpoint_sha256)):
         raise ValueError("canonical trusted checkpoint SHA256 required")
     checkpoint = owned_existing_input(args.checkpoint)
+    full_training = owned_existing_input(args.full_training_checkpoint)
     if sha256(checkpoint) != args.expected_checkpoint_sha256:
         raise ValueError("checkpoint differs from independently pinned SHA256")
+    if (len(args.expected_full_training_sha256) != 64 or
+            any(ch not in "0123456789abcdef"
+                for ch in args.expected_full_training_sha256) or
+            sha256(full_training) != args.expected_full_training_sha256):
+        raise ValueError("original full training checkpoint SHA256 mismatch")
+    if checkpoint == full_training:
+        raise ValueError("role weights must be separate from original model.tar")
     target = args.out_dir.absolute()
     parent = target.parent
     if target.exists() or target.is_symlink() or not parent.is_dir() or parent.is_symlink():
@@ -113,6 +121,22 @@ def export(args: argparse.Namespace) -> dict[str, Any]:
                 not torch.isfinite(state[k]).all()
                 for k in expected)):
         raise ValueError("not an exact finite ORIGINAL role model state_dict")
+    # Standalone original *.ckpt has weights, but NO objective provenance.
+    # Verify SHA-pinned original model.tar's WP training flag and EXACT same
+    # frozen role tensors. Never relabel retired custom-DMC or ADP weights.
+    full = torch.load(full_training, map_location="cpu", weights_only=True)
+    flags = full.get("flags") if isinstance(full, dict) else None
+    trained = full.get("model_state_dict") if isinstance(full, dict) else None
+    if (not isinstance(flags, dict) or flags.get("objective") != "wp" or
+            not isinstance(trained, dict) or args.role not in trained or
+            not isinstance(trained[args.role], dict) or
+            type(full.get("frames")) is not int or full["frames"] < 1 or
+            set(trained[args.role]) != set(state) or
+            any(not isinstance(trained[args.role][k], torch.Tensor) or
+                trained[args.role][k].shape != state[k].shape or
+                not torch.equal(trained[args.role][k], state[k])
+                for k in state)):
+        raise ValueError("original WP model.tar does not match role weights")
     model.load_state_dict(state, strict=True)
     model.eval()
 
@@ -206,6 +230,8 @@ def export(args: argparse.Namespace) -> dict[str, Any]:
             "role": args.role,
             "model_version": args.model_version,
             "original_checkpoint_sha256": args.expected_checkpoint_sha256,
+            "original_full_training_sha256": args.expected_full_training_sha256,
+            "original_training_frames": full["frames"],
             "onnx_sha256": model_sha,
             "numeric_parity_max_abs_by_batch": errors,
             "qualification": "torch-onnx-numeric-only",
@@ -229,6 +255,8 @@ def export(args: argparse.Namespace) -> dict[str, Any]:
             "role": args.role,
             "model_version": args.model_version,
             "original_checkpoint_sha256": args.expected_checkpoint_sha256,
+            "original_full_training_sha256": args.expected_full_training_sha256,
+            "original_training_frames": full["frames"],
             "onnx_sha256": model_sha,
             "numeric_parity_max_abs_by_batch": errors,
             "kfcore_semantic_contract": PROFILE,
@@ -244,6 +272,9 @@ def main():
     parser.add_argument("--role", choices=sorted(MODEL_TYPES), required=True)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--expected-checkpoint-sha256", required=True)
+    parser.add_argument("--full-training-checkpoint", type=Path, required=True,
+                        help="original trusted saved model.tar (WP provenance)")
+    parser.add_argument("--expected-full-training-sha256", required=True)
     parser.add_argument("--model-version", type=int, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
     args = parser.parse_args()
