@@ -267,3 +267,89 @@ response-ticket behavior only.
 - Current online MyGames C11 house rules still reject some original
   DouZero-only actions. R2a does NOT enable production inference
   until full legal/actor-feature/bidding/history gates are satisfied.
+
+
+## R2b genuine original checkpoint to C++ KFCore ONNX: private exporter
+
+The independent offline script \`ai/douzero/export_original_wp_onnx.py\`
+loads the unchanged **original** \`kwai/DouZero\`
+\`LandlordLstmModel\`/\`FarmerLstmModel\` from the pinned SHA-verified
+upstream \`models.py\`. It DOES NOT train, redefine, approximate or
+replace the original Actor–Learner or its network.
+
+**Non-negotiable provenance gate:** Do not tag an arbitrary trained
+role state_dict as "WP" simply because it has the correct 319/430/54
+feature widths. Original \`<role>_weights_<frames>.ckpt\` only contains
+weights. A valid export MUST ALSO receive the exact private
+\`model.tar\` from that **same original training run**, with a separate
+independently trusted SHA256. Both files must be 0600 regular files
+and the original \`model.tar\` must declare \`flags.objective=wp\`
+and contain exactly the SAME role state_dict tensors and nonzero
+training frames. The trusted operator supplies both digests
+independently. Both \`torch.load\` calls use \`weights_only=True\`,
+with no unsafe pickle-mode fallback or old self-invented DMC ABI.
+
+Example for each role with all private assets OUTSIDE Git:
+
+\`\`\`sh
+python3 ai/douzero/export_original_wp_onnx.py \
+  --role landlord \
+  --checkpoint /PRIVATE/train/landlord_weights_1280.ckpt \
+  --expected-checkpoint-sha256 ACTUAL_ROLE_CKPT_SHA256 \
+  --full-training-checkpoint /PRIVATE/train/model.tar \
+  --expected-full-training-sha256 ACTUAL_FULL_TRAIN_SHA256 \
+  --model-version 1 \
+  --out-dir /PRIVATE/inference-models/landlord-1
+\`\`\`
+
+Do this again independently for \`landlord_up\` and \`landlord_down\`.
+The script exports one true batch-dynamic ONNX graph per original
+role, naming \`z[N,5,162]\`, \`xa[N,373/484]\` and \`q[N]\`;
+verifies the ONNX checker, exact ORT CPU backend and original Torch
+vs ORT float32 Q scores at N=1/7/64 with max abs <5e-4 on PUBLIC
+synthetic binary matrices; and atomically publishes a private
+\`kfcore.model/1\` package with semantic identity
+\`douzero-original-q / douzero.original.wp / douzero-original-q-v1\`,
+artifact SHA and a source-provenance record. No weights or private
+observations are uploaded to CI or shared via protocol logs.
+
+**Evidence/status:** Existing native M5a lightweight CI only runs
+\`py_compile\` and a stdlib **negative** trust/provenance test,
+rejecting wrong role, stale/missing checkpoint SHA, missing or
+mismatched full \`model.tar\`, symlink/permissions and output collision.
+This is NOT actual Torch ONNX export, nor KFCore trained checkpoint
+numerical parity. The current isolated CPU developer environment
+has PyTorch 2.10.0 but no installed \`onnx\` or \`onnxruntime\`
+and cannot reach the package index (DNS unavailable), so no
+actual original trained-model ONNX output has yet been qualified.
+
+## R2b real CHttp HTTP/2 transport gate (independent of SDK cutover)
+
+[CHttp Draft PR #271](https://github.com/qigao/chttp/pull/271),
+stacked on existing cache PR #270, now exercises the EXISTING CHttp
+Server/Client real HTTP/2 JSON-RPC and CSerde method with a
+**430-byte actor state + 810-byte history + 64×54 binary action rows**
+as nested arrays, authentic HTTP/2 connection/stream and a 64-score
+returned CSerde list. A second call with the ordinary 8192-byte body
+budget rejects the same larger payload without truncation. **Test
+response numbers are public bit-counts, NOT model Q values.**
+
+Exact pinned PR head \`baca4f54f7f394ddc4f05af9bbf15d2e3062f3c2\`
+was built and native \`crpc_server_test\` executed five times in BOTH
+[full-source TSan #41366173307](https://github.com/qigao/chttp/actions/runs/41366173307)
+and [candidate SDK TSan #41366173248](https://github.com/qigao/chttp/actions/runs/41366173248),
+each SUCCESS with 7/7 focused HTTP/RPC CTests. This is real
+transport execution, not a manually mocked HTTP frame, and not
+evidence of a separately running C++ model host, mTLS, or live
+Game Owner registration.
+
+The existing MyGames native SDK restore scripts are still RED:
+legacy \`Salts.Native 2.3.0-rc.16\` and
+\`SaltsUtils.Native 4.3.0-rc.11\` releases no longer form a published
+compatible artifact chain. New \`qigao/cmeta\` and
+\`qigao/salts-core\` public packages are **not ABI aliases** of the
+legacy combined Salts SDK; \`CHttp\` upstream tracks single
+\`Salts::CNet\` owner/ABI migration in [Issue #269](https://github.com/qigao/chttp/issues/269).
+Do not change URLs to unrelated package versions just to turn
+CI green; the exact CHttp C11/C++ service source/installed
+SDK closure must be qualified first.
