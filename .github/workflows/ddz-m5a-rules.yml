@@ -12,6 +12,7 @@ name: M5a Dou Dizhu gameplay rules (C11)
       - 'tests/test_douzero_actor_feature_parity.py'
       - 'tests/douzero_remote_ticket_test.c'
       - 'tests/test_douzero_remote_protocol.py'
+      - 'tests/test_douzero_original_export_contract.py'
       - 'CMakeLists.txt'
       - 'third_party/DouZero/**'
       - 'ai/douzero/**'
@@ -75,6 +76,8 @@ jobs:
           # integration test; never auto-install heavy ML deps in M5a.
           python3 -m py_compile tests/test_douzero_actor_feature_parity.py
           python3 tests/test_douzero_remote_protocol.py
+          python3 -m py_compile ai/douzero/export_original_wp_onnx.py
+          python3 tests/test_douzero_original_export_contract.py
 
   pure-source-asan:
     name: Pure C11 rules / Linux ASan+UBSan
