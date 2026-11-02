@@ -353,3 +353,41 @@ legacy combined Salts SDK; \`CHttp\` upstream tracks single
 Do not change URLs to unrelated package versions just to turn
 CI green; the exact CHttp C11/C++ service source/installed
 SDK closure must be qualified first.
+
+
+## Model execution MUST NOT block CHttp's H2 connection Owner
+
+One more important real-source distinction: CHttp's low-level
+\`chttp_server_rpc_register\` callback completes responses *synchronously*
+via \`crpc_server_response_result\`. The 64x54 HTTP/2/CSerde positive
+test in #271 uses intentionally cheap bit-count test arithmetic.
+It MUST NOT be used to justify running a real CPU/GPU LSTM on a
+transport Owner callback: such blocking would delay unrelated H2
+streams and violate CHttp's single-owner/fixed-connection fairness.
+
+The separately deployed C++ KFCore inference host must instead use a
+**bounded external inference executor** (explicit queue capacity,
+worker ownership, immutable model handles, drain barriers, deadlines
+and per-inference cancellation). For HTTP/2, CHttp already exposes
+\`chttp_server_response_defer\` and
+\`chttp_server_deferred_reply\` / \`_reply_buffer\` for safe cross-thread
+completion with native H2 stream-generation fences; all request data
+must be copied from the callback before returning. Its generic HTTP
+deferred response path is not automatically the same as an async
+JSON-RPC handler: the host must preserve valid JSON-RPC envelope IDs,
+method errors, content-type/body bounds and cancellation semantics
+through an explicitly reviewed CSerde adapter. Do not invent another
+CNet Owner or claim existing \`crpc_server_response_result\` can be
+called later on a borrowed handler response after its callback exits.
+
+For WS, use existing CHttp thread-safe **owned copied commands**
+from a bounded worker to the live connection generation. WebSocket
+reconnect must invalidate all outstanding source tickets. The
+game C11 Owner decides whether a late model result can be used,
+NEVER the inference service or an HTTP/2 status code.
+
+This separate C++ host and its true worker/H2 deferred terminal
+conformance are **NOT YET implemented** and remain product gates.
+The current real CHttp #271 64-action H2 test proves transport size
+and CSerde arrays ONLY; KFCore model execution, service auth and
+owner-side game COMMIT still require their own tests.
